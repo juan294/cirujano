@@ -1,0 +1,70 @@
+name: Bug Report
+description: Report a bug or a wrong cost finding
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. Remove tokens, credentials, private repository names, and personal data from every log or fixture.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: Describe the problem and its effect on the audit, patch, or runner result.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro-steps
+    attributes:
+      label: Steps to Reproduce
+      description: List the smallest deterministic sequence and command.
+      placeholder: |
+        1. Run `...`.
+        2. Observe `...`.
+    validations:
+      required: true
+
+  - type: input
+    id: run-url
+    attributes:
+      label: Workflow Run or Commit
+      description: Link the public workflow run or provide the exact commit SHA.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: stage
+    attributes:
+      label: Stage
+      options:
+        - audit (billing and run history)
+        - patch (workflow change proposal)
+        - verify (before and after measurement)
+        - runner (Nebius on-demand runner)
+        - No stage was reached
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Behavior
+      description: What did you expect to happen?
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual Behavior
+      description: What happened? Include only redacted evidence.
+    validations:
+      required: true
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional Context
+      description: Add sanitized logs, billing numbers, or other useful context.

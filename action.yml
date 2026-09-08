@@ -1,0 +1,25 @@
+name: Cirujano Verified CI Cost Surgery
+description: Measure the billable minutes of a GitHub Actions run from its job timings and report them as evidence for cost surgery.
+author: Cirujano
+
+inputs:
+  github-token:
+    description: GitHub token with read access to Actions runs and jobs.
+    required: true
+  run-id:
+    description: Numeric ID of the completed workflow run to measure. Defaults to the current run.
+    required: false
+
+outputs:
+  billable-minutes:
+    description: Billable minutes of the measured run, computed per job the way GitHub bills them.
+  job-count:
+    description: Number of completed jobs that were measured.
+
+runs:
+  using: node24
+  main: packages/action/dist/index.cjs
+
+branding:
+  icon: scissors
+  color: red

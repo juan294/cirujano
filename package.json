@@ -1,0 +1,35 @@
+{
+  "name": "@cirujano/monorepo",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Verified CI cost surgery for GitHub Actions: rank where the minutes go, verify workflow patches that cut cost without cutting coverage, and move heavy jobs onto on-demand Nebius runners.",
+  "type": "module",
+  "license": "MIT",
+  "author": "Juan González Ponce",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/juan294/cirujano.git"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "packageManager": "pnpm@11.22.0",
+  "scripts": {
+    "test": "pnpm -r test",
+    "typecheck": "pnpm -r typecheck",
+    "lint": "pnpm -r lint",
+    "build": "pnpm -r build",
+    "verify:bundle": "pnpm run build && node scripts/verify-bundle.mjs",
+    "ci:fast": "pnpm run typecheck && pnpm run lint && pnpm run verify:bundle && pnpm run test",
+    "ci:local": "pnpm run ci:fast",
+    "prepare": "husky"
+  },
+  "devDependencies": {
+    "@types/node": "^26.4.0",
+    "eslint": "^10.9.1",
+    "husky": "^9.1.7",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.68.0",
+    "vitest": "^4.1.11"
+  }
+}

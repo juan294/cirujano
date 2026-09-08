@@ -1,0 +1,52 @@
+{
+  "name": "cirujano",
+  "version": "0.0.1",
+  "description": "Verified CI cost surgery for GitHub Actions.",
+  "type": "module",
+  "license": "MIT",
+  "author": "Juan González Ponce",
+  "bin": {
+    "cirujano": "./dist/bin.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/juan294/cirujano.git",
+    "directory": "packages/cli"
+  },
+  "bugs": {
+    "url": "https://github.com/juan294/cirujano/issues"
+  },
+  "keywords": [
+    "ci",
+    "github-actions",
+    "cost",
+    "finops",
+    "ai-agents",
+    "nemotron",
+    "nebius",
+    "self-hosted-runners",
+    "devops"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "pnpm --filter @cirujano/core build && pnpm run typecheck && node scripts/bundle.mjs",
+    "bundle": "node scripts/bundle.mjs",
+    "lint": "eslint src scripts",
+    "prepack": "pnpm run build",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "devDependencies": {
+    "@cirujano/core": "workspace:*",
+    "esbuild": "^0.28.2"
+  }
+}

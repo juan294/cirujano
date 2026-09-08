@@ -1,0 +1,44 @@
+#cloud-config
+# Nebius cpu-d3 VM as a shared GitHub Actions self-hosted runner host.
+# Creates N runner instances per repo (label: self-hosted,linux,x64,nebius),
+# each in its own work dir, registered with short-lived registration tokens
+# passed in at create time (RUNNER_TOKENS env in the runcmd below).
+package_update: true
+packages:
+  - curl
+  - jq
+  - git
+  - build-essential
+  - docker.io
+  - default-jre-headless   # Firebase emulators (spoken-letter)
+  - libnss3 libatk-bridge2.0-0 libxkbcommon0 libgbm1 libasound2 # Playwright deps
+users:
+  - name: runner
+    groups: [docker, sudo]
+    shell: /bin/bash
+    sudo: ALL=(ALL) NOPASSWD:ALL
+write_files:
+  - path: /opt/runner/install-runners.sh
+    permissions: "0755"
+    content: |
+      #!/usr/bin/env bash
+      # usage: install-runners.sh <owner/repo> <count> <registration-token>
+      set -euo pipefail
+      repo="$1"; count="$2"; token="$3"
+      ver=$(curl -fsSL https://api.github.com/repos/actions/runner/releases/latest | jq -r .tag_name | sed 's/^v//')
+      tarball="/opt/runner/actions-runner-linux-x64-${ver}.tar.gz"
+      [ -f "$tarball" ] || curl -fsSL -o "$tarball" "https://github.com/actions/runner/releases/download/v${ver}/actions-runner-linux-x64-${ver}.tar.gz"
+      slug=$(echo "$repo" | tr '/' '-')
+      for i in $(seq 1 "$count"); do
+        dir="/home/runner/${slug}-${i}"
+        mkdir -p "$dir" && tar -xzf "$tarball" -C "$dir"
+        chown -R runner:runner "$dir"
+        sudo -u runner bash -c "cd '$dir' && ./config.sh --unattended \
+          --url 'https://github.com/${repo}' --token '${token}' \
+          --name 'nebius-${slug}-${i}' --labels nebius --work _work --replace"
+        (cd "$dir" && ./svc.sh install runner && ./svc.sh start)
+      done
+runcmd:
+  - systemctl enable --now docker
+  - curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && apt-get install -y nodejs
+  - npm install -g pnpm@10 corepack

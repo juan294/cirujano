@@ -1,0 +1,3 @@
+# Deterministic mirror of .github/workflows/ci.yml. Never bypass with --no-verify.
+unset $(git rev-parse --local-env-vars)
+pnpm run ci:fast

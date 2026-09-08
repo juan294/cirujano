@@ -1,0 +1,31 @@
+# Dependencies and build output
+node_modules/
+dist/
+coverage/
+# The Action bundle is committed on purpose; scripts/verify-bundle.mjs keeps it current.
+!packages/action/dist/
+!packages/action/dist/index.cjs
+
+# Environment: never commit secrets
+.env
+.env.*
+!.env.example
+
+# Local Claude Code config
+.claude/settings.local.json
+.claude/scheduled_tasks.lock
+CLAUDE.local.md
+
+# Agent operational output (gitignored on public repos, Rule #70)
+docs/agents/
+logs/
+scripts/agents/
+
+# Local audit output and runner state
+.cirujano/
+
+# macOS
+.DS_Store
+
+# Session telemetry
+.claude/metrics/
