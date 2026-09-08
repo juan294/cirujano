@@ -39,13 +39,16 @@ Aggregated, anonymized numbers are fine.
 
 This project follows Research-Plan-Implement (RPI).
 
-1. /research -- Understand the codebase as-is
-2. /plan -- Create a phased implementation spec
-3. /implement -- Execute one phase at a time with review gates
-4. /validate -- Verify implementation against the plan
+1. /rpi-research -- Understand the codebase as-is
+2. /rpi-plan -- Create a phased implementation spec
+3. /rpi-implement -- Execute one phase at a time with review gates
+4. /rpi-validate -- Verify implementation against the plan
 
 Each phase is its own conversation. STOP after each phase.
 Use /clear between tasks, /compact when context is heavy.
+Native `/plan` is a Claude mode, not the RPI artifact workflow.
+Shared RPI policy lives in the imported AGENTS.md; path-mapped rule
+bodies load from `.claude/rules/`.
 
 ## Key Commands
 
@@ -108,3 +111,6 @@ Go directly to these paths -- never search for them.
 | ADRs     | `docs/decisions/`               |                             |
 | PR descriptions | `docs/prs/{number}_description.md` |                   |
 | Release playbook | `docs/release/e2e-pro-playbook.md` | Wave A adopted; no release yet |
+<!-- rpi:claude-import:start -->
+@AGENTS.md
+<!-- rpi:claude-import:end -->

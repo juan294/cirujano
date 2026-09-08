@@ -20,10 +20,10 @@ and pass against the exact artifact we are about to tag?" It does **not** replac
 machinery cc-rpi already ships — it plugs an evidence gate in front of the tag step and delegates
 to the existing commands:
 
-- **`/release`** stays the single tagging and versioning authority. E2E Pro's release procedure
-  (Section 8) delegates the actual tag/publish step to `/release`; it does not restate a
+- **`rpi-release`** stays the single tagging and versioning authority. E2E Pro's release procedure
+  (Section 8) delegates the actual tag/publish step to `rpi-release`; it does not restate a
   divergent tag process. This is decision D01 applied to cc-rpi itself.
-- **`/pre-launch` + `/remediate`** remain the static code-quality audit. They inspect the code as
+- **`rpi-pre-launch` + `rpi-remediate`** remain the static code-quality audit. They inspect the code as
   written; E2E Pro's exploratory charters (Wave B) exercise the *deployed candidate's behavior*.
   The two are complementary, not duplicates.
 - **`methodology/testing.md`** defines the automated-over-manual hierarchy. E2E Pro's oracle model
@@ -368,7 +368,7 @@ The release flow MUST:
 8. obtain any required approval;
 9. create and push the release tag.
 
-Tagging before steps 1–8 is forbidden. In cc-rpi, steps 8–9 are performed by `/release` — this
+Tagging before steps 1–8 is forbidden. In cc-rpi, steps 8–9 are performed by `rpi-release` — this
 playbook feeds it a complete, verified evidence set; it does not re-implement tagging.
 
 ### Wave B — Add Independent Exploratory Release Charters
@@ -1003,7 +1003,7 @@ Rules:
 
 Keep the operational version of this section at 200 lines or fewer. Link to capability runbooks
 instead of expanding it indefinitely. In cc-rpi, the tag/publish step (8) is executed by
-`/release`; this procedure produces the verified evidence that `/release` gates on.
+`rpi-release`; this procedure produces the verified evidence that `rpi-release` gates on.
 
 ### 1. Preflight
 
@@ -1088,7 +1088,7 @@ The analyzer MUST fail for:
 
 - Present the complete report to `<RELEASE_APPROVER>`.
 - Obtain any explicit authorization required by repository policy.
-- Create the release tag only now (via `/release`).
+- Create the release tag only now (via `rpi-release`).
 - Push the tag using `<TAG_COMMAND>`.
 - Record release, deployment, report, and rollback references.
 

@@ -14,7 +14,11 @@ before and after minutes and never auto-merges.
 "Cirujano" means surgeon. Its sibling [Sutura](https://github.com/juan294/sutura)
 repairs CI that is red; Cirujano cuts the cost of CI that is green. Both are
 GitHub Actions built for the Nebius x NVIDIA Global AI Hackathon, as separate
-entries.
+entries designed to work together.
+
+The through-line is a physician who measures before cutting: find the bleed,
+stop it, show the chart. Cirujano never touches production, never auto-merges,
+and every number it claims comes from a real run.
 
 ## Status
 
@@ -41,16 +45,25 @@ flowchart LR
 
 Three movements:
 
-1. **Diagnose.** Rank billable minutes by repository, workflow, job, and
-   trigger. Billable minutes are computed the way GitHub bills them: each
-   job's wall-clock time rounded up to the next minute. The `timing`
-   endpoint is not used because it reports zero on current GitHub.
+1. **Diagnose.** Rank billable minutes across every repository in an account,
+   by workflow, job, and trigger, on a monthly cadence. Billable minutes are
+   computed the way GitHub bills them: each job's wall-clock time rounded up
+   to the next minute. The `timing` endpoint is not used because it reports
+   zero on current GitHub. Nemotron reads the workflow YAML and run history
+   and names the waste in plain language: a push run duplicating a pull
+   request run, four coverage shards that each pay their own install, a job
+   that rebuilds the application three times.
 2. **Prescribe and verify.** For each waste pattern, propose a concrete
-   workflow patch, apply it in a branch, run the workflow, and measure the
+   workflow patch — skip the push run when the same tree already passed, cut
+   redundant triggers, right-size shards, drop dead steps, tighten path
+   filters — then apply it in a branch, run the workflow, and measure the
    billed minutes before and after. Only a green run with a measured saving
-   becomes a PR.
-3. **Relocate.** Move jobs that cannot be shrunk onto a Nebius VM that the
-   tool provisions, starts when jobs queue, and stops when idle.
+   becomes a PR, and the PR carries the runs that prove it.
+3. **Relocate.** Move jobs that cannot be shrunk, such as end-to-end suites
+   with database or Firebase emulators, onto a Nebius VM that the tool
+   provisions, starts when jobs queue, and stops when idle. On the measured
+   baseline that is roughly 150 VM-hours a month instead of 730, turning
+   about $155 of hosted minutes into about $25 to $30 of compute.
 
 ## Runtime roles
 

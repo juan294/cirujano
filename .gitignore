@@ -27,5 +27,10 @@ scripts/agents/
 # macOS
 .DS_Store
 
+# cc-rpi engine local state (plans, transaction journals) and the
+# content-addressed recovery bytes, which duplicate the installed files
+.rpi/local/
+.rpi/baselines/
+
 # Session telemetry
 .claude/metrics/
