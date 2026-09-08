@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "integration_branch": "develop",
+  "production_branches": ["main"],
+  "remote": "origin",
+  "verification_command": ["python3", ".rpi/scripts/rpi-verify.py"],
+  "verification_checks": [
+    {"name": "typecheck", "argv": ["pnpm", "run", "typecheck"]},
+    {"name": "lint", "argv": ["pnpm", "run", "lint"]},
+    {"name": "build", "argv": ["pnpm", "run", "build"]},
+    {"name": "verify-bundle", "argv": ["node", "scripts/verify-bundle.mjs"]},
+    {"name": "test", "argv": ["pnpm", "run", "test"]}
+  ]
+}
