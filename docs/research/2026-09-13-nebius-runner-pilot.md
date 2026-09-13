@@ -1,7 +1,7 @@
 # Nebius runner pilot evidence
 
 Date: 2026-09-13
-Status: second live attempt failed at fixture setup; Nebius remained empty
+Status: third live attempt failed before first boot; cleanup verified Nebius empty
 
 ## Candidate and local evidence
 
@@ -84,3 +84,28 @@ duplicate action input, checks the installed pnpm against the fixture commit,
 and adds a repository regression test. The repaired fixture must be published
 at a new exact commit and receive another candidate-bound authorization before
 R14 can resume.
+
+The third authorized attempt used the repaired published fixture. Its two hosted
+dispatches passed the shared workload, including the exact pnpm assertion,
+deterministic tests, fixed Docker port and sequential sentinel checks. The first
+self-hosted dispatch was queued and caused creation of one correctly identified
+stopped VM. The controller then blocked the actual start because it had counted
+the create reservation as a completed start under the one-start generation
+permit.
+
+The provider never entered a running state, so compute runtime was zero. No guest
+booted, no runner registered and no workload began. Raw accounting measured
+69.179 seconds of retained disk exposure and an estimated USD 0.000122. Recovery
+cancelled the queued dispatch, deleted the stopped VM and managed disk, and live
+readbacks returned empty instance, disk and allocation inventories. The second
+self-hosted dispatch was not issued.
+
+The local repair separates a create reservation from a running interval:
+`startCount` now advances only when `start-vm` is journaled, and controller
+invariants require a pending create reservation to name exactly the next start
+generation. A regression test covers the live create, stopped readback and first
+start sequence under a one-start permit. The repaired tree passed typecheck,
+lint, build, bundle verification and 345 tests. The macOS launchd integration
+tests remain executable on macOS and are skipped on Linux, where their required
+system tools do not exist. This repair changes the candidate, so a fresh bounded
+authorization is required before R14 can resume.

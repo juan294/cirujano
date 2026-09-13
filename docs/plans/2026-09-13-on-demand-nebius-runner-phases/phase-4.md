@@ -1,7 +1,7 @@
 # Phase 4: authorized live pilot and evidence
 
 Parent: [runner plan](../2026-09-13-on-demand-nebius-runner.md).
-Status: live R14 failed at the provider-contract boundary on 2026-09-13; recovery and cleanup complete.
+Status: live R14 remains blocked after three failed attempts on 2026-09-13; every recovery and cleanup completed.
 Entry: accepted Phase 3 plus explicit authorization to prepare this phase.
 Preparation alone does not authorize GitHub mutations or spending.
 
@@ -137,3 +137,24 @@ checked-out commit and asserts that the installed version equals that commit's
 `packageManager`. A fixture-repository regression test prevents a second version
 from being added to the action configuration. The repaired fixture is integrated
 locally but requires a new authorized publication before another live attempt.
+
+## Third live attempt result
+
+The repaired fixture and candidate received a fresh bounded authorization. Both
+hosted dispatches passed the exact workload at the published fixture commit. The
+first self-hosted dispatch was then queued for the attended first-boot scenario.
+The controller created the single owned VM in the required stopped state, but
+blocked before `start-vm`: creation had already advanced `startCount` to one, so
+the one-start generation permit appeared exhausted.
+
+The VM never ran, no guest booted, no runner registered and no workload began.
+Recovery cancelled the queued dispatch, deleted the exact owned stopped VM and
+managed disk, and verified empty instance, disk and allocation inventories. The
+second self-hosted dispatch was not issued. Raw accounting recorded zero compute
+runtime, 69.179 seconds of retained disk exposure and an estimated USD 0.000122.
+
+The local repair advances `startCount` only when `start-vm` is journaled and
+validates the create intent as a reservation for exactly the next generation.
+A regression test covers create, stopped readback and first start under a
+one-start permit. R14 still has no self-hosted pass and requires a new
+candidate-bound authorization before another live attempt.

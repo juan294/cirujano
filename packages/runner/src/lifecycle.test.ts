@@ -270,7 +270,7 @@ describe('deadline and admission budget (R04)', () => {
 
     const timedOut = input({
       ...absent,
-      journal: { ...absent.journal, startCount: 1, outstandingIntent: { type: 'create-vm', generation: 1, status: 'ambiguous', deadlineMs: NOW + 5_400_000 } },
+      journal: { ...absent.journal, startCount: 0, outstandingIntent: { type: 'create-vm', generation: 1, status: 'ambiguous', deadlineMs: NOW + 5_400_000 } },
     });
     expect(decideLifecycle(timedOut).effect.type).toBe('none');
 

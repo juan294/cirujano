@@ -8,6 +8,7 @@ import { describe, expect, it } from 'vitest';
 
 const root = resolve(import.meta.dirname, '../../..');
 const execFile = promisify(execFileCallback);
+const macIt = process.platform === 'darwin' ? it : it.skip;
 
 describe('telemetry scheduler', () => {
   it('keeps credentials out of the launchd template and runs at login and daily', async () => {
@@ -30,7 +31,7 @@ describe('telemetry scheduler', () => {
     expect(script).not.toMatch(/GITHUB_TOKEN|ghp_|github_pat_/u);
   });
 
-  it('allows only one executable collection at a time', async () => {
+  macIt('allows only one executable collection at a time', async () => {
     const directory = await mkdtemp(resolve(tmpdir(), 'cirujano-telemetry-lock-'));
     const mockCli = resolve(directory, 'mock-cli.mjs');
     await writeFile(mockCli, `
@@ -59,7 +60,7 @@ describe('telemetry scheduler', () => {
     expect(separated.stderr).toBe('provider failure\nprovider failure\n');
   });
 
-  it('installs one stable private bundle and verifies fresh evidence', async () => {
+  macIt('installs one stable private bundle and verifies fresh evidence', async () => {
     const fixture = await installerFixture();
     const result = await execFile(resolve(root, 'scripts/install-telemetry-agent.sh'), { env: fixture.env, timeout: 10_000 });
 
@@ -70,7 +71,7 @@ describe('telemetry scheduler', () => {
     expect((await stat(resolve(fixture.home, 'Library/Logs/cirujano/telemetry.log'))).mode & 0o777).toBe(0o600);
   });
 
-  it.each([
+  macIt.each([
     ['failed launch', { FAKE_LAUNCH_EXIT: '1' }, /did not exit successfully/u],
     ['stale evidence', { FAKE_SKIP_COLLECT: '1' }, /fresh daily snapshot/u],
     ['launch timeout', { FAKE_HANG: '1', CIRUJANO_INSTALL_WAIT_SECONDS: '0' }, /did not exit successfully/u],

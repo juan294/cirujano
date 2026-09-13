@@ -1,7 +1,7 @@
 # On-demand Nebius runner: implementation plan
 
 Date: 2026-09-13
-Status: Phases 1-3 complete and independently approved; Phase 4 live attempt failed at the provider contract and was fully cleaned up.
+Status: Phases 1-3 complete and independently approved; Phase 4 remains blocked after three fully cleaned live attempts.
 Base: `189f5f163a9e4745cd9b6d5848b81aa231909505`, `develop`.
 Workspace: `/Users/juan/code/cirujano`.
 
@@ -275,7 +275,14 @@ attempt created one stopped VM, then failed because the installed Nebius CLI's
 async response and resource payload differed from the prepared parser fixtures.
 The queued job was cancelled and provider readback proved the VM, disk and
 allocation absent. No workload ran. A repaired candidate is local and requires
-a new authorized live receipt before another attempt.
+a new authorized live receipt before another attempt. A second attempt failed
+in hosted fixture setup without creating Nebius resources. A third attempt
+passed both hosted workloads, then created its attended first-boot VM in the
+required stopped state. The controller incorrectly counted creation as the
+generation's start and blocked the actual start. Recovery cancelled the queued
+self-hosted workload, deleted the stopped VM and disk, and again proved empty
+instance, disk and allocation inventories. The start accounting repair is local;
+R14 still requires a new candidate-bound authorization.
 
 Automated final acceptance requires every scenario R01–R14 in the phase files,
 all existing repository gates and the real provider evidence in Phase 4. Missing

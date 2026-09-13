@@ -54,3 +54,19 @@
   assertion. The failed dispatch consumes the approved four-dispatch attempt;
   publishing the repaired fixture and starting another attempt need fresh
   authorization.
+
+### Third live stopped-VM start failure
+
+- Plan said: run two hosted baselines, then use the first queued self-hosted
+  workload to trigger the attended first-boot scenario.
+- Found: both hosted workloads passed at the exact fixture commit. The
+  controller then created one correctly shaped stopped VM, reserved generation
+  one during creation, and rejected the subsequent start because the one-start
+  permit appeared exhausted. The VM never entered a running state.
+- Chose: stop the controller, cancel the queued self-hosted workload, delete the
+  exact owned stopped VM and managed disk, and verify empty instance, disk and
+  allocation inventories. Keep the second self-hosted dispatch unused.
+- Why: creating a stopped resource is not a running interval. Start accounting
+  now advances only when `start-vm` is journaled, while the create intent keeps
+  a separately validated reservation for the next generation. R14 requires a
+  fresh candidate-bound authorization before another live attempt.

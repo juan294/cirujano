@@ -336,7 +336,7 @@ function applyDecision(journal: LifecycleJournal, effect: LifecycleEffect, state
     return {
       ...journal,
       state,
-      startCount: effect.type === 'create-vm' ? effect.reservedStartCount : effect.generation,
+      startCount: effect.type === 'start-vm' ? effect.generation : journal.startCount,
       outstandingIntent: { type: effect.type, generation: effect.generation, status: 'pending', deadlineMs: effect.deadlineMs },
     };
   }
@@ -407,7 +407,13 @@ function assertStateInvariants(state: ControllerState): void {
       || intent.deadlineMs !== pending.effect.deadlineMs || intent.status !== pending.status) {
       throw new Error('controller state invariant: pending effect and lifecycle intent disagree');
     }
-    if (state.lifecycle.startCount < pending.effect.generation) throw new Error('controller state invariant: pending generation exceeds startCount');
+    if (pending.effect.type === 'create-vm') {
+      if (pending.effect.reservedStartCount !== state.lifecycle.startCount + 1) {
+        throw new Error('controller state invariant: create reservation is not the next start generation');
+      }
+    } else if (state.lifecycle.startCount < pending.effect.generation) {
+      throw new Error('controller state invariant: pending generation exceeds startCount');
+    }
   } else if (pending !== null && intent !== null) {
     throw new Error('controller state invariant: non-start pending effect has a lifecycle start intent');
   }

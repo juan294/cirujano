@@ -11,6 +11,53 @@ import { acquireControllerLock, readJournal, writeJournalAtomic } from './journa
 const NOW = 1_800_000_000_000;
 
 describe('tickController intent recovery (R10/R12)', () => {
+  it('does not consume the first start while creating a stopped VM', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'cirujano-controller-'));
+    const journalPath = join(directory, 'state.json');
+    const eventPath = join(directory, 'events.jsonl');
+    const created = startInput();
+    created.provider = { complete: true, vmStatus: 'absent', ownership: 'absent', ownedMatches: 0, outstandingOperation: null };
+    created.journal = { ...created.journal, state: 'absent' };
+    created.permit = { ...created.permit!, operations: ['create', 'start', 'stop'] };
+
+    let firstEffect = '';
+    const firstLock = await acquireControllerLock(directory);
+    await tickController({
+      lock: firstLock,
+      journalPath,
+      eventPath,
+      input: created,
+      executeEffect: async (effect) => {
+        firstEffect = effect.type;
+        return { resolved: true };
+      },
+      reconcileEffect: async () => ({ resolved: true }),
+    });
+    await firstLock.release();
+    expect(firstEffect).toBe('create-vm');
+    expect((await readJournal<{ lifecycle: { startCount: number } }>(journalPath)).lifecycle.startCount).toBe(0);
+
+    let secondEffect = '';
+    const stopped = startInput();
+    stopped.permit = created.permit;
+    const secondLock = await acquireControllerLock(directory);
+    const result = await tickController({
+      lock: secondLock,
+      journalPath,
+      eventPath,
+      input: stopped,
+      executeEffect: async (effect) => {
+        secondEffect = effect.type;
+        return { resolved: false, operationId: 'start-operation' };
+      },
+      reconcileEffect: async () => ({ resolved: false }),
+    });
+    await secondLock.release();
+    expect(result.status).toBe('mutated');
+    expect(secondEffect).toBe('start-vm');
+    expect((await readJournal<{ lifecycle: { startCount: number } }>(journalPath)).lifecycle.startCount).toBe(1);
+  });
+
   it('persists intent before provider IO and reconciles it on restart without duplicate mutation', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'cirujano-controller-'));
     const journalPath = join(directory, 'state.json');

@@ -285,8 +285,8 @@ describe('production runner command composition (R11/R12)', () => {
     await executeFile(process.execPath, [executable, 'runner', 'cleanup', '--config', fixture.configPath, '--permit', fixture.permitPath], { env: fixture.env });
     const assignmentState = JSON.parse(await readFile(join(fixture.directory, 'assignments.json'), 'utf8')) as { assignments: KnownFixtureAssignment[] };
     expect(assignmentState.assignments).toEqual([
-      { runId: 1001, runAttempt: 1, jobId: 2001, runnerId: 301, runnerName: 'cirujano-a-g2', conclusion: 'success' },
-      { runId: 1002, runAttempt: 1, jobId: 2002, runnerId: 302, runnerName: 'cirujano-a-g3', conclusion: 'success' },
+      { runId: 1001, runAttempt: 1, jobId: 2001, runnerId: 301, runnerName: 'cirujano-a-g1', conclusion: 'success' },
+      { runId: 1002, runAttempt: 1, jobId: 2002, runnerId: 302, runnerName: 'cirujano-a-g2', conclusion: 'success' },
     ]);
     const reportPath = join(fixture.directory, 'report-input.json');
     await writeFile(reportPath, JSON.stringify({
