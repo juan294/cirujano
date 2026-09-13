@@ -4,9 +4,17 @@ Date: 2026-09-13
 Status: approved for implementation by the owner
 Measurement window: 2026-09-13 through 2026-10-28
 
-Implementation status: phases 1 and 2 are implemented and independently
-reviewed. Phase 2 operational acceptance awaits a fresh launch after GitHub's
-hourly REST quota resets. Phase 3 begins after the live runner pilot passes.
+Fleet migration exclusions: Chapa and Spoken Letter are in code freeze. Do not
+write to their GitHub repositories or migrate their workflows. This exclusion
+also covers their CLI, Alexa and uptime companion repositories. Also exclude
+`frivas/contribution-dashboard`, `behboud/opencode-rpi` and
+`juan294/home-network`. Read-only telemetry may retain baseline usage from
+owned excluded repositories for fleet context.
+
+Implementation status: phases 1 and 2 are implemented, independently reviewed
+and operationally accepted. On 2026-09-13 the installed launch agent completed
+with exit code 0 and wrote a validated 26-repository snapshot plus cumulative
+report. Phase 3 begins after the live runner pilot passes.
 
 ## Objective
 
@@ -33,13 +41,16 @@ conclusion, runner labels/name, rounded minutes, runner class and dated list
 price. Jobs that never started or have incomplete timestamps keep their stable
 identity without receiving invented minutes or cost. Each priced job retains
 the exact GitHub SKU, per-minute rate and source. A stable key lets reports
-deduplicate overlapping collection windows.
+deduplicate overlapping collection windows. Each snapshot also keeps the full
+active repository inventory so projects with zero Actions jobs remain visible,
+plus validated run evidence so conclusively empty runs are not fetched again.
 
 `cirujano telemetry report` reads snapshots, rejects malformed or conflicting
 duplicates and emits JSON or Markdown. It reports repository/workflow/job counts,
 success rate, hosted minutes and list cost, Cirujano job minutes, gross hosted
 cost avoided, other self-hosted usage, jobs not run, incomplete timing and
-unknown prices. Gross avoided cost is not called net savings until
+unknown prices. The Markdown and JSON outputs include the same usage and cost
+figures for each repository. Gross avoided cost is not called net savings until
 candidate-bound Nebius accounting is present.
 
 The local scheduled collector runs at login and daily, uses the existing `gh`
@@ -47,8 +58,8 @@ authentication without copying its token, serializes runs with an operating
 system file lock, and writes a cumulative latest report. The installer copies a
 tested CLI bundle outside the working tree and waits for a fresh snapshot,
 report and zero launchd exit. A 48-hour overlap tolerates a missed day;
-deduplication prevents double counting. Same-day retries reuse already persisted
-completed runs and fetch only new ones. Failures remain in a local error log and
+deduplication prevents double counting. Each collection reuses completed runs
+from the latest prior snapshot and fetches only new ones. Failures remain in a local error log and
 cannot replace the last valid snapshot. Data and log directories are owner-only,
 and successful logs contain aggregate counts rather than repository names.
 
@@ -66,8 +77,10 @@ and successful logs contain aggregate counts rather than repository names.
    artifacts or plist, one active installed job, successful first collection,
    readable latest report and fresh snapshot.
 3. **Fleet migration evidence.** After the runner pilot passes, enroll projects
-   through a declarative registry and retain the prior hosted runner class for
-   each migrated job. The initial standard-Linux contract uses the exact
+   through a declarative registry with explicit include, exclusion and cutover
+   records, and retain the prior hosted runner class for each migrated job.
+   The registry must keep every named fleet exclusion above disabled until the
+   owner changes it. The initial standard-Linux contract uses the exact
    `cirujano-baseline-actions_linux` runner label, while the current pilot uses
    the separately enrolled `cirujano-pilot-fixture` label. Other SKUs require
    their own dated enrollment. Acceptance: each enrollment has before/after exact workflow

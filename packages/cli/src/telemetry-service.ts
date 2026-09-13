@@ -22,10 +22,24 @@ import {
 
 const execFile = promisify(execFileCallback);
 
-export function createTelemetryCommandService(environment: NodeJS.ProcessEnv = process.env): TelemetryCommandService {
+type GitHubPageRunner = (
+  command: string,
+  args: string[],
+  options: { encoding: 'utf8'; maxBuffer: number; timeout: number },
+) => Promise<{ stdout: string }>;
+
+const defaultGitHubPageRunner: GitHubPageRunner = async (command, args, options) => {
+  const { stdout } = await execFile(command, args, options);
+  return { stdout: String(stdout) };
+};
+
+export function createTelemetryCommandService(
+  environment: NodeJS.ProcessEnv = process.env,
+  pageRunner: GitHubPageRunner = defaultGitHubPageRunner,
+): TelemetryCommandService {
   return {
     async run(args, io) {
-      if (args.action === 'collect') return collect(args, io, environment);
+      if (args.action === 'collect') return collect(args, io, environment, pageRunner);
       return report(args, io);
     },
   };
@@ -35,10 +49,11 @@ async function collect(
   args: Extract<TelemetryArguments, { action: 'collect' }>,
   io: CliIo,
   environment: NodeJS.ProcessEnv,
+  pageRunner: GitHubPageRunner,
 ): Promise<0> {
   const storePath = absoluteStore(args.storePath);
-  const source = githubSource(environment['CIRUJANO_GH_PATH'] ?? '/opt/homebrew/bin/gh');
-  const priorSnapshot = await readDailySnapshot(storePath, new Date().toISOString().slice(0, 10));
+  const source = githubSource(environment['CIRUJANO_GH_PATH'] ?? '/opt/homebrew/bin/gh', pageRunner);
+  const priorSnapshot = await readLatestSnapshot(storePath, new Date().toISOString().slice(0, 10));
   const snapshot = await collectTelemetry({
     owner: args.owner,
     lookbackHours: args.lookbackHours,
@@ -50,13 +65,18 @@ async function collect(
   return 0;
 }
 
-async function readDailySnapshot(directory: string, date: string): Promise<TelemetrySnapshot | undefined> {
+async function readLatestSnapshot(directory: string, date: string): Promise<TelemetrySnapshot | undefined> {
   try {
-    const value: unknown = JSON.parse(await readFile(join(directory, `${date}.json`), 'utf8'));
+    const name = (await readdir(directory))
+      .filter((entry) => /^\d{4}-\d{2}-\d{2}\.json$/u.test(entry) && entry <= `${date}.json`)
+      .sort()
+      .at(-1);
+    if (name === undefined) return undefined;
+    const value: unknown = JSON.parse(await readFile(join(directory, name), 'utf8'));
     return validateSnapshot(value);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
-    throw new Error(`existing daily snapshot is invalid: ${error instanceof Error ? error.message : String(error)}`);
+    throw new Error(`latest prior snapshot is invalid: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 
@@ -74,10 +94,10 @@ async function report(
   return 0;
 }
 
-function githubSource(ghPath: string): GitHubTelemetrySource {
+function githubSource(ghPath: string, pageRunner: GitHubPageRunner): GitHubTelemetrySource {
   return {
     async listRepositories(): Promise<TelemetryRepository[]> {
-      const pages = await githubPages(ghPath, '/user/repos?per_page=100&affiliation=owner');
+      const pages = await githubPages(ghPath, '/user/repos?per_page=100&affiliation=owner', pageRunner);
       return pages.flatMap((page) => array(page, 'repository page').map((entry) => {
         const value = record(entry, 'repository');
         const visibility = value['visibility'];
@@ -90,8 +110,8 @@ function githubSource(ghPath: string): GitHubTelemetrySource {
       }));
     },
     async listRuns(repository, windowStart): Promise<TelemetryRun[]> {
-      const pages = await githubPages(ghPath, `/repos/${repository}/actions/runs?per_page=100&status=completed&created=>=${windowStart}`);
-      return pages.flatMap((page) => array(record(page, 'runs page')['workflow_runs'], 'workflow_runs').map((entry) => {
+      const pages = await githubPages(ghPath, `/repos/${repository}/actions/runs?per_page=100&status=completed&created=>=${windowStart}`, pageRunner);
+      const runs = pages.flatMap((page) => array(record(page, 'runs page')['workflow_runs'], 'workflow_runs').map((entry) => {
         const value = record(entry, 'workflow run');
         return {
           id: positiveInteger(value['id'], 'run.id'),
@@ -102,9 +122,10 @@ function githubSource(ghPath: string): GitHubTelemetrySource {
           conclusion: nullableText(value['conclusion'], 'run.conclusion'),
         };
       }));
+      return deduplicateRuns(runs);
     },
     async listJobs(repository, runId, attempt): Promise<TelemetryJobInput[]> {
-      const pages = await githubPages(ghPath, `/repos/${repository}/actions/runs/${runId}/attempts/${attempt}/jobs?per_page=100`);
+      const pages = await githubPages(ghPath, `/repos/${repository}/actions/runs/${runId}/attempts/${attempt}/jobs?per_page=100`, pageRunner);
       return pages.flatMap((page) => array(record(page, 'jobs page')['jobs'], 'jobs').map((entry) => {
         const value = record(entry, 'job');
         return {
@@ -122,14 +143,40 @@ function githubSource(ghPath: string): GitHubTelemetrySource {
   };
 }
 
-async function githubPages(ghPath: string, endpoint: string): Promise<unknown[]> {
-  const { stdout } = await execFile(ghPath, ['api', '--paginate', '--slurp', endpoint], {
-    encoding: 'utf8',
-    maxBuffer: 64 * 1024 * 1024,
-    timeout: 120_000,
-  });
-  const parsed: unknown = JSON.parse(stdout);
-  return array(parsed, 'GitHub paginated response');
+function deduplicateRuns(runs: readonly TelemetryRun[]): TelemetryRun[] {
+  const byKey = new Map<string, TelemetryRun>();
+  for (const run of runs) {
+    const key = `${run.id}:${run.attempt}`;
+    const existing = byKey.get(key);
+    if (existing !== undefined && JSON.stringify(existing) !== JSON.stringify(run)) {
+      throw new Error(`conflicting duplicate GitHub run ${key}`);
+    }
+    byKey.set(key, run);
+  }
+  return [...byKey.values()];
+}
+
+async function githubPages(ghPath: string, endpoint: string, pageRunner: GitHubPageRunner): Promise<unknown[]> {
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    try {
+      const { stdout } = await pageRunner(ghPath, ['api', '--paginate', '--slurp', endpoint], {
+        encoding: 'utf8',
+        maxBuffer: 64 * 1024 * 1024,
+        timeout: 60_000,
+      });
+      const parsed: unknown = JSON.parse(stdout);
+      return array(parsed, 'GitHub paginated response');
+    } catch (error) {
+      if (attempt === 2 || !isTimeout(error)) throw error;
+    }
+  }
+  throw new Error('unreachable GitHub retry state');
+}
+
+function isTimeout(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false;
+  const value = error as { killed?: unknown; signal?: unknown };
+  return value.killed === true || value.signal === 'SIGTERM';
 }
 
 async function readSnapshots(directory: string): Promise<TelemetrySnapshot[]> {
@@ -156,20 +203,75 @@ function validateSnapshot(value: unknown): TelemetrySnapshot {
   timestamp(root['collectedAt'], 'collectedAt');
   timestamp(root['windowStart'], 'windowStart');
   if (Date.parse(root['windowStart'] as string) > Date.parse(root['collectedAt'] as string)) throw new Error('windowStart is after collectedAt');
-  nonnegativeInteger(root['repositoriesScanned'], 'repositoriesScanned');
-  nonnegativeInteger(root['runsScanned'], 'runsScanned');
+  const repositoriesScanned = nonnegativeInteger(root['repositoriesScanned'], 'repositoriesScanned');
+  const runsScanned = nonnegativeInteger(root['runsScanned'], 'runsScanned');
   if (JSON.stringify(root['rates']) !== JSON.stringify(TELEMETRY_RATES)) throw new Error('rates do not match the dated collector rate table');
+  const repositoryInventory = new Map<string, TelemetryRepository['visibility']>();
+  for (const [index, entry] of array(root['repositoryInventory'], 'repositoryInventory').entries()) {
+    const repository = record(entry, `repositoryInventory[${index}]`);
+    const fullName = text(repository['fullName'], `repositoryInventory[${index}].fullName`);
+    if (!fullName.startsWith(`${root['owner'] as string}/`)) throw new Error(`repositoryInventory[${index}] is outside snapshot owner`);
+    const visibility = repository['visibility'];
+    if (visibility !== 'private' && visibility !== 'public') throw new Error(`repositoryInventory[${index}].visibility is invalid`);
+    if (repositoryInventory.has(fullName)) throw new Error(`duplicate repository inventory entry ${fullName}`);
+    repositoryInventory.set(fullName, visibility);
+  }
+  if (repositoryInventory.size !== repositoriesScanned) throw new Error('repositoryInventory does not match repositoriesScanned');
+  const runs = new Map<string, TelemetrySnapshot['runs'][number]>();
+  for (const [index, entry] of array(root['runs'], 'runs').entries()) {
+    const run = record(entry, `runs[${index}]`);
+    const repository = text(run['repository'], `runs[${index}].repository`);
+    const id = positiveInteger(run['id'], `runs[${index}].id`);
+    const attempt = positiveInteger(run['attempt'], `runs[${index}].attempt`);
+    const key = text(run['key'], `runs[${index}].key`);
+    if (key !== `${repository}:${id}:${attempt}`) throw new Error(`runs[${index}].key is inconsistent`);
+    if (!repositoryInventory.has(repository)) throw new Error(`runs[${index}].repository is absent from inventory`);
+    const createdAt = timestamp(run['createdAt'], `runs[${index}].createdAt`);
+    if (Date.parse(createdAt) < Date.parse(root['windowStart'] as string)) throw new Error(`runs[${index}].createdAt precedes windowStart`);
+    if (Date.parse(createdAt) > Date.parse(root['collectedAt'] as string)) throw new Error(`runs[${index}].createdAt follows collectedAt`);
+    const value = {
+      key, repository, id, attempt,
+      workflowName: text(run['workflowName'], `runs[${index}].workflowName`),
+      event: text(run['event'], `runs[${index}].event`),
+      createdAt,
+      conclusion: nullableText(run['conclusion'], `runs[${index}].conclusion`),
+      jobsObserved: nonnegativeInteger(run['jobsObserved'], `runs[${index}].jobsObserved`),
+      reusable: boolean(run['reusable'], `runs[${index}].reusable`),
+    };
+    if (runs.has(key)) throw new Error(`duplicate run evidence ${key}`);
+    runs.set(key, value);
+  }
+  if (runs.size !== runsScanned) throw new Error('runs do not match runsScanned');
   const keys = new Set<string>();
+  const runJobs = new Map<string, TelemetrySnapshot['jobs']>();
   for (const [index, entry] of array(root['jobs'], 'jobs').entries()) {
     const job = validateJob(entry, `jobs[${index}]`);
     if (!job.repository.startsWith(`${root['owner'] as string}/`)) throw new Error(`jobs[${index}].repository is outside snapshot owner`);
+    if (!repositoryInventory.has(job.repository)) throw new Error(`jobs[${index}].repository is absent from inventory`);
     if (Date.parse(job.createdAt) < Date.parse(root['windowStart'] as string)) throw new Error(`jobs[${index}].createdAt precedes windowStart`);
     if (Date.parse(job.createdAt) > Date.parse(root['collectedAt'] as string)) throw new Error(`jobs[${index}].createdAt follows collectedAt`);
     if (job.startedAt !== null && Date.parse(job.startedAt) < Date.parse(job.createdAt)) throw new Error(`jobs[${index}].startedAt precedes createdAt`);
     if (job.completedAt !== null && Date.parse(job.completedAt) > Date.parse(root['collectedAt'] as string)) throw new Error(`jobs[${index}].completedAt follows collectedAt`);
     if (keys.has(job.key)) throw new Error(`duplicate job key ${job.key}`);
     keys.add(job.key);
+    const key = `${job.repository}:${job.runId}:${job.runAttempt}`;
+    const jobs = runJobs.get(key) ?? [];
+    jobs.push(job);
+    runJobs.set(key, jobs);
   }
+  for (const [key, run] of runs) {
+    const jobs = runJobs.get(key) ?? [];
+    if (jobs.length !== run.jobsObserved) throw new Error(`run job count is inconsistent for ${key}`);
+    if (jobs.some((job) => job.workflowName !== run.workflowName || job.event !== run.event
+      || job.createdAt !== run.createdAt)) {
+      throw new Error(`run metadata is inconsistent for ${key}`);
+    }
+    const conclusive = run.conclusion.length > 0
+      && jobs.every(({ measurementStatus }) => measurementStatus !== 'incomplete');
+    if (run.reusable !== conclusive) throw new Error(`reusable run state is inconsistent for ${key}`);
+    runJobs.delete(key);
+  }
+  if (runJobs.size !== 0) throw new Error(`job run ${runJobs.keys().next().value as string} is absent from run evidence`);
   return value as TelemetrySnapshot;
 }
 

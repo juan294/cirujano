@@ -5,7 +5,9 @@
 The collector keeps daily evidence for the 45-day measurement window that began
 on 2026-09-13. It discovers active repositories owned by the authenticated
 GitHub account, records completed workflow jobs, and produces a cumulative
-report. Raw data stays outside this public repository.
+report. The report includes every discovered active repository, including
+projects with no Actions jobs in the window, followed by per-project usage and
+cost figures. Raw data stays outside this public repository.
 
 The report counts actual GitHub-hosted list cost and the hosted cost that a job
 assigned to a Cirujano runner would otherwise have incurred. That second value
@@ -41,6 +43,15 @@ The wrapper accepts `CIRUJANO_TELEMETRY_OWNER`,
 `CIRUJANO_TELEMETRY_LOOKBACK_HOURS`. The defaults use the current `gh` account,
 the paths above, a start date of 2026-09-13, and a 48-hour overlap.
 
+## Fleet boundaries
+
+The collector is read-only and may retain baseline records for every discovered
+repository. Migration is a separate write operation. Chapa, Chapa CLI, Spoken
+Letter, Spoken Letter Alexa and their uptime repositories are excluded from
+migration and all GitHub writes while their code freezes remain active. The
+same exclusion applies to `frivas/contribution-dashboard`,
+`behboud/opencode-rpi` and `juan294/home-network` until the owner changes it.
+
 ## Verify freshness
 
 ```bash
@@ -52,8 +63,10 @@ find "$HOME/.local/share/cirujano/telemetry" -name '????-??-??.json' -mtime -2 -
 
 A healthy completed launch has `state = not running` and `last exit code = 0`.
 The latest report must be readable and a snapshot must be newer than two days.
-The 48-hour overlap recovers one missed daily run, and stable job identities
-prevent double counting.
+The 48-hour overlap recovers one missed daily run. Each collection reuses
+conclusive completed runs from the latest prior snapshot, including runs with
+zero jobs. Runs with incomplete job timing are fetched again, and stable job
+identities prevent double counting.
 
 ## Interpret the report
 

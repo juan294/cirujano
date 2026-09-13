@@ -10,6 +10,83 @@ import { collectTelemetry, type GitHubTelemetrySource, type TelemetrySnapshot } 
 const io = { stdout: () => undefined, stderr: () => undefined };
 
 describe('telemetry command service', () => {
+  it('retries one transient GitHub CLI timeout without accepting partial evidence', async () => {
+    const storePath = await mkdtemp(join(tmpdir(), 'cirujano-retry-telemetry-'));
+    let jobAttempts = 0;
+    const pageRunner = async (_command: string, args: readonly string[]) => {
+      const endpoint = args.at(-1)!;
+      if (endpoint.startsWith('/user/repos')) return { stdout: JSON.stringify([[
+        { full_name: 'juan294/app', visibility: 'private', archived: false },
+      ]]) };
+      if (endpoint.includes('/actions/runs?')) return { stdout: JSON.stringify([{
+        workflow_runs: [{ id: 1, run_attempt: 1, name: 'CI', event: 'push', created_at: '2026-09-13T10:00:00Z', conclusion: 'success' }],
+      }]) };
+      jobAttempts += 1;
+      if (jobAttempts === 1) throw Object.assign(new Error('timed out'), { killed: true, signal: 'SIGTERM' });
+      return { stdout: JSON.stringify([{ jobs: [{
+        id: 2, name: 'test', started_at: '2026-09-13T10:01:00Z', completed_at: '2026-09-13T10:02:00Z',
+        conclusion: 'success', labels: ['ubuntu-24.04'], runner_name: 'GitHub Actions 1', runner_group_name: 'GitHub Actions',
+      }] }]) };
+    };
+
+    await expect(createTelemetryCommandService({}, pageRunner).run(
+      { command: 'telemetry', action: 'collect', owner: 'juan294', storePath, lookbackHours: 48 }, io,
+    )).resolves.toBe(0);
+    expect(jobAttempts).toBe(2);
+  });
+
+  it('deduplicates an identical run repeated across changing GitHub pages', async () => {
+    const storePath = await mkdtemp(join(tmpdir(), 'cirujano-run-page-telemetry-'));
+    let jobAttempts = 0;
+    const run = { id: 1, run_attempt: 1, name: 'CI', event: 'push', created_at: '2026-09-13T10:00:00Z', conclusion: 'success' };
+    const pageRunner = async (_command: string, args: readonly string[]) => {
+      const endpoint = args.at(-1)!;
+      if (endpoint.startsWith('/user/repos')) return { stdout: JSON.stringify([[
+        { full_name: 'juan294/app', visibility: 'private', archived: false },
+      ]]) };
+      if (endpoint.includes('/actions/runs?')) return { stdout: JSON.stringify([
+        { workflow_runs: [run] }, { workflow_runs: [run] },
+      ]) };
+      jobAttempts += 1;
+      return { stdout: JSON.stringify([{ jobs: [{
+        id: 2, name: 'test', started_at: '2026-09-13T10:01:00Z', completed_at: '2026-09-13T10:02:00Z',
+        conclusion: 'success', labels: ['ubuntu-24.04'], runner_name: 'GitHub Actions 1', runner_group_name: 'GitHub Actions',
+      }] }]) };
+    };
+
+    await expect(createTelemetryCommandService({}, pageRunner).run(
+      { command: 'telemetry', action: 'collect', owner: 'juan294', storePath, lookbackHours: 48 }, io,
+    )).resolves.toBe(0);
+    await expect(createTelemetryCommandService().run(
+      { command: 'telemetry', action: 'report', storePath, since: '2026-09-13', format: 'json' }, io,
+    )).resolves.toBe(0);
+    expect(jobAttempts).toBe(1);
+  });
+
+  it('reuses the latest prior-day snapshot across the overlap window', async () => {
+    const storePath = await mkdtemp(join(tmpdir(), 'cirujano-prior-day-telemetry-'));
+    await writeFile(join(storePath, '2026-09-12.json'), JSON.stringify(
+      await validSnapshot('juan294', Date.parse('2026-09-12T12:00:00Z')),
+    ));
+    const pageRunner = async (_command: string, args: readonly string[]) => {
+      const endpoint = args.at(-1)!;
+      if (endpoint.startsWith('/user/repos')) return { stdout: JSON.stringify([[
+        { full_name: 'juan294/app', visibility: 'public', archived: false },
+      ]]) };
+      if (endpoint.includes('/actions/runs?')) return { stdout: JSON.stringify([{
+        workflow_runs: [{ id: 1, run_attempt: 1, name: 'CI', event: 'push', created_at: '2026-09-12T10:00:00.000Z', conclusion: 'success' }],
+      }]) };
+      throw new Error('prior-day run jobs must be reused');
+    };
+
+    await expect(createTelemetryCommandService({}, pageRunner).run(
+      { command: 'telemetry', action: 'collect', owner: 'juan294', storePath, lookbackHours: 48 }, io,
+    )).resolves.toBe(0);
+    await expect(createTelemetryCommandService().run(
+      { command: 'telemetry', action: 'report', storePath, since: '2026-09-12', format: 'json' }, io,
+    )).resolves.toBe(0);
+  });
+
   it('rejects a malformed persisted job instead of silently undercounting it', async () => {
     const storePath = await mkdtemp(join(tmpdir(), 'cirujano-bad-telemetry-'));
     await mkdir(storePath, { recursive: true });
@@ -31,6 +108,13 @@ describe('telemetry command service', () => {
     ['stable key', (snapshot: TelemetrySnapshot) => { snapshot.jobs[0]!.key = 'forged'; }],
     ['derived cost', (snapshot: TelemetrySnapshot) => { snapshot.jobs[0]!.actualGithubListCostUsd = 99; }],
     ['duration', (snapshot: TelemetrySnapshot) => { snapshot.jobs[0]!.durationMs = 1; }],
+    ['jobless run index', (snapshot: TelemetrySnapshot) => {
+      snapshot.runs.push({
+        ...snapshot.runs[0]!, key: 'juan294/missing:2:1', repository: 'juan294/missing', id: 2,
+        jobsObserved: 0, reusable: true,
+      });
+      snapshot.runsScanned += 1;
+    }],
   ])('rejects tampered %s evidence', async (_name, tamper) => {
     const storePath = await mkdtemp(join(tmpdir(), 'cirujano-tampered-telemetry-'));
     const snapshot = await validSnapshot('juan294', Date.parse('2026-09-13T12:00:00Z'));
@@ -58,6 +142,17 @@ describe('telemetry command service', () => {
     await expect(service.run(
       { command: 'telemetry', action: 'report', storePath, since: '2026-09-13', format: 'json' }, io,
     )).rejects.toThrow(/mixed owners/u);
+  });
+
+  it('accepts a run conclusion that differs from an individual job conclusion', async () => {
+    const storePath = await mkdtemp(join(tmpdir(), 'cirujano-run-conclusion-telemetry-'));
+    const snapshot = await validSnapshot('juan294', Date.parse('2026-09-13T12:00:00Z'));
+    snapshot.runs[0]!.conclusion = 'failure';
+    await writeFile(join(storePath, '2026-09-13.json'), JSON.stringify(snapshot));
+
+    await expect(createTelemetryCommandService().run(
+      { command: 'telemetry', action: 'report', storePath, since: '2026-09-13', format: 'json' }, io,
+    )).resolves.toBe(0);
   });
 });
 

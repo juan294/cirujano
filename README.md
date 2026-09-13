@@ -117,7 +117,8 @@ node packages/cli/dist/bin.js telemetry report \
 On macOS, `./scripts/install-telemetry-agent.sh` installs a launch agent that
 runs at login and every day at 06:10 local time. It uses the existing GitHub CLI
 login and stores raw snapshots and the cumulative `latest.md` report under
-`~/.local/share/cirujano/telemetry`. See
+`~/.local/share/cirujano/telemetry`. The report includes a per-repository usage
+and savings table, including active repositories with zero jobs. See
 [the fleet telemetry runbook](docs/runbooks/fleet-telemetry.md).
 
 ## Contributor setup

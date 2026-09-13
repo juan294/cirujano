@@ -51,6 +51,13 @@ export interface TelemetryJobInput {
   runnerGroupName: string;
 }
 
+export interface TelemetryRunEvidence extends TelemetryRun {
+  key: string;
+  repository: string;
+  jobsObserved: number;
+  reusable: boolean;
+}
+
 export interface GitHubTelemetrySource {
   listRepositories(): Promise<TelemetryRepository[]>;
   listRuns(repository: string, windowStart: string): Promise<TelemetryRun[]>;
@@ -91,9 +98,22 @@ export interface TelemetrySnapshot {
   collectedAt: string;
   windowStart: string;
   rates: typeof TELEMETRY_RATES;
+  repositoryInventory: Array<Pick<TelemetryRepository, 'fullName' | 'visibility'>>;
   repositoriesScanned: number;
   runsScanned: number;
+  runs: TelemetryRunEvidence[];
   jobs: TelemetryJob[];
+}
+
+export interface TelemetryRepositoryReport {
+  repository: string;
+  jobs: number;
+  githubHostedMinutes: number;
+  githubHostedListCostUsd: number;
+  cirujanoJobs: number;
+  cirujanoMinutes: number;
+  grossHostedCostAvoidedUsd: number;
+  unpricedJobs: number;
 }
 
 export interface TelemetryReport {
@@ -116,6 +136,7 @@ export interface TelemetryReport {
   grossHostedCostAvoidedUsd: number;
   otherSelfHostedJobs: number;
   unpricedJobs: number;
+  byRepository: TelemetryRepositoryReport[];
 }
 
 export async function collectTelemetry(input: {
@@ -131,32 +152,49 @@ export async function collectTelemetry(input: {
     throw new Error('lookbackHours must be an integer from 1 through 1080');
   }
   const nowMs = input.nowMs ?? Date.now();
-  const collectedAt = new Date(nowMs).toISOString();
   const windowStart = new Date(nowMs - input.lookbackHours * 3_600_000).toISOString();
   const repositories = (await input.source.listRepositories())
     .filter(({ fullName, archived }) => !archived && fullName.startsWith(`${input.owner}/`))
     .sort((left, right) => left.fullName.localeCompare(right.fullName));
   if (input.priorSnapshot !== undefined && input.priorSnapshot.owner !== input.owner) throw new Error('prior snapshot owner does not match');
   const priorRuns = groupJobsByRun(input.priorSnapshot?.jobs ?? []);
+  const priorRunEvidence = new Map((input.priorSnapshot?.runs ?? [])
+    .filter(({ reusable }) => reusable)
+    .map((run) => [run.key, run]));
   const results = await mapLimit(repositories, 4, async (repository) => {
     const runs = await input.source.listRuns(repository.fullName, windowStart);
     const jobs: TelemetryJob[] = [];
+    const evidence: TelemetryRunEvidence[] = [];
     for (const run of runs) {
-      if (run.conclusion.length === 0) continue;
-      const prior = priorRuns.get(runKey(repository.fullName, run.id, run.attempt));
-      if (prior !== undefined) {
-        jobs.push(...prior);
+      const key = runKey(repository.fullName, run.id, run.attempt);
+      if (run.conclusion.length === 0) {
+        evidence.push(runEvidence(repository.fullName, run, 0, false));
         continue;
       }
-      for (const job of await input.source.listJobs(repository.fullName, run.id, run.attempt)) {
-        jobs.push(normalizeTelemetryJob(repository, run, job));
+      const priorEvidence = priorRunEvidence.get(key);
+      if (priorEvidence !== undefined && sameRunEvidence(priorEvidence, repository.fullName, run)) {
+        const priorJobs = priorRuns.get(key) ?? [];
+        jobs.push(...priorJobs);
+        evidence.push(runEvidence(repository.fullName, run, priorJobs.length, true));
+        continue;
       }
+      const normalized = (await input.source.listJobs(repository.fullName, run.id, run.attempt))
+        .map((job) => normalizeTelemetryJob(repository, run, job));
+      jobs.push(...normalized);
+      evidence.push(runEvidence(
+        repository.fullName,
+        run,
+        normalized.length,
+        normalized.every(({ measurementStatus }) => measurementStatus !== 'incomplete'),
+      ));
     }
     input.onRepository?.(repository.fullName);
-    return { jobs, runs: runs.length };
+    return { jobs, evidence };
   });
   const jobs = results.flatMap(({ jobs: repositoryJobs }) => repositoryJobs);
-  const runsScanned = results.reduce((total, result) => total + result.runs, 0);
+  const runs = results.flatMap(({ evidence }) => evidence).sort((left, right) => left.key.localeCompare(right.key));
+  const runsScanned = runs.length;
+  const collectedAt = new Date(input.nowMs ?? Date.now()).toISOString();
   jobs.sort((left, right) => left.key.localeCompare(right.key));
   return {
     schemaVersion: 1,
@@ -164,10 +202,26 @@ export async function collectTelemetry(input: {
     collectedAt,
     windowStart,
     rates: TELEMETRY_RATES,
+    repositoryInventory: repositories.map(({ fullName, visibility }) => ({ fullName, visibility })),
     repositoriesScanned: repositories.length,
     runsScanned,
+    runs,
     jobs,
   };
+}
+
+function runEvidence(repository: string, run: TelemetryRun, jobsObserved: number, reusable: boolean): TelemetryRunEvidence {
+  return { key: runKey(repository, run.id, run.attempt), repository, ...run, jobsObserved, reusable };
+}
+
+function sameRunEvidence(evidence: TelemetryRunEvidence, repository: string, run: TelemetryRun): boolean {
+  return evidence.repository === repository
+    && evidence.id === run.id
+    && evidence.attempt === run.attempt
+    && evidence.workflowName === run.workflowName
+    && evidence.event === run.event
+    && evidence.createdAt === run.createdAt
+    && evidence.conclusion === run.conclusion;
 }
 
 function groupJobsByRun(jobs: readonly TelemetryJob[]): ReadonlyMap<string, TelemetryJob[]> {
@@ -212,9 +266,11 @@ export async function writeTelemetrySnapshot(directory: string, snapshot: Teleme
 export function aggregateTelemetry(snapshots: readonly TelemetrySnapshot[], sinceMs: number): TelemetryReport {
   if (!Number.isFinite(sinceMs) || sinceMs < 0) throw new Error('since must be a non-negative timestamp');
   const byKey = new Map<string, TelemetryJob>();
+  let latestSnapshot: TelemetrySnapshot | undefined;
   let throughMs = sinceMs;
   for (const snapshot of snapshots) {
     throughMs = Math.max(throughMs, Date.parse(snapshot.collectedAt));
+    if (latestSnapshot === undefined || Date.parse(snapshot.collectedAt) > Date.parse(latestSnapshot.collectedAt)) latestSnapshot = snapshot;
     for (const job of snapshot.jobs) {
       if (Date.parse(job.completedAt ?? job.startedAt ?? job.createdAt) < sinceMs) continue;
       const existing = byKey.get(job.key);
@@ -230,11 +286,28 @@ export function aggregateTelemetry(snapshots: readonly TelemetrySnapshot[], sinc
   const executed = jobs.filter(({ measurementStatus }) => measurementStatus !== 'not-run');
   const successfulJobs = executed.filter(({ conclusion }) => conclusion === 'success').length;
   const failedJobs = executed.filter(({ conclusion }) => conclusion === 'failure').length;
+  const repositoryNames = new Set(latestSnapshot?.repositoryInventory.map(({ fullName }) => fullName) ?? []);
+  for (const job of jobs) repositoryNames.add(job.repository);
+  const byRepository = [...repositoryNames].sort().map((repository) => {
+    const repositoryJobs = jobs.filter((job) => job.repository === repository);
+    const repositoryHosted = repositoryJobs.filter(({ runnerKind }) => runnerKind === 'github-hosted');
+    const repositoryCirujano = repositoryJobs.filter(({ runnerKind }) => runnerKind === 'cirujano');
+    return {
+      repository,
+      jobs: repositoryJobs.length,
+      githubHostedMinutes: sumKnown(repositoryHosted, 'billableMinutes'),
+      githubHostedListCostUsd: money(sumKnown(repositoryHosted, 'actualGithubListCostUsd')),
+      cirujanoJobs: repositoryCirujano.length,
+      cirujanoMinutes: sumKnown(repositoryCirujano, 'billableMinutes'),
+      grossHostedCostAvoidedUsd: money(sumKnown(repositoryCirujano, 'counterfactualHostedCostUsd')),
+      unpricedJobs: repositoryJobs.filter(({ actualGithubListCostUsd, counterfactualHostedCostUsd }) => actualGithubListCostUsd === null || counterfactualHostedCostUsd === null).length,
+    };
+  });
   return {
     schemaVersion: 1,
     since: new Date(sinceMs).toISOString(),
     through: new Date(throughMs).toISOString(),
-    repositories: new Set(jobs.map(({ repository }) => repository)).size,
+    repositories: repositoryNames.size,
     workflows: new Set(jobs.map(({ repository, workflowName }) => `${repository}\0${workflowName}`)).size,
     jobs: jobs.length,
     successfulJobs,
@@ -250,6 +323,7 @@ export function aggregateTelemetry(snapshots: readonly TelemetrySnapshot[], sinc
     cancelledJobs: jobs.filter(({ conclusion }) => conclusion === 'cancelled').length,
     notRunJobs: jobs.filter(({ measurementStatus }) => measurementStatus === 'not-run').length,
     incompleteJobs: jobs.filter(({ measurementStatus }) => measurementStatus === 'incomplete').length,
+    byRepository,
   };
 }
 
@@ -279,6 +353,13 @@ export function renderTelemetryMarkdown(report: TelemetryReport): string {
     `| Other self-hosted jobs | ${report.otherSelfHostedJobs} |`,
     `| Jobs with unknown price | ${report.unpricedJobs} |`,
     '',
+    '## By repository',
+    '',
+    '| Repository | Jobs | Hosted minutes | Hosted list cost | Cirujano jobs | Cirujano minutes | Gross cost avoided | Unknown price |',
+    '| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |',
+    ...report.byRepository.map((repository) =>
+      `| \`${repository.repository}\` | ${repository.jobs} | ${repository.githubHostedMinutes} | $${repository.githubHostedListCostUsd.toFixed(2)} | ${repository.cirujanoJobs} | ${repository.cirujanoMinutes} | $${repository.grossHostedCostAvoidedUsd.toFixed(2)} | ${repository.unpricedJobs} |`),
+    '',
     'Gross avoided cost excludes Nebius cost. Net savings require provider accounting.',
     '',
   ].join('\n');
@@ -287,13 +368,15 @@ export function renderTelemetryMarkdown(report: TelemetryReport): string {
 export function normalizeTelemetryJob(repository: TelemetryRepository, run: TelemetryRun, job: TelemetryJobInput): TelemetryJob {
   const hasStart = job.startedAt !== null;
   const hasEnd = job.completedAt !== null;
-  const measurementStatus: MeasurementStatus = hasStart && hasEnd ? 'measured' : !hasStart && !hasEnd ? 'not-run' : 'incomplete';
+  const startMs = hasStart ? Date.parse(job.startedAt!) : Number.NaN;
+  const endMs = hasEnd ? Date.parse(job.completedAt!) : Number.NaN;
+  const hasValidTiming = hasStart && hasEnd && Number.isFinite(startMs) && Number.isFinite(endMs) && endMs >= startMs;
+  const measurementStatus: MeasurementStatus = hasValidTiming ? 'measured' : !hasStart && !hasEnd ? 'not-run' : 'incomplete';
   const minutes = measurementStatus === 'measured'
     ? billableMinutesForJob({ name: job.name, startedAt: job.startedAt, completedAt: job.completedAt })
     : measurementStatus === 'not-run' ? 0 : null;
-  if (measurementStatus === 'measured' && minutes === null) throw new Error(`job ${job.id} has inconsistent timestamps`);
   const durationMs = measurementStatus === 'measured'
-    ? Date.parse(job.completedAt!) - Date.parse(job.startedAt!)
+    ? endMs - startMs
     : measurementStatus === 'not-run' ? 0 : null;
   const runnerKind = classifyRunner(job);
   const sku = hostedSku(job.labels, runnerKind);
