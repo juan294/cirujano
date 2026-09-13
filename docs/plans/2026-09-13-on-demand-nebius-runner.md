@@ -248,8 +248,11 @@ before re-registration or deletion; cleanup failures are visible failures.
 Report actual observed compute duration separately from job-rounded hosted
 minutes. Require explicit dated hosted, compute, disk and network rates, with
 source and currency. An uncertain interval uses a conservative upper bound or
-unknown value, never zero. Include stopped-disk retention. Do not silently reuse
-the core's $0.008 default. A pilot comparison uses the same fixture commit,
+unknown value, never zero. Include stopped-disk retention. Bind comparisons to
+the dated GitHub rate rather than silently reusing a default. The standard Linux
+rate was $0.006 per minute when refreshed on 2026-09-13.
+[GitHub Actions runner pricing](https://docs.github.com/en/billing/reference/actions-runner-pricing)
+A pilot comparison uses the same fixture commit,
 commands, workload and result assertions on hosted and self-hosted runners;
 queue/boot/idle costs are included. Label estimated costs and sample limits;
 never extrapolate single-slot results to four-slot monthly savings.

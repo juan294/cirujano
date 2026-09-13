@@ -4,7 +4,7 @@ import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
-import { runCli, type CliIo, type RunnerCommandService } from './cli.js';
+import { runCli, type CliIo, type RunnerCommandService, type TelemetryCommandService } from './cli.js';
 
 function captureIo(): CliIo & { out: string[]; err: string[] } {
   const out: string[] = [];
@@ -102,6 +102,24 @@ describe('runCli', () => {
     const io = captureIo();
     expect(await runCli(['runner', 'report', '--state', statePath, '--format', 'json'], io)).toBe(1);
     expect(JSON.parse(io.out.join(''))).toMatchObject({ complete: false, schemaVersion: 1 });
+  });
+
+  it('dispatches telemetry commands through the injected service', async () => {
+    const received: unknown[] = [];
+    const telemetry: TelemetryCommandService = {
+      run: async (args, io) => { received.push(args); io.stdout('collected\n'); return 0; },
+    };
+    const io = captureIo();
+    expect(await runCli(
+      ['telemetry', 'collect', '--owner', 'juan294', '--store', '/tmp/data'],
+      io,
+      { run: async () => 1 },
+      telemetry,
+    )).toBe(0);
+    expect(received).toEqual([{
+      command: 'telemetry', action: 'collect', owner: 'juan294', storePath: '/tmp/data', lookbackHours: 48,
+    }]);
+    expect(io.out.join('')).toBe('collected\n');
   });
 });
 

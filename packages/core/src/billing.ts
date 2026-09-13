@@ -10,8 +10,8 @@
 
 const MS_PER_MINUTE = 60_000;
 
-/** List price for a 2-core Linux hosted runner in a private repository. */
-export const GITHUB_HOSTED_LINUX_USD_PER_MINUTE = 0.008;
+/** GitHub list price for a standard 2-core Linux runner, verified 2026-09-13. */
+export const GITHUB_HOSTED_LINUX_USD_PER_MINUTE = 0.006;
 
 export interface JobTiming {
   name: string;

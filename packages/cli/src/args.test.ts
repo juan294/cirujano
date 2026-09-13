@@ -46,6 +46,15 @@ describe('parseArguments', () => {
     });
   });
 
+  it('parses telemetry collection and reporting contracts', () => {
+    expect(parseArguments(['telemetry', 'collect', '--owner', 'juan294', '--store', '/tmp/data'])).toEqual({
+      command: 'telemetry', action: 'collect', owner: 'juan294', storePath: '/tmp/data', lookbackHours: 48,
+    });
+    expect(parseArguments(['telemetry', 'report', '--store', '/tmp/data', '--since', '2026-09-13', '--format', 'markdown'])).toEqual({
+      command: 'telemetry', action: 'report', storePath: '/tmp/data', since: '2026-09-13', format: 'markdown',
+    });
+  });
+
   it.each([
     [['runner'], /requires a subcommand/],
     [['runner', 'start'], /Unknown runner command/],
@@ -57,6 +66,12 @@ describe('parseArguments', () => {
     [['runner', 'report', '--state', 's'], /requires --format json/],
     [['runner', 'report', '--state', 's', '--format', 'text'], /only supports --format json/],
     [['runner', 'watch', '--config', 'x', '--wat'], /Unknown option/],
+    [['telemetry'], /requires a subcommand/],
+    [['telemetry', 'collect', '--owner', 'juan294'], /requires --store/],
+    [['telemetry', 'collect', '--store', '/tmp/data'], /requires --owner/],
+    [['telemetry', 'collect', '--owner', 'juan294', '--store', '/tmp/data', '--lookback-hours', '0'], /from 1 through 1080/],
+    [['telemetry', 'report', '--store', '/tmp/data', '--since', 'yesterday'], /YYYY-MM-DD/],
+    [['telemetry', 'report', '--store', '/tmp/data', '--since', '2026-99-99'], /YYYY-MM-DD/],
   ])('rejects invalid runner invocation %j', (argv, message) => {
     expect(() => parseArguments(argv)).toThrow(message);
   });

@@ -97,6 +97,29 @@ gh api repos/OWNER/REPO/actions/runs/RUN_ID/jobs > jobs.json
 node packages/cli/dist/bin.js estimate --jobs jobs.json
 ```
 
+## Fleet telemetry
+
+Collect a private local snapshot of completed GitHub Actions jobs across every
+active repository owned by the authenticated account:
+
+```bash
+pnpm --dir packages/cli build
+node packages/cli/dist/bin.js telemetry collect \
+  --owner OWNER \
+  --store "$HOME/.local/share/cirujano/telemetry" \
+  --lookback-hours 48
+node packages/cli/dist/bin.js telemetry report \
+  --store "$HOME/.local/share/cirujano/telemetry" \
+  --since 2026-09-13 \
+  --format markdown
+```
+
+On macOS, `./scripts/install-telemetry-agent.sh` installs a launch agent that
+runs at login and every day at 06:10 local time. It uses the existing GitHub CLI
+login and stores raw snapshots and the cumulative `latest.md` report under
+`~/.local/share/cirujano/telemetry`. See
+[the fleet telemetry runbook](docs/runbooks/fleet-telemetry.md).
+
 ## Contributor setup
 
 Requires Node 22 or newer and pnpm 11.

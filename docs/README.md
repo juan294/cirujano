@@ -6,4 +6,7 @@
 - [Decisions](decisions/): architecture decision records. First:
   [0001 Separate project from Sutura](decisions/0001-separate-project-from-sutura.md).
 - [Release](release/): the [E2E Pro release playbook](release/e2e-pro-playbook.md), Wave A adopted.
+- [Runbooks](runbooks/): operations for the
+  [Nebius runner](runbooks/nebius-runner.md) and
+  [fleet telemetry](runbooks/fleet-telemetry.md).
 - `agents/`: operational agent reports, gitignored on this public repository (Rule #70).

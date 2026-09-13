@@ -8,6 +8,8 @@ export const USAGE = [
   '  cirujano runner stop --config <runner.json> --permit <permit.json>',
   '  cirujano runner cleanup --config <runner.json> --permit <permit.json>',
   '  cirujano runner report --state <state.json> --format json',
+  '  cirujano telemetry collect --owner <login> --store <directory> [--lookback-hours 48]',
+  '  cirujano telemetry report --store <directory> --since <YYYY-MM-DD> [--format json|markdown]',
   '  cirujano --help',
   '  cirujano --version',
   '',
@@ -60,8 +62,26 @@ export interface RunnerReportArguments {
   format: 'json';
 }
 
+export interface TelemetryCollectArguments {
+  command: 'telemetry';
+  action: 'collect';
+  owner: string;
+  storePath: string;
+  lookbackHours: number;
+}
+
+export interface TelemetryReportArguments {
+  command: 'telemetry';
+  action: 'report';
+  storePath: string;
+  since: string;
+  format: 'json' | 'markdown';
+}
+
+export type TelemetryArguments = TelemetryCollectArguments | TelemetryReportArguments;
+
 export type RunnerArguments = RunnerInspectArguments | RunnerWatchArguments | RunnerMutationArguments | RunnerReportArguments;
-export type ParsedArguments = EstimateArguments | HelpArguments | VersionArguments | RunnerArguments;
+export type ParsedArguments = EstimateArguments | HelpArguments | VersionArguments | RunnerArguments | TelemetryArguments;
 
 export class ArgumentError extends Error {
   override readonly name = 'ArgumentError';
@@ -76,6 +96,7 @@ export function parseArguments(argv: readonly string[]): ParsedArguments {
     return { command: 'version' };
   }
   if (first === 'runner') return parseRunnerArguments(rest);
+  if (first === 'telemetry') return parseTelemetryArguments(rest);
   if (first !== 'estimate') {
     throw new ArgumentError(`Unknown command "${first}".`);
   }
@@ -108,6 +129,50 @@ export function parseArguments(argv: readonly string[]): ParsedArguments {
     throw new ArgumentError('estimate requires --jobs <file>.');
   }
   return { command: 'estimate', jobsPath, format };
+}
+
+function parseTelemetryArguments(argv: readonly string[]): TelemetryArguments {
+  const [action, ...rest] = argv;
+  if (action === undefined) throw new ArgumentError('telemetry requires a subcommand.');
+  if (action !== 'collect' && action !== 'report') throw new ArgumentError(`Unknown telemetry command "${action}".`);
+  let owner: string | undefined;
+  let storePath: string | undefined;
+  let since: string | undefined;
+  let format: 'json' | 'markdown' = action === 'report' ? 'markdown' : 'json';
+  let lookbackHours = 48;
+  for (let index = 0; index < rest.length; index += 1) {
+    const flag = rest[index];
+    const value = rest[index + 1];
+    if (value === undefined || value.startsWith('--')) throw new ArgumentError(`${flag ?? 'option'} requires a value.`);
+    index += 1;
+    if (flag === '--owner') owner = value;
+    else if (flag === '--store') storePath = value;
+    else if (flag === '--since') since = value;
+    else if (flag === '--lookback-hours') {
+      lookbackHours = Number(value);
+      if (!Number.isInteger(lookbackHours) || lookbackHours < 1 || lookbackHours > 1080) {
+        throw new ArgumentError('--lookback-hours must be an integer from 1 through 1080.');
+      }
+    } else if (flag === '--format' && (value === 'json' || value === 'markdown')) format = value;
+    else throw new ArgumentError(`Unknown option "${flag ?? ''}" for telemetry ${action}.`);
+  }
+  if (storePath === undefined) throw new ArgumentError(`telemetry ${action} requires --store <directory>.`);
+  if (action === 'collect') {
+    if (owner === undefined) throw new ArgumentError('telemetry collect requires --owner <login>.');
+    if (since !== undefined || format !== 'json') throw new ArgumentError('telemetry collect received a report-only option.');
+    return { command: 'telemetry', action, owner, storePath, lookbackHours };
+  }
+  if (owner !== undefined || lookbackHours !== 48) throw new ArgumentError('telemetry report received a collect-only option.');
+  if (since === undefined || !validIsoDate(since)) {
+    throw new ArgumentError('telemetry report requires --since YYYY-MM-DD.');
+  }
+  return { command: 'telemetry', action, storePath, since, format };
+}
+
+function validIsoDate(value: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/u.test(value)) return false;
+  const timestamp = Date.parse(`${value}T00:00:00Z`);
+  return Number.isFinite(timestamp) && new Date(timestamp).toISOString().slice(0, 10) === value;
 }
 
 function parseRunnerArguments(argv: readonly string[]): RunnerArguments {

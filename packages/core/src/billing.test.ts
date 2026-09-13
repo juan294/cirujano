@@ -84,7 +84,7 @@ describe('rankWorkflowUsage', () => {
 
 describe('estimateCostUsd', () => {
   it('prices minutes at the hosted Linux list price by default and rounds to cents', () => {
-    expect(estimateCostUsd(40_064)).toBe(320.51);
+    expect(estimateCostUsd(40_064)).toBe(240.38);
     expect(estimateCostUsd(1000, 0.006)).toBe(6);
   });
 
