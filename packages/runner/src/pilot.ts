@@ -52,7 +52,7 @@ export interface PilotJob {
 
 export interface PilotAssertions {
   node22: boolean;
-  pnpm11220: boolean;
+  pnpmPinned: boolean;
   deterministicTests: boolean;
   dockerFixedPort: boolean;
   sentinelAbsent: boolean;
@@ -302,8 +302,6 @@ export function renderPilotWorkflow(manifest: PilotManifest): string {
     '          persist-credentials: false',
     '      - name: Install pnpm',
     '        uses: pnpm/action-setup@f520eceda224fe1a4aed5a2a27a194379a409996 # v6',
-    '        with:',
-    '          version: 11.22.0',
     '      - name: Install Node',
     '        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7',
     '        with:',
@@ -342,7 +340,7 @@ export function analyzePilotResults(
     if (result.conclusion !== 'success') reasons.push(`dispatch ${dispatch.id} concluded ${result.conclusion}`);
     const failures: Array<[keyof PilotAssertions, string]> = [
       ['node22', 'Node 22'],
-      ['pnpm11220', 'pnpm 11.22.0'],
+      ['pnpmPinned', 'the fixture-pinned pnpm version'],
       ['deterministicTests', 'deterministic tests'],
       ['dockerFixedPort', 'fixed-port Docker service'],
       ['sentinelAbsent', 'sentinel absence'],

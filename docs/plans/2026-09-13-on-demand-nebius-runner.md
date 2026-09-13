@@ -82,7 +82,8 @@ adapters there behind explicit interfaces; the CLI imports its public entry.
 Do not put infrastructure orchestration into the measurement core or Action.
 
 Controller support: Node 22 on macOS; guest: Ubuntu 24.04 x86_64, Docker,
-Node 22 and pnpm 11.22.0. Pilot preset: regular `cpu-d3`, `4vcpu-16gb`, one
+Node 22 and pnpm 11.22.0 as the guest baseline; each job installs and verifies
+the fixture commit's exact pinned pnpm version. Pilot preset: regular `cpu-d3`, `4vcpu-16gb`, one
 80 GiB network SSD; no GPU, spot capacity, resizing or fallback preset.
 Phase 4 resolves the actual image ID, network and pricing via read-only queries
 before producing an approval receipt. Unavailable capacity blocks the pilot.

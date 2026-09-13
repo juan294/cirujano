@@ -37,3 +37,20 @@
 - Why: the live contract contradicted the prepared fixtures. No start,
   registration or workload execution was safe until the parser boundary was
   corrected. The plan requires a new authorization before another live attempt.
+
+### Second live fixture failure
+
+- Plan said: run the same deterministic workload twice on hosted Linux and
+  twice on the Nebius runner at one exact fixture commit.
+- Found: the first hosted dispatch failed in `pnpm/action-setup` before the
+  workload because the workflow requested pnpm 11.22.0 while the fixture
+  commit pinned pnpm 10.29.2 in `packageManager`.
+- Chose: stop the remaining three dispatches, keep Nebius empty, remove the
+  workflow's duplicate pnpm version and verify the installed pnpm against the
+  exact fixture commit's `packageManager`. Add a fixture-repository regression
+  test for this contract.
+- Why: the fixed fixture commit is the source of truth for its package manager.
+  A second version in the workflow can drift and fails before any pilot
+  assertion. The failed dispatch consumes the approved four-dispatch attempt;
+  publishing the repaired fixture and starting another attempt need fresh
+  authorization.

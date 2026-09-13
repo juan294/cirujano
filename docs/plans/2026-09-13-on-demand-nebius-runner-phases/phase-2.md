@@ -25,7 +25,8 @@ rendered JSON. Never log raw provider requests that contain guest host keys.
 
 Guest bootstrap: install watchdog before runner readiness, use recovery policy
 FAIL, pin runner archive/version/checksum, use one runner account and one slot,
-install Node 22/pnpm 11.22.0/Docker and workload prerequisites. No embedded
+install Node 22/pnpm 11.22.0/Docker and workload prerequisites. The workflow
+then installs and verifies the exact fixture-pinned pnpm version. No embedded
 registration token or long-lived cloud/GitHub credential. Registration helper
 receives private stdin, creates one ephemeral runner, deletes temporary secrets,
 then exposes local process/worker status. Add a bounded job-start hook that fails

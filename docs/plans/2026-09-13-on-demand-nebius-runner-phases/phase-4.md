@@ -123,3 +123,17 @@ queued-job sentinel fields, string-encoded disk size, CIDR-suffixed addresses an
 valid block-aligned OpenSSH host keys. The complete local verification policy
 passes with 307 tests. Per the R14 contract, another live attempt requires a new
 candidate-bound authorization.
+
+## Second live attempt result
+
+The fresh receipt was bound to the repaired controller and four new fixture
+dispatches. The first hosted dispatch failed before the workload because
+`pnpm/action-setup` received pnpm 11.22.0 from the workflow while the exact
+fixture commit declared pnpm 10.29.2 in `packageManager`. The remaining three
+dispatches were not issued. No Nebius VM, disk, IP or runner was created.
+
+The fixture now lets `pnpm/action-setup` resolve the exact version from the
+checked-out commit and asserts that the installed version equals that commit's
+`packageManager`. A fixture-repository regression test prevents a second version
+from being added to the action configuration. The repaired fixture is integrated
+locally but requires a new authorized publication before another live attempt.

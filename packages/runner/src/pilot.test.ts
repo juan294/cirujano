@@ -32,7 +32,7 @@ function passingResults(): PilotResult[] {
     candidateDigest: candidate,
     workflowFile: manifest.workflowFile,
     conclusion: 'success',
-    assertions: { node22: true, pnpm11220: true, deterministicTests: true, dockerFixedPort: true, sentinelAbsent: true },
+    assertions: { node22: true, pnpmPinned: true, deterministicTests: true, dockerFixedPort: true, sentinelAbsent: true },
     runnerRegistrationId: dispatch.target === 'self-hosted' ? 700 + index : 100 + index,
     workspaceIdentity: `${dispatch.target}-workspace-${dispatch.sequence}`,
   }));
@@ -72,7 +72,8 @@ describe('pilot workload preparation', () => {
     expect(workflow).toContain('pnpm/action-setup@f520eceda224fe1a4aed5a2a27a194379a409996 # v6');
     expect(workflow).toContain('actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7');
     expect(workflow).toContain('node-version: 22');
-    expect(workflow).toContain('version: 11.22.0');
+    expect(workflow).not.toContain('          version:');
+    expect(workflow).toContain('test "pnpm@$(pnpm --version)" = "$(node -p "require(\'./package.json\').packageManager")"');
     expect(workflow.match(/^  workload:$/gmu)).toHaveLength(1);
     expect(workflow).toContain('fromJSON(inputs.target');
     expect(workflow).toContain("inputs.sequence == '1'");

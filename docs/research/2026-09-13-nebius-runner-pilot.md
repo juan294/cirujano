@@ -1,7 +1,7 @@
 # Nebius runner pilot evidence
 
 Date: 2026-09-13
-Status: first live attempt failed at provider contract; cleanup verified
+Status: second live attempt failed at fixture setup; Nebius remained empty
 
 ## Candidate and local evidence
 
@@ -75,3 +75,12 @@ contract failed, cleanup passed, and the seven scenarios between them plus the
 final comparison were not run. The cleaned provider state and cancelled job make
 another attempt safe, but the plan requires a fresh candidate-bound authorization
 before any new dispatch or resource creation.
+
+The next authorized attempt reached hosted fixture setup. Its first dispatch
+failed because the workflow duplicated a pnpm version that disagreed with the
+exact fixture commit's `packageManager`. No Nebius resources were created and
+the other three dispatches were not issued. The local repair removes the
+duplicate action input, checks the installed pnpm against the fixture commit,
+and adds a repository regression test. The repaired fixture must be published
+at a new exact commit and receive another candidate-bound authorization before
+R14 can resume.
