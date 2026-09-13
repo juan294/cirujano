@@ -22,11 +22,11 @@ and every number it claims comes from a real run.
 
 ## Status
 
-Day 0. The repository was bootstrapped on 2026-09-08 with the measurement
-core, a CLI that estimates the billable minutes of one run, and an Action that
-reports them. The audit, patch proposal, verification, and Nebius runner
-stages are not implemented yet. The measured starting point that motivates
-the project is in
+The measurement core, single-run estimator, reporting Action, on-demand Nebius
+runner controller, and daily fleet telemetry are implemented. The runner is
+awaiting its candidate-bound live pilot before fleet enrollment. Workflow patch
+proposal and verification remain future work. The measured starting point that
+motivates the project is in
 [docs/research/2026-09-08-github-actions-cost-baseline.md](docs/research/2026-09-08-github-actions-cost-baseline.md).
 
 ## How it works

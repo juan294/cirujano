@@ -4,6 +4,10 @@ Date: 2026-09-13
 Status: approved for implementation by the owner
 Measurement window: 2026-09-13 through 2026-10-28
 
+Implementation status: phases 1 and 2 are implemented and independently
+reviewed. Phase 2 operational acceptance awaits a fresh launch after GitHub's
+hourly REST quota resets. Phase 3 begins after the live runner pilot passes.
+
 ## Objective
 
 Collect durable daily GitHub Actions evidence across every active repository
