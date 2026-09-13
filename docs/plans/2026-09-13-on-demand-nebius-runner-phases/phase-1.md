@@ -1,7 +1,7 @@
 # Phase 1: contracts and lifecycle
 
 Parent: [runner plan](../2026-09-13-on-demand-nebius-runner.md).
-Status: planned, not implemented.
+Status: complete and independently approved on 2026-09-13.
 Entry: owner accepts parent scope and authorizes Phase 1; revalidate base and instructions.
 
 ## Deliverables
@@ -54,3 +54,24 @@ threshold. No live provider or manual test is needed for this pure contract phas
 
 Exit: R01–R05 pass, existing behavior unchanged, local integration verified,
 check evidence and candidate SHA added here. Stop for Phase 1 acceptance.
+
+## Implementation handoff
+
+Implemented on `feat/on-demand-nebius-runner` in
+`/Users/juan/code/cirujano-runner`, based on plan commit `5c8089c`. The owner
+authorized all phases without intermediate stops. The implementation added the
+internal runner package, strict pilot configuration, runtime permit parsing,
+explicit-rate cost accounting, and replay-safe lifecycle decisions.
+
+TDD evidence: the initial RED run failed three suites because production modules
+did not exist. Review repairs produced RED runs with 3, then 15, then 5 expected
+safety failures. The final GREEN candidate passed 74 tests in three files plus
+runner typecheck, lint, and build. Independent review approved the candidate
+after verifying absent-VM creation, permit envelopes, generation-bound idle
+evidence, strict recovery activation, stale queue rejection, exact pilot shape,
+and conservative create adoption. Findings H1–H4, M5–M6 and the final adoption
+blocker are resolved. No live provider operation occurred in this phase.
+
+The accepted candidate will be fixed by the phase commit recorded in Git history.
+Phase 2 must reuse the separate `cpu-d3` platform and `4vcpu-16gb` preset fields,
+and must not weaken the complete-snapshot or guest-readiness invariants.

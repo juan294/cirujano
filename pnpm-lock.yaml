@@ -57,6 +57,8 @@ importers:
 
   packages/core: {}
 
+  packages/runner: {}
+
 packages:
 
   '@actions/core@3.0.1':
