@@ -95,6 +95,26 @@ describe('GitHub response parsers (R06)', () => {
     ]);
   });
 
+  it('normalizes GitHub queued-job zero and empty runner fields to null', () => {
+    const jobs = collectJobPages([{
+      runId: 1001,
+      runAttempt: 2,
+      page: 1,
+      response: {
+        status: 200,
+        headers: {},
+        body: {
+          total_count: 1,
+          jobs: [job({ runner_id: 0, runner_name: '', runner_group_id: 0, runner_group_name: '' })],
+        },
+      },
+    }]);
+    expect(jobs).toMatchObject({
+      complete: true,
+      items: [{ runnerId: null, runnerName: null, runnerGroupId: null, runnerGroupName: null }],
+    });
+  });
+
   it.each([
     ['truncated run pages', [{ page: 1, response: { status: 200, headers: { link: '<https://api.github.test/runs?page=2>; rel="next"' }, body: { total_count: 2, workflow_runs: [run()] } } }]],
     ['page discontinuity', [{ page: 2, response: { status: 200, headers: {}, body: { total_count: 1, workflow_runs: [run()] } } }]],

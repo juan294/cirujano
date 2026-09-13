@@ -228,7 +228,6 @@ class BinaryCursor {
       this.#offset += 1;
       expected += 1;
     }
-    if (expected === 1) throw new CloudInitError('sshHostPrivateKey is missing padding');
   }
 }
 

@@ -28,7 +28,7 @@ function sshString(value: Buffer): Buffer {
   return Buffer.concat([length, value]);
 }
 
-function testHostKeyPair(): { privateKey: string; publicKey: string } {
+function testHostKeyPair(comment = 'cirujano-test-host'): { privateKey: string; publicKey: string } {
   const pair = generateKeyPairSync('ed25519');
   const privateJwk = pair.privateKey.export({ format: 'jwk' });
   const publicJwk = pair.publicKey.export({ format: 'jwk' });
@@ -42,9 +42,9 @@ function testHostKeyPair(): { privateKey: string; publicKey: string } {
     sshString(keyType),
     sshString(publicBytes),
     sshString(Buffer.concat([privateSeed, publicBytes])),
-    sshString(Buffer.from('cirujano-test-host')),
+    sshString(Buffer.from(comment)),
   ]);
-  const paddingLength = 8 - (privateFields.length % 8);
+  const paddingLength = (8 - (privateFields.length % 8)) % 8;
   const privateBlock = Buffer.concat([
     privateFields,
     Buffer.from(Array.from({ length: paddingLength }, (_unused, index) => index + 1)),
@@ -106,6 +106,15 @@ describe('renderCloudInit (R08)', () => {
     expect(rendered).toContain(validInput.sshHostPublicKey);
     expect(rendered).toContain(validInput.sshLoginPublicKey);
     expect(rendered.indexOf('restart, ssh')).toBeLessThan(rendered.indexOf('[env, "RUNNER_VERSION='));
+  });
+
+  it('accepts an ssh-keygen-compatible private block with exact block alignment', () => {
+    const alignedHostKeyPair = testHostKeyPair('cirujano-host');
+    expect(() => renderCloudInit({
+      ...validInput,
+      sshHostPrivateKey: alignedHostKeyPair.privateKey,
+      sshHostPublicKey: alignedHostKeyPair.publicKey,
+    })).not.toThrow();
   });
 
   it('contains no supplied registration, GitHub, or cloud credential', () => {

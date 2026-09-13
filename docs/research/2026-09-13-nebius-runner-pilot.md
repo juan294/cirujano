@@ -1,7 +1,7 @@
 # Nebius runner pilot evidence
 
 Date: 2026-09-13
-Status: blocked before live resource creation
+Status: first live attempt failed at provider contract; cleanup verified
 
 ## Candidate and local evidence
 
@@ -19,16 +19,18 @@ The focused local preparation check ran 28 tests in `src/pilot.test.ts`: all 28
 passed, including local execution of the two-test deterministic fixture. The
 runner package typecheck and focused pilot lint also passed. The combined local
 candidate then passed typecheck, lint, build, CLI smoke, Action bundle verification
-and 302 tests across all packages. These are local preparation checks. They do
-not count as R14: all nine live R14 rows remain
-`not-run`, with zero live passes, because the authenticated Nebius tenant is
-suspended.
+and 302 tests across all packages.
 
-No VM, disk, public IP, GitHub runner registration, GitHub workflow publication
-or workflow dispatch was created during this attempt. The prepared fixture now
-includes a materialized `workflow_dispatch` workflow for later publication to
-`.github/workflows/runner-pilot.yml` under an approved live scope. Provider
-inventory readback returned zero VM instances before the live boundary.
+After the first live provider-contract failure, the repaired candidate passed
+the full local policy again: typecheck, lint, build, Action bundle verification
+and 307 tests. These local checks do not count as an R14 pass.
+
+The approved private fixture workflow was published at an exact commit that
+passed both expected CI workflows. One self-hosted fixture dispatch was queued.
+The controller created one stopped VM, then failed closed while parsing the
+provider's async operation response. It did not start the VM, register a runner
+or execute the workload. Recovery cancelled that dispatch, deleted the VM and
+managed disk, and verified empty instance, disk and allocation inventories.
 
 ## Read-only preflight
 
@@ -59,15 +61,17 @@ caller-supplied totals.
 
 ## Blocking evidence and disposition
 
-Read-only CLI calls authenticated successfully, but the tenant and every listed
-regional project reported `suspension_state: SUSPENDED`. Browser automation was
-also attempted after the CLI path and could not attach to the Nebius console.
-The plan forbids an automatic project or region fallback. Resource creation,
-watchdog certification, workload dispatch, sequential isolation, idle stop and
-cleanup evidence therefore did not run.
+After activation, read-only CLI calls confirmed the tenant and selected project
+were active. The provider-contract scenario then failed on observed schema
+differences: the GitHub queued-job response used zero and empty-string runner
+sentinels; the Nebius CLI returned the async operation ID as plain text, used an
+`operations` collection, encoded disk size as a string and returned addresses
+with CIDR suffixes. A valid generated OpenSSH host key also exposed an incorrect
+local assumption that padding is always present.
 
-R14 remains failed, with all nine rows `not-run`. Activating the existing Nebius
-tenant is the required external state change. After activation, rerun the exact
-read-only preflight, bind the permit to the then-current config and candidate
-hashes, and execute the four-dispatch harness once. Any failed live attempt
-requires a new authorized receipt before another dispatch or replacement.
+The local candidate now normalizes those exact captured shapes while retaining
+strict identity, state and ownership checks. R14 remains failed: provider
+contract failed, cleanup passed, and the seven scenarios between them plus the
+final comparison were not run. The cleaned provider state and cancelled job make
+another attempt safe, but the plan requires a fresh candidate-bound authorization
+before any new dispatch or resource creation.

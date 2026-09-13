@@ -147,18 +147,39 @@ export function parseInstancePage(json: string): ParsedPage<NebiusInstance> {
 
 export function parseOperationPage(json: string): ParsedPage<NebiusOperation> {
   const root = parseJsonObject(json, 'operation page');
-  const items = optionalArray(root['items'], 'operation page.items').map((value, index) => {
-    const operation = objectAt(value, `operation page.items[${index}]`);
-    const metadata = objectAt(operation['metadata'], `operation page.items[${index}].metadata`);
-    const spec = objectAt(operation['spec'], `operation page.items[${index}].spec`);
-    const status = objectAt(operation['status'], `operation page.items[${index}].status`);
+  if (root['items'] !== undefined && root['operations'] !== undefined) {
+    throw new NebiusParseError('operation page contains ambiguous collections');
+  }
+  const collectionKey = root['operations'] === undefined ? 'items' : 'operations';
+  const items = optionalArray(root[collectionKey], `operation page.${collectionKey}`).map((value, index) => {
+    const location = `operation page.${collectionKey}[${index}]`;
+    const operation = objectAt(value, location);
+    const metadata = operation['metadata'] === undefined ? operation : objectAt(operation['metadata'], `${location}.metadata`);
+    const spec = operation['spec'] === undefined ? operation : objectAt(operation['spec'], `${location}.spec`);
+    const status = objectAt(operation['status'], `${location}.status`);
     return {
-      id: stringAt(metadata['id'], `operation page.items[${index}].metadata.id`),
-      resourceId: nullableStringAt(spec['resource_id'], `operation page.items[${index}].spec.resource_id`),
-      state: enumAt(status['state'], OPERATION_STATES, `operation page.items[${index}].status.state`),
+      id: stringAt(metadata['id'], `${location}.id`),
+      resourceId: nullableStringAt(spec['resource_id'], `${location}.resource_id`),
+      state: operationState(operation, status, location),
     };
   });
   return { items, nextPageToken: optionalPageToken(root['next_page_token'], 'operation page.next_page_token') };
+}
+
+export function parseMutationOperationId(stdout: string): string | null {
+  const value = stdout.trim();
+  if (/^computeoperation-[a-z0-9]+$/u.test(value)) return value;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value) as unknown;
+  } catch {
+    throw new NebiusParseError('mutation response is neither an operation id nor valid JSON');
+  }
+  const root = objectAt(parsed, 'mutation response');
+  const metadata = root['metadata'];
+  if (metadata === undefined) return null;
+  const id = objectAt(metadata, 'mutation response.metadata')['id'];
+  return id === undefined ? null : stringAt(id, 'mutation response.metadata.id');
 }
 
 export function reconcileCreate(input: {
@@ -402,8 +423,9 @@ function booleanAt(value: unknown, location: string): boolean {
 }
 
 function finiteNumberAt(value: unknown, location: string): number {
-  if (typeof value !== 'number' || !Number.isFinite(value)) throw new NebiusParseError(`${location} must be a finite number`);
-  return value;
+  const parsed = typeof value === 'string' && /^(?:0|[1-9]\d*)(?:\.\d+)?$/u.test(value) ? Number(value) : value;
+  if (typeof parsed !== 'number' || !Number.isFinite(parsed)) throw new NebiusParseError(`${location} must be a finite number`);
+  return parsed;
 }
 
 function stringMapAt(value: unknown, location: string): Record<string, string> {
@@ -428,7 +450,21 @@ function addressAt(value: unknown, location: string): string | null {
   if (value === undefined) return null;
   const object = objectAt(value, location);
   if (object['address'] === undefined || object['address'] === '') return null;
-  return stringAt(object['address'], `${location}.address`);
+  return stringAt(object['address'], `${location}.address`).replace(/\/\d+$/u, '');
+}
+
+function operationState(operation: Record<string, unknown>, status: Record<string, unknown>, location: string): OperationState {
+  if (status['state'] !== undefined) return enumAt(status['state'], OPERATION_STATES, `${location}.status.state`);
+  const code = status['code'];
+  if (code !== undefined) {
+    const numericCode = typeof code === 'string' && /^\d+$/u.test(code) ? Number(code) : code;
+    if (!Number.isSafeInteger(numericCode) || (numericCode as number) < 0) {
+      throw new NebiusParseError(`${location}.status.code must be a non-negative integer`);
+    }
+    if (numericCode !== 0) return 'FAILED';
+  }
+  if (operation['finished_at'] !== undefined) stringAt(operation['finished_at'], `${location}.finished_at`);
+  return operation['finished_at'] === undefined ? 'RUNNING' : 'SUCCEEDED';
 }
 
 function sameStringMap(actual: Readonly<Record<string, string>>, expected: Readonly<Record<string, string>>): boolean {

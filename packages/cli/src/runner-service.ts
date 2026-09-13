@@ -18,6 +18,7 @@ import {
   parseControllerState,
   parseInstancePage,
   parseOperationPage,
+  parseMutationOperationId,
   parsePermit,
   parseRunnerReportInput,
   parseRunnerConfig,
@@ -949,11 +950,8 @@ async function requireSuccessful<T extends { exitCode: number; timedOut: boolean
 
 async function operation(resultValue: { exitCode: number; timedOut: boolean; stderr: string; stdout: string }, name: string): Promise<{ operationId?: string }> {
   const result = await requireSuccessful(resultValue, name);
-  const body = JSON.parse(result.stdout) as unknown;
-  if (typeof body !== 'object' || body === null || !('metadata' in body)) return {};
-  const metadata = (body as { metadata?: unknown }).metadata;
-  if (typeof metadata !== 'object' || metadata === null || !('id' in metadata) || typeof metadata.id !== 'string') return {};
-  return { operationId: metadata.id };
+  const operationId = parseMutationOperationId(result.stdout);
+  return operationId === null ? {} : { operationId };
 }
 
 async function executableDigest(): Promise<string> {

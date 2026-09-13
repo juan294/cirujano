@@ -1,7 +1,7 @@
 # Phase 4: authorized live pilot and evidence
 
 Parent: [runner plan](../2026-09-13-on-demand-nebius-runner.md).
-Status: local preparation complete and independently approved; live R14 blocked by suspended Nebius tenant on 2026-09-13.
+Status: live R14 failed at the provider-contract boundary on 2026-09-13; recovery and cleanup complete.
 Entry: accepted Phase 3 plus explicit authorization to prepare this phase.
 Preparation alone does not authorize GitHub mutations or spending.
 
@@ -101,3 +101,25 @@ authenticated successfully, found zero VMs, and found the tenant and every
 listed project in `SUSPENDED` state. No VM, disk, IP, runner, workflow or
 dispatch was created. All nine live R14 rows remain `not-run`, so Phase 4 exit
 is not met and no live certification is claimed.
+
+## First live attempt result
+
+After billing activation, read-only preflight confirmed an active tenant and
+project, a ready subnet, an empty instance inventory, the ready Ubuntu 24.04
+driverless AMD64 image and the requested `cpu-d3` preset. The approved private
+fixture workflow was present at its green exact commit. One self-hosted fixture
+dispatch was queued to trigger the attended first-boot scenario.
+
+The provider-contract row failed before the first start. The create request
+produced one correctly shaped stopped VM, but the installed Nebius CLI returned
+the async operation ID as plain text and encoded live resource fields differently
+from the prepared JSON fixtures. The controller failed closed and never started
+the VM or registered a runner. Recovery cancelled the queued dispatch, deleted
+the stopped VM and its managed disk, and verified empty instance, disk and
+allocation inventories. The remaining eight R14 scenarios were not run.
+
+Local repair now accepts the observed async operation ID, operation collection,
+queued-job sentinel fields, string-encoded disk size, CIDR-suffixed addresses and
+valid block-aligned OpenSSH host keys. The complete local verification policy
+passes with 307 tests. Per the R14 contract, another live attempt requires a new
+candidate-bound authorization.

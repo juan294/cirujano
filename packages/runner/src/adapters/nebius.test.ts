@@ -9,6 +9,7 @@ import {
   decideStop,
   parseInstancePage,
   parseOperationPage,
+  parseMutationOperationId,
   reconcileCreate,
   renderCreateRequest,
   type NebiusCommand,
@@ -96,6 +97,24 @@ describe('strict provider response parsers', () => {
     });
   });
 
+  it('parses current CLI string numerics and CIDR-suffixed addresses', () => {
+    const value = instance();
+    const spec = value.spec as Record<string, unknown>;
+    const bootDisk = spec.boot_disk as Record<string, unknown>;
+    const managedDisk = bootDisk.managed_disk as Record<string, unknown>;
+    (managedDisk.spec as Record<string, unknown>).size_gibibytes = '80';
+    const status = value.status as Record<string, unknown>;
+    const network = (status.network_interfaces as Array<Record<string, unknown>>)[0]!;
+    network.ip_address = { address: '10.0.0.4/32' };
+    network.public_ip_address = { address: '203.0.113.4/32' };
+
+    expect(parseInstancePage(JSON.stringify({ items: [value] })).items[0]).toMatchObject({
+      diskSizeGiB: 80,
+      privateIp: '10.0.0.4',
+      publicIp: '203.0.113.4',
+    });
+  });
+
   it.each(['CREATING', 'UPDATING', 'STARTING', 'RUNNING', 'STOPPING', 'STOPPED', 'DELETING', 'ERROR'])('accepts documented instance state %s', (state) => {
     expect(parseInstancePage(JSON.stringify({ items: [instance({ status: { state } })] })).items[0]?.providerState).toBe(state);
   });
@@ -119,6 +138,31 @@ describe('strict provider response parsers', () => {
     expect(() => parseOperationPage(JSON.stringify({
       items: [{ metadata: { id: 'op-1' }, spec: { resource_id: 'instance-1' }, status: { state: 'MYSTERY' } }],
     }))).toThrow(NebiusParseError);
+  });
+
+  it('parses the current CLI operation collection and mutation id formats', () => {
+    const page = parseOperationPage(JSON.stringify({
+      operations: [{
+        id: 'computeoperation-live',
+        resource_id: 'computeinstance-live',
+        finished_at: '2026-09-13T10:00:09Z',
+        status: {},
+      }],
+    }));
+    expect(page.items[0]).toEqual({
+      id: 'computeoperation-live',
+      resourceId: 'computeinstance-live',
+      state: 'SUCCEEDED',
+    });
+    expect(parseMutationOperationId('computeoperation-e00abc123\n')).toBe('computeoperation-e00abc123');
+    expect(parseMutationOperationId('{"metadata":{"id":"op-legacy"}}')).toBe('op-legacy');
+  });
+
+  it('rejects ambiguous operation collections and malformed live status fields', () => {
+    expect(() => parseOperationPage(JSON.stringify({ items: [], operations: [] }))).toThrow('ambiguous');
+    expect(() => parseOperationPage(JSON.stringify({
+      operations: [{ id: 'op-1', resource_id: 'instance-1', status: { code: {} } }],
+    }))).toThrow('non-negative integer');
   });
 });
 

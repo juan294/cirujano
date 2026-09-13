@@ -157,12 +157,12 @@ function string(value: unknown, context: string): string {
 }
 
 function nullableString(value: unknown, context: string): string | null {
-  if (value === null) return null;
+  if (value === null || value === '') return null;
   return string(value, context);
 }
 
 function nullableInteger(value: unknown, context: string): number | null {
-  if (value === null) return null;
+  if (value === null || value === 0) return null;
   return integer(value, context);
 }
 
