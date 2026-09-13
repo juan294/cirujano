@@ -1,7 +1,7 @@
 # Phase 2: provider adapters and guest bootstrap
 
 Parent: [runner plan](../2026-09-13-on-demand-nebius-runner.md).
-Status: planned, not implemented.
+Status: complete and independently approved on 2026-09-13.
 Entry: accepted Phase 1 and explicit Phase 2 authorization.
 
 ## Deliverables and contracts
@@ -63,3 +63,21 @@ Run R06–R09, shell syntax checks, independent review/repair, simplify and all
 `.rpi/policy.json:7` checks sequentially. No live registration/provisioning here.
 Exit: locally verified adapters with explicit live coverage gap and candidate
 record. Stop for Phase 2 acceptance; live readiness is not claimed.
+
+## Implementation handoff
+
+Implemented on `feat/on-demand-nebius-runner` after Phase 1. GitHub and Nebius
+adapters use bounded absolute-path subprocess calls, strict paginated response
+parsers, exact resource ownership and fail-closed incomplete observations. The
+guest replacement renders deterministic cloud-init, pins the SSH host identity
+and runner checksum, supervises ephemeral registrations, serializes drain with
+registration, persists immutable grants and preserves generation diagnostics.
+
+The final R06-R09 suite passed with executable guest boundary tests plus shell
+syntax, package typecheck, lint and build. Independent review drove repairs for
+cloud-init prerequisites and host identity, owned-runner busy propagation,
+grant rearm and rollback behavior, and the registration/drain race. An expired
+retained grant fails closed and requires fresh VM creation; a normal second
+start can rearm only before the prior deadline with controller-confirmed stop.
+Linux systemd, Docker and live provider payload behavior remain Phase 4 gaps.
+No provider mutation or runner registration occurred in this phase.
