@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+if (( EUID != 0 )) && [[ "${CIRUJANO_TEST_MODE:-0}" != 1 ]]; then exec sudo -n "$0"; fi
 
 state_dir=${CIRUJANO_STATE_DIR:-/var/lib/cirujano}
 grant_file="$state_dir/grant.env"

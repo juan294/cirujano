@@ -1,7 +1,7 @@
 # Phase 4: authorized live pilot and evidence
 
 Parent: [runner plan](../2026-09-13-on-demand-nebius-runner.md).
-Status: planned, not implemented or authorized for live execution.
+Status: local preparation complete and independently approved; live R14 blocked by suspended Nebius tenant on 2026-09-13.
 Entry: accepted Phase 3 plus explicit authorization to prepare this phase.
 Preparation alone does not authorize GitHub mutations or spending.
 
@@ -83,3 +83,21 @@ candidate/cleanup evidence, all local gates passing and local integration
 verified. No release/tag/npm publication or production migration is included.
 Record findings/dispositions and final evidence paths here, then stop for owner
 acceptance. Four-slot economics and Nemotron diagnosis require later plans.
+
+## Preparation handoff and live blocker
+
+The local pilot analyzer, exact four-dispatch manifest, deterministic workload
+and materialized `workflow_dispatch` file are complete. Hosted and self-hosted
+targets share one workload body and differ only in runner selection. The permit
+proposal remains explicitly unapproved and enforces one VM, four starts, six
+compute hours, a 24-hour expiry, full retained disk/IP and bounded network
+exposure, and a USD 5 ceiling. Quote validation recomputes the total, rejects
+stale or inconsistent rates and fails closed on numeric overflow.
+
+Independent local review approved the preparation after 28 focused tests,
+workflow lint and YAML parsing. The sanitized evidence report is
+`docs/research/2026-09-13-nebius-runner-pilot.md`. Read-only Nebius inspection
+authenticated successfully, found zero VMs, and found the tenant and every
+listed project in `SUSPENDED` state. No VM, disk, IP, runner, workflow or
+dispatch was created. All nine live R14 rows remain `not-run`, so Phase 4 exit
+is not met and no live certification is claimed.

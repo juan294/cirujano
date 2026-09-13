@@ -8,6 +8,8 @@ export const GUEST_FILE_NAMES = [
   'register-runner.sh',
   'job-start-hook.sh',
   'drain.sh',
+  'status.sh',
+  'resume-admission.sh',
   'cirujano-watchdog.service',
 ] as const;
 
@@ -69,6 +71,10 @@ export function renderCloudInit(input: CloudInitInput): string {
     '    owner: root:root',
     "    permissions: '0644'",
     `    content: ${yamlString(input.sshHostPublicKey)}`,
+    '  - path: /etc/sudoers.d/cirujano-runner',
+    '    owner: root:root',
+    "    permissions: '0440'",
+    `    content: ${yamlString('runner ALL=(root) NOPASSWD: /opt/cirujano/arm-grant, /opt/cirujano/register-runner, /opt/cirujano/drain, /opt/cirujano/status, /opt/cirujano/resume-admission')}`,
   ];
 
   for (const name of GUEST_FILE_NAMES) {

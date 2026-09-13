@@ -13,6 +13,8 @@ const guestFileNames = [
   'register-runner.sh',
   'job-start-hook.sh',
   'drain.sh',
+  'status.sh',
+  'resume-admission.sh',
   'cirujano-watchdog.service',
 ] as const satisfies readonly GuestFileName[];
 
@@ -97,6 +99,7 @@ describe('renderCloudInit (R08)', () => {
     }
     expect(rendered).toContain('/etc/ssh/ssh_host_ed25519_key.pub');
     expect(rendered).toContain('/etc/ssh/ssh_host_ed25519_key');
+    expect(rendered).toContain('/etc/sudoers.d/cirujano-runner');
     expect(rendered).toContain("permissions: '0600'");
     expect(rendered).toContain(Buffer.from(validInput.sshHostPrivateKey, 'utf8').toString('base64'));
     expect(rendered).not.toContain(validInput.sshHostPrivateKey);

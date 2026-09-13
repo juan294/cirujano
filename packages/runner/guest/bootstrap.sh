@@ -9,6 +9,8 @@ install -m 0755 /tmp/cirujano/arm-grant.sh /opt/cirujano/arm-grant
 install -m 0755 /tmp/cirujano/job-start-hook.sh /opt/cirujano/job-start-hook
 install -m 0755 /tmp/cirujano/register-runner.sh /opt/cirujano/register-runner
 install -m 0755 /tmp/cirujano/drain.sh /opt/cirujano/drain
+install -m 0755 /tmp/cirujano/status.sh /opt/cirujano/status
+install -m 0755 /tmp/cirujano/resume-admission.sh /opt/cirujano/resume-admission
 install -m 0644 /tmp/cirujano/cirujano-watchdog.service /etc/systemd/system/cirujano-watchdog.service
 systemctl daemon-reload
 systemctl enable --now cirujano-watchdog

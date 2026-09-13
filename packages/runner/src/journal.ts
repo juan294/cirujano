@@ -1,7 +1,8 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
 import { access, chmod, mkdir, open, readFile, rename, unlink } from 'node:fs/promises';
 import { createConnection, createServer, type Server } from 'node:net';
+import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 
 export class ControllerLockError extends Error {
@@ -11,6 +12,14 @@ export class ControllerLockError extends Error {
 export interface ControllerLock {
   path: string;
   release(): Promise<void>;
+}
+
+const heldLocks = new WeakSet<object>();
+
+export function assertControllerLock(lock: ControllerLock): void {
+  if (typeof lock !== 'object' || lock === null || !heldLocks.has(lock) || typeof lock.release !== 'function') {
+    throw new ControllerLockError('a held controller lock capability is required');
+  }
 }
 
 export async function writeJournalAtomic(path: string, value: unknown): Promise<void> {
@@ -65,8 +74,10 @@ export async function acquireControllerLock(stateDirectory: string): Promise<Con
     throw new ControllerLockError('controller state must use a local filesystem');
   }
   await mkdir(directory, { recursive: true, mode: 0o700 });
-  const socketPath = join(directory, '.controller.sock');
-  if (Buffer.byteLength(socketPath) >= 100) throw new ControllerLockError('controller lock path is too long for a Unix socket');
+  const localSocket = join(directory, '.controller.sock');
+  const socketPath = Buffer.byteLength(localSocket) < 100
+    ? localSocket
+    : join(tmpdir(), `cirujano-${createHash('sha256').update(directory).digest('hex').slice(0, 24)}.sock`);
 
   let server = createServer();
   try {
@@ -87,15 +98,18 @@ export async function acquireControllerLock(stateDirectory: string): Promise<Con
   }
   await chmod(socketPath, 0o600);
   let released = false;
-  return {
+  const capability: ControllerLock = {
     path: socketPath,
     async release() {
       if (released) return;
       released = true;
+      heldLocks.delete(capability);
       await new Promise<void>((resolveClose, reject) => server.close((error) => error ? reject(error) : resolveClose()));
       await unlink(socketPath).catch((error: unknown) => { if (!isMissing(error)) throw error; });
     },
   };
+  heldLocks.add(capability);
+  return capability;
 }
 
 function listen(server: Server, path: string): Promise<void> {

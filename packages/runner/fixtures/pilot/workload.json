@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "fixtureId": "cirujano-runner-pilot-v1",
+  "workflowFile": ".github/workflows/runner-pilot.yml",
+  "timeoutMinutes": 60,
+  "runnerLabel": "cirujano-pilot-fixture",
+  "hostedRunsOn": ["ubuntu-24.04"],
+  "selfHostedRunsOn": ["self-hosted", "linux", "x64", "cirujano-pilot-fixture"],
+  "dispatches": [
+    { "id": "hosted-1", "target": "hosted", "sequence": 1 },
+    { "id": "hosted-2", "target": "hosted", "sequence": 2 },
+    { "id": "self-hosted-1", "target": "self-hosted", "sequence": 1 },
+    { "id": "self-hosted-2", "target": "self-hosted", "sequence": 2 }
+  ],
+  "steps": [
+    { "id": "node", "run": "node -e \"if (process.versions.node.split('.')[0] !== '22') process.exit(1)\"" },
+    { "id": "pnpm", "run": "test \"$(pnpm --version)\" = \"11.22.0\"" },
+    { "id": "deterministic-tests", "run": "node --test packages/runner/fixtures/pilot/deterministic.mjs" },
+    { "id": "sentinel-absent", "run": "test ! -e \"$(dirname \"$GITHUB_WORKSPACE\")/.cirujano-first-run-sentinel\"" },
+    { "id": "docker-fixed-port", "run": "trap 'docker rm -f cirujano-pilot-http >/dev/null 2>&1 || true' EXIT; docker run -d --rm --name cirujano-pilot-http -p 43119:43119 node@sha256:8a34c4ab3ea2c5cd194f07e317b2a8f09461d3c8b05c4e34c8ccd56d56024c4d node -e \"require('http').createServer((_,r)=>r.end('cirujano-pilot')).listen(43119)\"; ready=; for _ in 1 2 3 4 5; do if test \"$(curl -fsS http://127.0.0.1:43119 2>/dev/null || true)\" = cirujano-pilot; then ready=1; break; fi; sleep 1; done; test \"$ready\" = 1" },
+    { "id": "first-run-sentinel", "whenSequence": 1, "run": "touch \"$(dirname \"$GITHUB_WORKSPACE\")/.cirujano-first-run-sentinel\"" }
+  ]
+}

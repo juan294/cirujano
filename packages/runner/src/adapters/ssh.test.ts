@@ -13,11 +13,12 @@ describe('SSH identity and invocation (R08)', () => {
 
   it('builds strict, noninteractive SSH argv without sensitive stdin', () => {
     const invocation = buildSshInvocation({
+      sshPath: '/fixtures/ssh',
       host: '192.0.2.10', port: 22, user: 'runner', identityFile: '/private/key',
       knownHostsFile: '/private/known_hosts', helper: '/opt/cirujano/register-runner',
       stdin: 'registration-secret', timeoutSeconds: 10,
     });
-    expect(invocation.command).toBe('/usr/bin/ssh');
+    expect(invocation.command).toBe('/fixtures/ssh');
     expect(invocation.args).toContain('StrictHostKeyChecking=yes');
     expect(invocation.args.join(' ')).not.toContain('registration-secret');
     expect(invocation.shell).toBe(false);
@@ -32,6 +33,7 @@ describe('SSH identity and invocation (R08)', () => {
     expect(() => buildSshInvocation({ ...base, host: 'host;touch /tmp/x' })).toThrow();
     expect(() => buildSshInvocation({ ...base, helper: '/opt/cirujano/status --debug' })).toThrow();
     expect(() => buildSshInvocation({ ...base, identityFile: 'key' })).toThrow();
+    expect(() => buildSshInvocation({ ...base, sshPath: 'ssh' })).toThrow();
   });
 
   it('renders the exact pinned host-key entry', () => {

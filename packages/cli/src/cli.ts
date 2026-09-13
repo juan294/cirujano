@@ -2,7 +2,8 @@ import { readFile } from 'node:fs/promises';
 
 import { BillingInputError, parseGithubJobs, summarizeBillableMinutes } from '@cirujano/core';
 
-import { ArgumentError, USAGE, VERSION, parseArguments } from './args.js';
+import { ArgumentError, USAGE, VERSION, parseArguments, type RunnerArguments } from './args.js';
+import { createRunnerCommandService } from './runner-service.js';
 
 export interface CliIo {
   stdout: (text: string) => void;
@@ -14,8 +15,16 @@ const processIo: CliIo = {
   stderr: (text) => process.stderr.write(text),
 };
 
+export interface RunnerCommandService {
+  run(args: RunnerArguments, io: CliIo): Promise<0 | 1>;
+}
+
 /** Exit code contract: 0 success, 1 runtime failure, 2 usage error. */
-export async function runCli(argv: readonly string[], io: CliIo = processIo): Promise<number> {
+export async function runCli(
+  argv: readonly string[],
+  io: CliIo = processIo,
+  runnerService: RunnerCommandService = defaultRunnerCommandService,
+): Promise<number> {
   let parsed;
   try {
     parsed = parseArguments(argv);
@@ -36,8 +45,17 @@ export async function runCli(argv: readonly string[], io: CliIo = processIo): Pr
       return 0;
     case 'estimate':
       return estimate(parsed.jobsPath, parsed.format, io);
+    case 'runner':
+      try {
+        return await runnerService.run(parsed, io);
+      } catch (error) {
+        io.stderr(`runner ${parsed.action} failed: ${error instanceof Error ? error.message : String(error)}\n`);
+        return 1;
+      }
   }
 }
+
+export const defaultRunnerCommandService: RunnerCommandService = createRunnerCommandService();
 
 async function estimate(jobsPath: string, format: 'json' | 'text', io: CliIo): Promise<number> {
   let payload: unknown;

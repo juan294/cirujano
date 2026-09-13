@@ -51,6 +51,9 @@ importers:
       '@cirujano/core':
         specifier: workspace:*
         version: link:../core
+      '@cirujano/runner':
+        specifier: workspace:*
+        version: link:../runner
       esbuild:
         specifier: ^0.28.2
         version: 0.28.2

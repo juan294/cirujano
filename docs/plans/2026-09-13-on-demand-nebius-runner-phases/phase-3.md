@@ -1,7 +1,7 @@
 # Phase 3: controller, CLI and local end-to-end verification
 
 Parent: [runner plan](../2026-09-13-on-demand-nebius-runner.md).
-Status: planned, not implemented.
+Status: complete and independently approved on 2026-09-13.
 Entry: accepted Phase 2 and explicit Phase 3 authorization.
 
 ## Deliverables
@@ -61,3 +61,28 @@ review, repair and simplify. Ensure new CLI assets ship in its bundle/package;
 rebuild the committed Action bundle if core or Action source changes.
 Exit: end-to-end local simulation passes; real provider certification remains
 pending Phase 4. Record SHA/evidence and stop for acceptance.
+
+## Implementation handoff
+
+Implemented on `feat/on-demand-nebius-runner` after the accepted Phase 2
+foundation. The controller now owns a validated atomic journal, an OS-held lock,
+permit-bound pending effects, monotonic runtime/cost/idle observations and
+crash-safe recovery. The production CLI provides inspect, watch, stop, cleanup
+and report commands; guest registration, admission, drain and status use pinned
+SSH identity and stdin-only secrets. The runbook records exact prerequisites,
+private state and interrupted-operation recovery.
+
+R10-R13 passed with real child-process locks and external kills at controller
+and direct-action boundaries. A built `dist/bin.js` fixture executes two runner
+generations through queue, create, start, registration, busy, completion, drain,
+stop, queued-during-drain survival, next start, exact assignment reporting and
+terminal cleanup. Built estimate behavior preserves exits 0/1/2. SIGINT drains,
+rechecks exact work and runner state, then records terminal provider readback.
+
+Independent review approved the final candidate after repair of lifecycle
+accounting, pending-effect authorization, dry-run replay, direct-action crash
+recovery, exact assignment retention, full cost projection and recovery ordering.
+The final local gate passed typecheck, lint, build, CLI smoke, Action bundle
+verification and 302 tests: core 9, runner 249, Action 3 and CLI 41. The phase
+commit and integrated commit are recorded in Git history. No provider or GitHub
+mutation occurred during this phase.

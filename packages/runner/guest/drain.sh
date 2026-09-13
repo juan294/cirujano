@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
-: "${RUNNER_GENERATION:?RUNNER_GENERATION is required}"
+if (( EUID != 0 )) && [[ "${CIRUJANO_TEST_MODE:-0}" != 1 ]]; then exec sudo -n "$0"; fi
+IFS= read -r RUNNER_GENERATION
+[[ "$RUNNER_GENERATION" =~ ^[1-9][0-9]*$ ]] || { echo 'runner generation is invalid' >&2; exit 2; }
 runner_dir="/var/lib/cirujano/runner-${RUNNER_GENERATION}"
 state_dir=${CIRUJANO_STATE_DIR:-/var/lib/cirujano}
 runner_root=${CIRUJANO_RUNNER_ROOT:-/var/lib/cirujano}

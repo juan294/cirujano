@@ -141,13 +141,13 @@ export function renderCreateRequest(config: RunnerConfig, configHash: string, cl
 
 export function parseInstancePage(json: string): ParsedPage<NebiusInstance> {
   const root = parseJsonObject(json, 'instance page');
-  const items = arrayAt(root['items'], 'instance page.items').map((value, index) => parseInstance(value, `instance page.items[${index}]`));
+  const items = optionalArray(root['items'], 'instance page.items').map((value, index) => parseInstance(value, `instance page.items[${index}]`));
   return { items, nextPageToken: optionalPageToken(root['next_page_token'], 'instance page.next_page_token') };
 }
 
 export function parseOperationPage(json: string): ParsedPage<NebiusOperation> {
   const root = parseJsonObject(json, 'operation page');
-  const items = arrayAt(root['items'], 'operation page.items').map((value, index) => {
+  const items = optionalArray(root['items'], 'operation page.items').map((value, index) => {
     const operation = objectAt(value, `operation page.items[${index}]`);
     const metadata = objectAt(operation['metadata'], `operation page.items[${index}].metadata`);
     const spec = objectAt(operation['spec'], `operation page.items[${index}].spec`);
@@ -222,46 +222,46 @@ export class NebiusCli {
   }
 
   async create(request: NebiusCreateRequest): Promise<NebiusCommandResult> {
-    return this.#mutate(['compute', 'v1', 'instance', 'create', '-'], `${JSON.stringify(request)}\n`);
+    return this.#mutate(['compute', 'instance', 'create', '-'], `${JSON.stringify(request)}\n`);
   }
 
   async listInstances(pageToken?: string): Promise<NebiusCommandResult> {
     return this.#read([
-      'compute', 'v1', 'instance', 'list', '--parent-id', this.#options.projectId, '--page-size', '1000',
+      'compute', 'instance', 'list', '--parent-id', this.#options.projectId, '--page-size', '999',
       ...(pageToken === undefined ? [] : ['--page-token', nonemptyArgument(pageToken, 'page token')]),
     ]);
   }
 
   async listOperationsByParent(pageToken?: string): Promise<NebiusCommandResult> {
     return this.#read([
-      'compute', 'v1', 'instance', 'list-operations-by-parent', '--parent-id', this.#options.projectId, '--page-size', '1000',
+      'compute', 'instance', 'list-operations-by-parent', '--parent-id', this.#options.projectId, '--page-size', '999',
       ...(pageToken === undefined ? [] : ['--page-token', nonemptyArgument(pageToken, 'page token')]),
     ]);
   }
 
   async getInstance(instanceId: string): Promise<NebiusCommandResult> {
     assertResourceId(instanceId);
-    return this.#read(['compute', 'v1', 'instance', 'get', '--id', instanceId]);
+    return this.#read(['compute', 'instance', 'get', '--id', instanceId]);
   }
 
   async getOperation(operationId: string): Promise<NebiusCommandResult> {
     assertResourceId(operationId);
-    return this.#read(['compute', 'v1', 'instance', 'operation', 'get', '--id', operationId]);
+    return this.#read(['compute', 'instance', 'operation', 'get', '--id', operationId]);
   }
 
   async start(instanceId: string): Promise<NebiusCommandResult> {
     assertResourceId(instanceId);
-    return this.#mutate(['compute', 'v1', 'instance', 'start', '--id', instanceId]);
+    return this.#mutate(['compute', 'instance', 'start', '--id', instanceId]);
   }
 
   async stop(instanceId: string): Promise<NebiusCommandResult> {
     assertResourceId(instanceId);
-    return this.#mutate(['compute', 'v1', 'instance', 'stop', '--id', instanceId]);
+    return this.#mutate(['compute', 'instance', 'stop', '--id', instanceId]);
   }
 
   async delete(instanceId: string): Promise<NebiusCommandResult> {
     assertResourceId(instanceId);
-    return this.#mutate(['compute', 'v1', 'instance', 'delete', '--id', instanceId]);
+    return this.#mutate(['compute', 'instance', 'delete', '--id', instanceId]);
   }
 
   async #read(args: string[]): Promise<NebiusCommandResult> {

@@ -131,7 +131,7 @@ export interface GuestSnapshot {
 export interface MutationIntent {
   type: 'create-vm' | 'start-vm';
   generation: number;
-  status: 'pending' | 'ambiguous';
+  status: 'pending' | 'ambiguous' | 'blocked';
   deadlineMs: number;
 }
 

@@ -1,7 +1,7 @@
 # On-demand Nebius runner: implementation plan
 
 Date: 2026-09-13
-Status: reviewed plan, ready for owner acceptance; implementation and live pilot are not authorized.
+Status: Phases 1-3 complete and independently approved; Phase 4 local preparation approved, live R14 blocked by suspended Nebius tenant.
 Base: `189f5f163a9e4745cd9b6d5848b81aa231909505`, `develop`.
 Workspace: `/Users/juan/code/cirujano`.
 
@@ -264,7 +264,9 @@ Each implementation phase uses an isolated worktree based on accepted develop,
 TDD, independent review, repair, codex-simplify and sequential verification.
 Integrate locally only after checks pass. Stop for acceptance after each phase;
 no working-branch push, PR, release, workflow dispatch or paid resource operation
-is authorized by this plan. Phase 4 includes a concrete live-approval boundary.
+is authorized by this plan. The owner later authorized all implementation phases,
+local integration and one `develop` push. Phase 4 live work stopped before any
+mutation because every authenticated Nebius project was suspended.
 
 Automated final acceptance requires every scenario R01–R14 in the phase files,
 all existing repository gates and the real provider evidence in Phase 4. Missing

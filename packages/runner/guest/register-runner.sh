@@ -1,9 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
-: "${RUNNER_REPOSITORY:?RUNNER_REPOSITORY is required}"
-: "${RUNNER_NAME:?RUNNER_NAME is required}"
-: "${RUNNER_LABEL:?RUNNER_LABEL is required}"
-: "${RUNNER_GENERATION:?RUNNER_GENERATION is required}"
+if (( EUID != 0 )) && [[ "${CIRUJANO_TEST_MODE:-0}" != 1 ]]; then exec sudo -n "$0"; fi
+IFS= read -r RUNNER_REPOSITORY
+IFS= read -r RUNNER_NAME
+IFS= read -r RUNNER_LABEL
+IFS= read -r RUNNER_GENERATION
+[[ "$RUNNER_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || { echo 'repository is invalid' >&2; exit 2; }
+[[ "$RUNNER_NAME" =~ ^[A-Za-z0-9_.-]+$ ]] || { echo 'runner name is invalid' >&2; exit 2; }
+[[ "$RUNNER_LABEL" =~ ^[A-Za-z0-9_.-]+$ ]] || { echo 'runner label is invalid' >&2; exit 2; }
+[[ "$RUNNER_GENERATION" =~ ^[1-9][0-9]*$ ]] || { echo 'runner generation is invalid' >&2; exit 2; }
 state_dir=${CIRUJANO_STATE_DIR:-/var/lib/cirujano}
 runner_root=${CIRUJANO_RUNNER_ROOT:-/var/lib/cirujano}
 runner_template=${CIRUJANO_RUNNER_TEMPLATE:-/opt/actions-runner}
@@ -25,8 +30,10 @@ unset RUNNER_TOKEN
   'cd "$1" && ./config.sh --unattended --ephemeral --disableupdate --url "$2" --name "$3" --labels "$4" --work _work' \
   bash "$runner_dir" "https://github.com/${RUNNER_REPOSITORY}" "$RUNNER_NAME" "$RUNNER_LABEL"
 unset ACTIONS_RUNNER_INPUT_TOKEN
-"$sudo_bin" -u runner bash -c 'cd "$1" && exec ./run.sh' bash "$runner_dir" &
+install -d -m 0700 "$state_dir/diag-${RUNNER_GENERATION}"
+nohup "$sudo_bin" -u runner bash -c 'cd "$1" && exec ./run.sh' bash "$runner_dir" \
+  </dev/null >>"$state_dir/diag-${RUNNER_GENERATION}/supervisor.log" 2>&1 &
 listener_pid=$!
 printf '%s\n' "$listener_pid" > "$state_dir/listener-${RUNNER_GENERATION}.pid"
-trap 'kill -TERM "$listener_pid" 2>/dev/null || true; wait "$listener_pid" 2>/dev/null || true; exit 0' TERM INT
-wait "$listener_pid"
+disown "$listener_pid" 2>/dev/null || true
+echo registered

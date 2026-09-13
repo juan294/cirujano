@@ -1,0 +1,72 @@
+name: Nebius runner pilot fixture
+
+on:
+  workflow_dispatch:
+    inputs:
+      fixture_commit:
+        description: Exact 40-character fixture commit
+        required: true
+        type: string
+      target:
+        description: Runner target
+        required: true
+        type: choice
+        options:
+          - hosted
+          - self-hosted
+      sequence:
+        description: Sequential isolation run
+        required: true
+        type: choice
+        options:
+          - '1'
+          - '2'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: runner-pilot-${{ inputs.target }}
+  cancel-in-progress: false
+
+jobs:
+  workload:
+    runs-on: ${{ fromJSON(inputs.target == 'hosted' && '["ubuntu-24.04"]' || '["self-hosted","linux","x64","cirujano-pilot-fixture"]') }}
+    timeout-minutes: 60
+    steps:
+      - name: Validate exact fixture commit
+        env:
+          FIXTURE_COMMIT: ${{ inputs.fixture_commit }}
+        run: test "${#FIXTURE_COMMIT}" = 40 && test -z "${FIXTURE_COMMIT//[0-9a-f]/}"
+      - name: Checkout exact fixture commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ inputs.fixture_commit }}
+          persist-credentials: false
+      - name: Install pnpm
+        uses: pnpm/action-setup@f520eceda224fe1a4aed5a2a27a194379a409996 # v6
+        with:
+          version: 11.22.0
+      - name: Install Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 22
+      - name: node
+        run: |
+          node -e "if (process.versions.node.split('.')[0] !== '22') process.exit(1)"
+      - name: pnpm
+        run: |
+          test "$(pnpm --version)" = "11.22.0"
+      - name: deterministic-tests
+        run: |
+          node --test packages/runner/fixtures/pilot/deterministic.mjs
+      - name: sentinel-absent
+        run: |
+          test ! -e "$(dirname "$GITHUB_WORKSPACE")/.cirujano-first-run-sentinel"
+      - name: docker-fixed-port
+        run: |
+          trap 'docker rm -f cirujano-pilot-http >/dev/null 2>&1 || true' EXIT; docker run -d --rm --name cirujano-pilot-http -p 43119:43119 node@sha256:8a34c4ab3ea2c5cd194f07e317b2a8f09461d3c8b05c4e34c8ccd56d56024c4d node -e "require('http').createServer((_,r)=>r.end('cirujano-pilot')).listen(43119)"; ready=; for _ in 1 2 3 4 5; do if test "$(curl -fsS http://127.0.0.1:43119 2>/dev/null || true)" = cirujano-pilot; then ready=1; break; fi; sleep 1; done; test "$ready" = 1
+      - name: first-run-sentinel
+        if: inputs.sequence == '1'
+        run: |
+          touch "$(dirname "$GITHUB_WORKSPACE")/.cirujano-first-run-sentinel"

@@ -82,6 +82,11 @@ describe('Nebius create request', () => {
 });
 
 describe('strict provider response parsers', () => {
+  it('accepts the CLI empty-page representation', () => {
+    expect(parseInstancePage('{}')).toEqual({ items: [], nextPageToken: null });
+    expect(parseOperationPage('{}')).toEqual({ items: [], nextPageToken: null });
+  });
+
   it('parses an instance page, including status network and disk identities', () => {
     const parsed = parseInstancePage(JSON.stringify({ items: [instance()], next_page_token: 'page-2' }));
     expect(parsed.nextPageToken).toBe('page-2');
@@ -188,10 +193,10 @@ describe('safe CLI execution', () => {
       expect(call.timeoutMs).toBe(60_000);
       expect(call.args).toEqual(expect.arrayContaining(['--profile', 'TCT', '--format', 'json', '--no-browser', '--no-progress', '--no-check-update', '--color=false', '--timeout', '60s', '--per-retry-timeout', '60s', '--retries', '1', '--async']));
     }
-    expect(calls[0]?.args.slice(0, 5)).toEqual(['compute', 'v1', 'instance', 'create', '-']);
+    expect(calls[0]?.args.slice(0, 4)).toEqual(['compute', 'instance', 'create', '-']);
     expect(calls[0]?.stdin).toBe(`${JSON.stringify(renderCreateRequest(config, 'config-sha256', '#cloud-config\n'))}\n`);
-    expect(calls[1]?.args.slice(0, 6)).toEqual(['compute', 'v1', 'instance', 'stop', '--id', 'instance-1']);
-    expect(calls[2]?.args.slice(0, 6)).toEqual(['compute', 'v1', 'instance', 'delete', '--id', 'instance-1']);
+    expect(calls[1]?.args.slice(0, 5)).toEqual(['compute', 'instance', 'stop', '--id', 'instance-1']);
+    expect(calls[2]?.args.slice(0, 5)).toEqual(['compute', 'instance', 'delete', '--id', 'instance-1']);
   });
 
   it('builds bounded read and start commands without a shell', async () => {
@@ -211,12 +216,12 @@ describe('safe CLI execution', () => {
     await cli.getOperation('op-1');
     await cli.start('instance-1');
 
-    expect(calls[0]?.args.slice(0, 8)).toEqual(['compute', 'v1', 'instance', 'list', '--parent-id', 'project-1', '--page-size', '1000']);
+    expect(calls[0]?.args.slice(0, 7)).toEqual(['compute', 'instance', 'list', '--parent-id', 'project-1', '--page-size', '999']);
     expect(calls[0]?.args).toEqual(expect.arrayContaining(['--page-token', 'next-page', '--retries', '3']));
-    expect(calls[1]?.args.slice(0, 6)).toEqual(['compute', 'v1', 'instance', 'list-operations-by-parent', '--parent-id', 'project-1']);
-    expect(calls[2]?.args.slice(0, 6)).toEqual(['compute', 'v1', 'instance', 'get', '--id', 'instance-1']);
-    expect(calls[3]?.args.slice(0, 7)).toEqual(['compute', 'v1', 'instance', 'operation', 'get', '--id', 'op-1']);
-    expect(calls[4]?.args.slice(0, 6)).toEqual(['compute', 'v1', 'instance', 'start', '--id', 'instance-1']);
+    expect(calls[1]?.args.slice(0, 5)).toEqual(['compute', 'instance', 'list-operations-by-parent', '--parent-id', 'project-1']);
+    expect(calls[2]?.args.slice(0, 5)).toEqual(['compute', 'instance', 'get', '--id', 'instance-1']);
+    expect(calls[3]?.args.slice(0, 6)).toEqual(['compute', 'instance', 'operation', 'get', '--id', 'op-1']);
+    expect(calls[4]?.args.slice(0, 5)).toEqual(['compute', 'instance', 'start', '--id', 'instance-1']);
     expect(calls[4]?.args).toEqual(expect.arrayContaining(['--retries', '1', '--async']));
     for (const call of calls.slice(0, 4)) {
       expect(call).toMatchObject({ file: '/opt/nebius/bin/nebius', shell: false, timeoutMs: 30_000 });

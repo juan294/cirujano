@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { isAbsolute } from 'node:path';
 
 export interface SshRequest {
+  sshPath?: string;
   host: string;
   port: number;
   user: string;
@@ -13,13 +14,15 @@ export interface SshRequest {
 }
 
 export interface SshInvocation {
-  command: '/usr/bin/ssh';
+  command: string;
   args: string[];
   stdin?: string;
   shell: false;
 }
 
 export function buildSshInvocation(request: SshRequest): SshInvocation {
+  const sshPath = request.sshPath ?? '/usr/bin/ssh';
+  if (!isAbsolute(sshPath)) throw new TypeError('SSH executable path must be absolute');
   if (!validHost(request.host)) throw new TypeError('SSH host must be a validated IP address or DNS name');
   if (!Number.isInteger(request.port) || request.port < 1 || request.port > 65_535) throw new RangeError('SSH port is invalid');
   if (!/^[a-z_][a-z0-9_-]*$/u.test(request.user)) throw new TypeError('SSH user is invalid');
@@ -39,8 +42,8 @@ export function buildSshInvocation(request: SshRequest): SshInvocation {
     request.helper,
   ];
   return request.stdin === undefined
-    ? { command: '/usr/bin/ssh', args, shell: false }
-    : { command: '/usr/bin/ssh', args, stdin: request.stdin, shell: false };
+    ? { command: sshPath, args, shell: false }
+    : { command: sshPath, args, stdin: request.stdin, shell: false };
 }
 
 export function verifySshPublicKeyFingerprint(publicKey: string, expected?: string): string {

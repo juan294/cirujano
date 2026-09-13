@@ -38,15 +38,17 @@
     "access": "public"
   },
   "scripts": {
-    "build": "pnpm --filter @cirujano/core build && pnpm run typecheck && node scripts/bundle.mjs",
+    "build": "pnpm --filter @cirujano/core build && pnpm --filter @cirujano/runner build && pnpm run typecheck && node scripts/bundle.mjs && pnpm run smoke",
     "bundle": "node scripts/bundle.mjs",
     "lint": "eslint src scripts",
     "prepack": "pnpm run build",
+    "smoke": "node dist/bin.js --help && node dist/bin.js --version",
     "test": "vitest run",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "devDependencies": {
     "@cirujano/core": "workspace:*",
+    "@cirujano/runner": "workspace:*",
     "esbuild": "^0.28.2"
   }
 }
