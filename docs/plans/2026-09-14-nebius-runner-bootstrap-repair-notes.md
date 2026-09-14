@@ -41,7 +41,7 @@
 
 ### Linux schema mode-probe repair
 
-- Found: exact-SHA CI run `34855699167` reached both jobs, but the standard test job exposed that GNU `stat -f '%Lp'` succeeds with filesystem output instead of rejecting the BSD-only format. The schema harness therefore reported a false mode failure before exercising its intended disclosure boundary.
+- Found: exact-SHA CI run `34855699167` reached both jobs. The dedicated Ubuntu QEMU boot oracle passed in 12m47s, while the standard test job exposed that GNU `stat -f '%Lp'` succeeds with filesystem output instead of rejecting the BSD-only format. The schema harness therefore reported a false mode failure before exercising its intended disclosure boundary.
 - Chose: try GNU `stat -c '%a'` first and fall back to BSD `stat -f '%Lp'`. The rendered file and required `0600` check remain unchanged.
 - Regression: the disclosure-boundary test now supplies a GNU-compatible `stat` fixture that reproduces the Linux behavior and proves the schema failure remains redacted after the portable mode probe.
 
