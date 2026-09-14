@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { createTelemetryCommandService } from './telemetry-service.js';
 import { collectTelemetry, type GitHubTelemetrySource, type TelemetrySnapshot } from './telemetry.js';
@@ -64,27 +64,33 @@ describe('telemetry command service', () => {
   });
 
   it('reuses the latest prior-day snapshot across the overlap window', async () => {
-    const storePath = await mkdtemp(join(tmpdir(), 'cirujano-prior-day-telemetry-'));
-    await writeFile(join(storePath, '2026-09-12.json'), JSON.stringify(
-      await validSnapshot('juan294', Date.parse('2026-09-12T12:00:00Z')),
-    ));
-    const pageRunner = async (_command: string, args: readonly string[]) => {
-      const endpoint = args.at(-1)!;
-      if (endpoint.startsWith('/user/repos')) return { stdout: JSON.stringify([[
-        { full_name: 'juan294/app', visibility: 'public', archived: false },
-      ]]) };
-      if (endpoint.includes('/actions/runs?')) return { stdout: JSON.stringify([{
-        workflow_runs: [{ id: 1, run_attempt: 1, name: 'CI', event: 'push', created_at: '2026-09-12T10:00:00.000Z', conclusion: 'success' }],
-      }]) };
-      throw new Error('prior-day run jobs must be reused');
-    };
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-09-14T09:00:00Z'));
+    try {
+      const storePath = await mkdtemp(join(tmpdir(), 'cirujano-prior-day-telemetry-'));
+      await writeFile(join(storePath, '2026-09-12.json'), JSON.stringify(
+        await validSnapshot('juan294', Date.parse('2026-09-12T12:00:00Z')),
+      ));
+      const pageRunner = async (_command: string, args: readonly string[]) => {
+        const endpoint = args.at(-1)!;
+        if (endpoint.startsWith('/user/repos')) return { stdout: JSON.stringify([[
+          { full_name: 'juan294/app', visibility: 'public', archived: false },
+        ]]) };
+        if (endpoint.includes('/actions/runs?')) return { stdout: JSON.stringify([{
+          workflow_runs: [{ id: 1, run_attempt: 1, name: 'CI', event: 'push', created_at: '2026-09-12T10:00:00.000Z', conclusion: 'success' }],
+        }]) };
+        throw new Error('prior-day run jobs must be reused');
+      };
 
-    await expect(createTelemetryCommandService({}, pageRunner).run(
-      { command: 'telemetry', action: 'collect', owner: 'juan294', storePath, lookbackHours: 48 }, io,
-    )).resolves.toBe(0);
-    await expect(createTelemetryCommandService().run(
-      { command: 'telemetry', action: 'report', storePath, since: '2026-09-12', format: 'json' }, io,
-    )).resolves.toBe(0);
+      await expect(createTelemetryCommandService({}, pageRunner).run(
+        { command: 'telemetry', action: 'collect', owner: 'juan294', storePath, lookbackHours: 48 }, io,
+      )).resolves.toBe(0);
+      await expect(createTelemetryCommandService().run(
+        { command: 'telemetry', action: 'report', storePath, since: '2026-09-12', format: 'json' }, io,
+      )).resolves.toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('rejects a malformed persisted job instead of silently undercounting it', async () => {

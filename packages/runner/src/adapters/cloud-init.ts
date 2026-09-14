@@ -3,6 +3,7 @@ import { createPrivateKey, createPublicKey } from 'node:crypto';
 
 export const GUEST_FILE_NAMES = [
   'bootstrap.sh',
+  'diagnose-ssh.sh',
   'watchdog.sh',
   'arm-grant.sh',
   'register-runner.sh',
@@ -78,7 +79,8 @@ export function renderCloudInit(input: CloudInitInput): string {
   lines.push(
     'runcmd:',
     '  - [env, "CIRUJANO_SAFETY_ONLY=1", bash, /tmp/cirujano/bootstrap.sh]',
-    '  - [systemctl, restart, ssh]',
+    '  - [bash, /opt/cirujano/diagnose-ssh]',
+    '  - [sed, -i, "s|http://archive.ubuntu.com|https://archive.ubuntu.com|g; s|http://security.ubuntu.com|https://security.ubuntu.com|g", /etc/apt/sources.list.d/ubuntu.sources]',
     '  - [apt-get, update]',
     '  - [apt-get, install, --yes, build-essential, ca-certificates, curl, docker.io, git, gnupg, jq, libicu-dev, unzip, xz-utils]',
     '  - [install, -d, -m, "0755", /etc/apt/keyrings]',

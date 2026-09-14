@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-install -d -m 0700 /var/lib/cirujano /opt/cirujano /opt/actions-runner
+install -d -m 0700 /var/lib/cirujano /opt/actions-runner
+install -d -m 0755 /opt/cirujano
 install -m 0755 /tmp/cirujano/watchdog.sh /opt/cirujano/watchdog
+install -m 0755 /tmp/cirujano/diagnose-ssh.sh /opt/cirujano/diagnose-ssh
 install -m 0755 /tmp/cirujano/arm-grant.sh /opt/cirujano/arm-grant
 install -m 0755 /tmp/cirujano/job-start-hook.sh /opt/cirujano/job-start-hook
 install -m 0755 /tmp/cirujano/register-runner.sh /opt/cirujano/register-runner

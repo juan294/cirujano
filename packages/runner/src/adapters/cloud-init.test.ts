@@ -10,6 +10,7 @@ import { CloudInitError, renderCloudInit, type GuestFileName } from './cloud-ini
 const guestDir = resolve(import.meta.dirname, '../../guest');
 const guestFileNames = [
   'bootstrap.sh',
+  'diagnose-ssh.sh',
   'watchdog.sh',
   'arm-grant.sh',
   'register-runner.sh',
@@ -96,7 +97,8 @@ describe('renderCloudInit (R08)', () => {
   it('opens the verified SSH path and starts the watchdog before slow package provisioning', () => {
     const rendered = renderCloudInit(validInput);
     const safetyBootstrap = rendered.indexOf('CIRUJANO_SAFETY_ONLY=1');
-    const sshRestart = rendered.indexOf('restart, ssh');
+    const sshRestart = rendered.indexOf('/opt/cirujano/diagnose-ssh');
+    const secureAptSources = rendered.indexOf('https://archive.ubuntu.com');
     const packageInstall = rendered.indexOf('apt-get, install, --yes');
     const fullBootstrap = rendered.indexOf('[env, "RUNNER_VERSION=');
 
@@ -107,6 +109,8 @@ describe('renderCloudInit (R08)', () => {
     expect(safetyBootstrap).toBeGreaterThan(-1);
     expect(safetyBootstrap).toBeLessThan(sshRestart);
     expect(sshRestart).toBeLessThan(packageInstall);
+    expect(sshRestart).toBeLessThan(secureAptSources);
+    expect(secureAptSources).toBeLessThan(rendered.indexOf('[apt-get, update]'));
     expect(packageInstall).toBeLessThan(fullBootstrap);
   });
 
@@ -129,7 +133,7 @@ describe('renderCloudInit (R08)', () => {
     expect(rendered).toContain('/etc/sudoers.d/cirujano-runner');
     expect(rendered).toContain(validInput.sshHostPublicKey);
     expect(rendered).toContain(validInput.sshLoginPublicKey);
-    expect(rendered.indexOf('restart, ssh')).toBeLessThan(rendered.indexOf('[env, "RUNNER_VERSION='));
+    expect(rendered.indexOf('/opt/cirujano/diagnose-ssh')).toBeLessThan(rendered.indexOf('[env, "RUNNER_VERSION='));
   });
 
   it('accepts an ssh-keygen-compatible private block with exact block alignment', () => {

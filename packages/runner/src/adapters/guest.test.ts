@@ -1,12 +1,12 @@
-import { execFileSync, spawn } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
 const guestDir = resolve(import.meta.dirname, '../../guest');
-const scripts = ['bootstrap.sh', 'arm-grant.sh', 'watchdog.sh', 'register-runner.sh', 'job-start-hook.sh', 'drain.sh', 'status.sh', 'resume-admission.sh'];
+const scripts = ['bootstrap.sh', 'diagnose-ssh.sh', 'arm-grant.sh', 'watchdog.sh', 'register-runner.sh', 'job-start-hook.sh', 'drain.sh', 'status.sh', 'resume-admission.sh'];
 
 describe('guest helpers (R08-R09)', () => {
   it.each(scripts)('%s passes bash syntax validation', (script) => {
@@ -25,10 +25,70 @@ describe('guest helpers (R08-R09)', () => {
 
   it('installs the watchdog before readiness and verifies the runner checksum', () => {
     const script = readFileSync(resolve(guestDir, 'bootstrap.sh'), 'utf8');
+    expect(script).toContain('install -d -m 0755 /opt/cirujano');
+    expect(script).toContain('install -d -m 0700 /var/lib/cirujano');
     expect(script.indexOf('systemctl enable --now cirujano-watchdog')).toBeLessThan(script.indexOf('touch /var/lib/cirujano/ready'));
     expect(script.indexOf('systemctl enable --now cirujano-watchdog')).toBeLessThan(script.indexOf('RUNNER_VERSION:?'));
     expect(script.indexOf('CIRUJANO_SAFETY_ONLY')).toBeLessThan(script.indexOf('RUNNER_VERSION:?'));
     expect(script).toContain('sha256sum --check');
+    expect(script).toContain('/opt/cirujano/diagnose-ssh');
+  });
+
+  it('returns the original SSH restart failure with bounded redacted serial diagnostics', () => {
+    const directory = mkdtempSync(resolve(tmpdir(), 'cirujano-ssh-diag-'));
+    try {
+      const systemctl = resolve(directory, 'systemctl');
+      const sshd = resolve(directory, 'sshd');
+      const journalctl = resolve(directory, 'journalctl');
+      const serial = resolve(directory, 'serial.log');
+      const privateKey = '-----BEGIN OPENSSH PRIVATE KEY-----\nprivate-body\n-----END OPENSSH PRIVATE KEY-----';
+      writeFileSync(systemctl, '#!/usr/bin/env bash\nif [[ "$1" == restart ]]; then exit 42; fi\nprintf "GITHUB_TOKEN = github_pat_diagnostic_secret\\n"\nprintf "NEBIUS_API_KEY: nebius-diagnostic-secret\\n"\nprintf "AWS_SECRET_ACCESS_KEY = aws-diagnostic-secret\\n"\nprintf "x%.0s" {1..70000}\n');
+      writeFileSync(sshd, `#!/usr/bin/env bash\nprintf '%s\\n' '${privateKey}'\nexit 1\n`);
+      writeFileSync(journalctl, '#!/usr/bin/env bash\necho "Authorization: Bearer journal-secret"\nexit 1\n');
+      for (const path of [systemctl, sshd, journalctl]) chmodSync(path, 0o700);
+      const result = spawnSync('/bin/bash', [resolve(guestDir, 'diagnose-ssh.sh')], {
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          CIRUJANO_SYSTEMCTL_BIN: systemctl,
+          CIRUJANO_SSHD_BIN: sshd,
+          CIRUJANO_JOURNALCTL_BIN: journalctl,
+          CIRUJANO_SERIAL_PATH: serial,
+        },
+      });
+      const output = readFileSync(serial, 'utf8');
+      expect(result.status).toBe(42);
+      expect(Buffer.byteLength(output)).toBeLessThanOrEqual(64 * 1024);
+      expect(output).toContain('CIRUJANO_SSH_DIAGNOSTICS_BEGIN');
+      expect(output).toContain('SECTION sshd-config');
+      expect(output).toContain('SECTION service-status');
+      expect(output).toContain('SECTION service-journal');
+      expect(output).toContain('[REDACTED]');
+      expect(output).not.toContain('github_pat_diagnostic_secret');
+      expect(output).not.toContain('nebius-diagnostic-secret');
+      expect(output).not.toContain('aws-diagnostic-secret');
+      expect(output).not.toContain('journal-secret');
+      expect(output).not.toContain('private-body');
+      expect(output).not.toContain('BEGIN OPENSSH PRIVATE KEY');
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps successful SSH restart output quiet', () => {
+    const directory = mkdtempSync(resolve(tmpdir(), 'cirujano-ssh-ok-'));
+    try {
+      const serial = resolve(directory, 'serial.log');
+      const ready = resolve(directory, 'ssh-ready');
+      const result = spawnSync('/bin/bash', [resolve(guestDir, 'diagnose-ssh.sh')], {
+        env: { ...process.env, CIRUJANO_SYSTEMCTL_BIN: '/usr/bin/true', CIRUJANO_SSHD_BIN: '/usr/bin/true', CIRUJANO_SERIAL_PATH: serial, CIRUJANO_SSH_READY_MARKER: ready },
+      });
+      expect(result.status).toBe(0);
+      expect(existsSync(serial)).toBe(false);
+      expect(existsSync(ready)).toBe(true);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   it('fails delayed jobs before user code and bounds the hook itself', () => {
