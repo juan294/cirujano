@@ -1,6 +1,8 @@
-import { readFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { generateKeyPairSync } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
 import { describe, expect, it } from 'vitest';
 
 import { CloudInitError, renderCloudInit, type GuestFileName } from './cloud-init.js';
@@ -108,18 +110,23 @@ describe('renderCloudInit (R08)', () => {
     expect(packageInstall).toBeLessThan(fullBootstrap);
   });
 
-  it('embeds every supplied guest helper and unit plus controller-generated SSH public keys', () => {
+  it('uses one native host-key owner and suppresses serial key disclosure', () => {
     const rendered = renderCloudInit(validInput);
     for (const name of guestFileNames) {
       expect(rendered).toContain(`/tmp/cirujano/${name}`);
       expect(rendered).toContain(Buffer.from(guestFiles[name], 'utf8').toString('base64'));
     }
-    expect(rendered).toContain('/etc/ssh/ssh_host_ed25519_key.pub');
-    expect(rendered).toContain('/etc/ssh/ssh_host_ed25519_key');
+    expect(rendered).toContain('ssh_keys:');
+    expect(rendered).toContain('  ed25519_private: |');
+    for (const line of validInput.sshHostPrivateKey.trimEnd().split('\n')) {
+      expect(rendered).toContain(`    ${line}`);
+    }
+    expect(rendered).toContain(`  ed25519_public: ${JSON.stringify(validInput.sshHostPublicKey)}`);
+    expect(rendered).toContain('ssh:');
+    expect(rendered).toContain('  emit_keys_to_console: false');
+    expect(rendered).toContain('no_ssh_fingerprints: true');
+    expect(rendered).not.toContain('path: /etc/ssh/ssh_host_ed25519_key');
     expect(rendered).toContain('/etc/sudoers.d/cirujano-runner');
-    expect(rendered).toContain("permissions: '0600'");
-    expect(rendered).toContain(Buffer.from(validInput.sshHostPrivateKey, 'utf8').toString('base64'));
-    expect(rendered).not.toContain(validInput.sshHostPrivateKey);
     expect(rendered).toContain(validInput.sshHostPublicKey);
     expect(rendered).toContain(validInput.sshLoginPublicKey);
     expect(rendered.indexOf('restart, ssh')).toBeLessThan(rendered.indexOf('[env, "RUNNER_VERSION='));
@@ -153,4 +160,68 @@ describe('renderCloudInit (R08)', () => {
   ])('fails closed for %s', (_name, patch) => {
     expect(() => renderCloudInit({ ...validInput, ...patch } as typeof validInput)).toThrow(CloudInitError);
   });
+});
+
+describe('cloud-init harness disclosure boundaries', () => {
+  it('does not include injected private host-key material in renderer errors', () => {
+    const directory = mkdtempSync(resolve(tmpdir(), 'cirujano-render-error-'));
+    try {
+      const output = resolve(directory, 'cloud-config.yaml');
+      const hostPrivate = resolve(directory, 'host-key');
+      const hostPublic = resolve(directory, 'host-key.pub');
+      const loginPublic = resolve(directory, 'login-key.pub');
+      writeFileSync(hostPrivate, hostKeyPair.privateKey, { mode: 0o600 });
+      writeFileSync(hostPublic, validInput.sshLoginPublicKey);
+      writeFileSync(loginPublic, validInput.sshLoginPublicKey);
+      const result = spawnSync(process.execPath, [resolve(guestDir, '../../../scripts/render-runner-cloud-init.mjs'), output], {
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          CIRUJANO_HOST_PRIVATE_KEY_PATH: hostPrivate,
+          CIRUJANO_HOST_PUBLIC_KEY_PATH: hostPublic,
+          CIRUJANO_LOGIN_PUBLIC_KEY_PATH: loginPublic,
+        },
+      });
+      const captured = `${result.stdout}${result.stderr}`;
+      expect(result.status).not.toBe(0);
+      expect(captured).not.toContain(hostKeyPair.privateKey);
+      expect(captured).not.toContain(Buffer.from(hostKeyPair.privateKey, 'utf8').toString('base64'));
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('withholds schema annotations that contain injected private host-key material', () => {
+    const directory = mkdtempSync(resolve(tmpdir(), 'cirujano-schema-error-'));
+    try {
+      const dockerStub = resolve(directory, 'docker-stub');
+      const hostPrivate = resolve(directory, 'host-key');
+      const hostPublic = resolve(directory, 'host-key.pub');
+      const loginPublic = resolve(directory, 'login-key.pub');
+      writeFileSync(hostPrivate, hostKeyPair.privateKey, { mode: 0o600 });
+      writeFileSync(hostPublic, hostKeyPair.publicKey);
+      writeFileSync(loginPublic, validInput.sshLoginPublicKey);
+      writeFileSync(dockerStub, `#!/usr/bin/env bash\nif [[ "$1" == build ]]; then exit 0; fi\nprintf '%s\\n' "$CIRUJANO_TEST_PRIVATE_KEY"\nprintf '%s' "$CIRUJANO_TEST_PRIVATE_KEY" | base64\nexit 1\n`);
+      chmodSync(dockerStub, 0o755);
+      const result = spawnSync('/bin/bash', [resolve(guestDir, '../../../scripts/verify-runner-cloud-init-schema.sh')], {
+        encoding: 'utf8',
+        timeout: 60_000,
+        env: {
+          ...process.env,
+          CIRUJANO_DOCKER_PATH: dockerStub,
+          CIRUJANO_HOST_PRIVATE_KEY_PATH: hostPrivate,
+          CIRUJANO_HOST_PUBLIC_KEY_PATH: hostPublic,
+          CIRUJANO_LOGIN_PUBLIC_KEY_PATH: loginPublic,
+          CIRUJANO_TEST_PRIVATE_KEY: hostKeyPair.privateKey,
+        },
+      });
+      const captured = `${result.stdout}${result.stderr}`;
+      expect(result.status).not.toBe(0);
+      expect(captured).not.toContain(hostKeyPair.privateKey);
+      expect(captured).not.toContain(Buffer.from(hostKeyPair.privateKey, 'utf8').toString('base64'));
+      expect(captured).toContain('captured annotated output withheld');
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }, 70_000);
 });

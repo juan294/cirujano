@@ -40,7 +40,12 @@ export function renderCloudInit(input: CloudInitInput): string {
     'package_upgrade: false',
     'ssh_pwauth: false',
     'disable_root: true',
+    'ssh:',
+    '  emit_keys_to_console: false',
+    'no_ssh_fingerprints: true',
     'ssh_keys:',
+    '  ed25519_private: |',
+    ...yamlLiteralLines(input.sshHostPrivateKey, 4),
     `  ed25519_public: ${yamlString(input.sshHostPublicKey)}`,
     'groups:',
     '  - docker',
@@ -54,15 +59,6 @@ export function renderCloudInit(input: CloudInitInput): string {
     '    ssh_authorized_keys:',
     `      - ${yamlString(input.sshLoginPublicKey)}`,
     'write_files:',
-    '  - path: /etc/ssh/ssh_host_ed25519_key',
-    '    owner: root:root',
-    "    permissions: '0600'",
-    '    encoding: b64',
-    `    content: ${Buffer.from(input.sshHostPrivateKey, 'utf8').toString('base64')}`,
-    '  - path: /etc/ssh/ssh_host_ed25519_key.pub',
-    '    owner: root:root',
-    "    permissions: '0644'",
-    `    content: ${yamlString(input.sshHostPublicKey)}`,
     '  - path: /etc/sudoers.d/cirujano-runner',
     '    owner: root:root',
     "    permissions: '0440'",
@@ -236,4 +232,9 @@ function rejectSecrets(content: string, sensitiveValues: readonly string[], cont
 
 function yamlString(value: string): string {
   return JSON.stringify(value);
+}
+
+function yamlLiteralLines(value: string, spaces: number): string[] {
+  const indentation = ' '.repeat(spaces);
+  return value.trimEnd().split(/\r?\n/u).map((line) => `${indentation}${line}`);
 }

@@ -15,13 +15,14 @@
   },
   "packageManager": "pnpm@11.22.0",
   "scripts": {
-    "test": "pnpm -r test",
+    "test": "pnpm -r --workspace-concurrency=1 test",
     "typecheck": "pnpm -r typecheck",
     "lint": "pnpm -r lint",
     "build": "pnpm -r build",
     "verify:bundle": "pnpm run build && node scripts/verify-bundle.mjs",
     "ci:fast": "pnpm run typecheck && pnpm run lint && pnpm run verify:bundle && pnpm run test",
     "ci:local": "pnpm run ci:fast",
+    "verify:cloud-init-schema": "bash scripts/verify-runner-cloud-init-schema.sh",
     "prepare": "husky"
   },
   "devDependencies": {
