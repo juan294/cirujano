@@ -75,3 +75,15 @@
 - Complete gate: `python3 .rpi/scripts/rpi-verify.py` passed typecheck, lint, build, bundle verification, and 380 tests across core, runner, action, and CLI.
 - External state: no Nebius or GitHub mutation occurred.
 - Next entry condition: phase 4 requires an exact candidate/configuration/permit packet and fresh owner authorization before any mutation.
+
+## Phase 4 handoff
+
+- Scope: one candidate-bound live bootstrap, strict SSH and watchdog evidence, five-minute no-restart observation, and exact cleanup.
+- Candidate: `20d039fa63168df6092bb355c18de46aa7bc4e2a`; CLI SHA-256 `2bed8d81bdb5895f8a7564f92ed765e832c8866db740d3c3386d64879341e813`.
+- Authorization: exact `r8` packet approved with config SHA-256 `cefb57749413a41a3e29fabf0b9e86376a283732b78e271cb22a762a45908b22` and permit SHA-256 `84085acf607b415a1e23566f492814ace2e0c17dc05f29516b7f6cca965b481b`.
+- Fixture: Archy run `34848109183` stayed queued, executed zero steps, and was cancelled before any additional controller tick.
+- Guest: strict SSH accepted the candidate-bound Ed25519 fingerprint. The ready snapshot proved active watchdog, generation 1 grant, no runner process, no worker process, and no registration.
+- Shutdown: grant ran from `2026-09-14T13:17:37.510Z` to deadline `2026-09-14T13:21:18.375Z`; provider `STOPPED` was first observed at `2026-09-14T13:23:38.064Z` without further controller or guest commands.
+- Observation: the exact VM remained stopped through `2026-09-14T13:28:42.164Z`; controller start count remained one.
+- Cleanup: the permit-bound cleanup removed only the exact `r8` VM and managed disk. Final complete reads showed zero instances, disks, public-IP allocations, repository runners, owned runners, or eligible fixture demand.
+- Receipt: local ignored `docs/agents/nebius-runner-bootstrap-proof-2026-09-14.md`; controller artifacts, transcript-preserved observations, final readbacks, and keys remain ignored under `.cirujano/runner/bootstrap-proof-r8/`.
