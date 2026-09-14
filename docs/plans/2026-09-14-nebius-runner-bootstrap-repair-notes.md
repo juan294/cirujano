@@ -33,6 +33,12 @@
 - Chose: render plain host names for port 22 and retain bracketed host-and-port entries for non-default ports. The regression test covers both forms. Strict host-key checking and the pinned fingerprint remain unchanged.
 - Cleanup: cancelled exact Archy run `34846465666`, stopped and deleted only VM `computeinstance-e01j36rtq99fyam6n9` and its managed disk, then confirmed zero instances, disks, and public-IP allocations. The VM started once; no token, runner registration, or workload admission occurred.
 
+### Post-push CI workflow identifier repair
+
+- Found: exact-SHA CI run `34854470321` was rejected before job creation because job identifier `ubuntu-24.04` contained dots, which GitHub does not allow in job identifiers. CodeQL run `34854472096` passed for the same SHA.
+- Chose: rename only the job identifier to `ubuntu_24_04`; retain `runs-on: ubuntu-24.04` and the complete boot-oracle job body unchanged.
+- Regression: a repository test now fixes the valid job identifier and rejects the invalid dotted form. Local `actionlint` also accepts the repaired workflow.
+
 ## Phase 1 handoff
 
 - Scope: complete native Ed25519 host-key ownership, console suppression, deterministic renderer harness, and exact cloud-init 26.1 schema oracle.

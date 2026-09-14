@@ -34,7 +34,7 @@ jobs:
       - run: node scripts/verify-bundle.mjs
       - run: pnpm run test
 
-  ubuntu-24.04:
+  ubuntu_24_04:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
