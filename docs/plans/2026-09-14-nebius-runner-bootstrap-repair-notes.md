@@ -45,6 +45,12 @@
 - Chose: try GNU `stat -c '%a'` first and fall back to BSD `stat -f '%Lp'`. The rendered file and required `0600` check remain unchanged.
 - Regression: the disclosure-boundary test now supplies a GNU-compatible `stat` fixture that reproduces the Linux behavior and proves the schema failure remains redacted after the portable mode probe.
 
+### Hosted QEMU CPU topology repair
+
+- Found: exact-SHA CI run `34857555243` passed the complete standard job, including all 381 tests, but its QEMU job closed the SSH connection before cloud-init completed. The preceding hosted QEMU run `34855699167` had passed with cloud-init ready 411 seconds after boot and the unarmed watchdog powering off 609 seconds after SSH readiness, so the failure was timing variance under software emulation rather than a production cloud-config regression.
+- Chose: set `CIRUJANO_QEMU_CPUS=2` only on the dedicated Ubuntu boot-oracle job. The hosted runner has four vCPUs, while the prior eight-vCPU TCG guest oversubscribed it. The production cloud-config, package set, and 600-second unarmed watchdog deadline remain unchanged.
+- Regression: the workflow test fixes the CI-only CPU topology. A local exact oracle with two guest CPUs reached strict SSH in 83 seconds, observed the watchdog, powered off 613 seconds after SSH readiness, exited after 696 seconds total, recorded serial checksum `a758ed2ed3b5cee00960f190bd92e61af34ddf1e27cac24cc3063eb073d9e751`, and confirmed ephemeral cleanup.
+
 ## Phase 1 handoff
 
 - Scope: complete native Ed25519 host-key ownership, console suppression, deterministic renderer harness, and exact cloud-init 26.1 schema oracle.

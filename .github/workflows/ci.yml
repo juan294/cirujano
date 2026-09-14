@@ -37,6 +37,8 @@ jobs:
   ubuntu_24_04:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
+    env:
+      CIRUJANO_QEMU_CPUS: 2
     steps:
       - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v6
