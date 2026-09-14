@@ -21,7 +21,7 @@ describe('CI workflow', () => {
     }
   });
 
-  it('uses a host-sized CPU topology for the Ubuntu boot oracle', () => {
+  it('uses a conservative CPU topology for the Ubuntu boot oracle', () => {
     const jobs = workflow.split('\njobs:\n', 2)[1];
     if (jobs === undefined) throw new Error('CI workflow has no jobs section');
     const lines = jobs.split('\n');

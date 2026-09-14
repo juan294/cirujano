@@ -6,6 +6,7 @@ readonly image_sha256=612b2c0cc1bc413a6cb8c38fd611794caf0f2b436c50013d8b3794db12
 readonly runner_version=2.328.0
 readonly runner_sha256=01066fad3a2893e63e6ca880ae3a1fad5bf9329d60e77ee15f2b97c148c3cd4e
 readonly overlay_size=16G
+readonly qemu_cpu_model=qemu64
 readonly qemu_cpus=${CIRUJANO_QEMU_CPUS:-8}
 readonly qemu_memory_mb=${CIRUJANO_QEMU_MEMORY_MB:-4096}
 repository_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -86,8 +87,8 @@ started_at=$(date +%s)
 started_at_iso=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 "$qemu_system" \
   -machine accel=kvm:tcg \
-  -cpu max -smp "$qemu_cpus" -m "$qemu_memory_mb" \
-  -drive "file=$overlay,format=qcow2,if=virtio" \
+  -cpu "$qemu_cpu_model" -smp "$qemu_cpus" -m "$qemu_memory_mb" \
+  -drive "file=$overlay,format=qcow2,if=virtio,cache=unsafe" \
   -drive "file=$seed_image,format=raw,if=virtio" \
   -netdev "user,id=net0,hostfwd=tcp:127.0.0.1:$port-:22" \
   -device virtio-net-pci,netdev=net0 \
@@ -146,6 +147,8 @@ printf 'image: %s\n' "$image_url"
 printf 'image sha256: %s\n' "$actual_image_sha256"
 printf 'qemu: %s\n' "$("$qemu_system" --version | head -1)"
 printf 'acceleration: kvm:tcg\n'
+printf 'cpu model: %s (%s vCPUs)\n' "$qemu_cpu_model" "$qemu_cpus"
+printf 'overlay cache: unsafe (ephemeral test disk)\n'
 printf 'host fingerprint: %s\n' "$(ssh-keygen -lf "$host_key.pub" -E sha256 | awk '{print $2}')"
 printf 'sshd preflight: proved by root-owned readiness marker\n'
 printf 'boot started: %s\n' "$started_at_iso"
