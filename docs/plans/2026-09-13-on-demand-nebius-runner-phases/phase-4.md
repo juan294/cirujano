@@ -1,7 +1,7 @@
 # Phase 4: authorized live pilot and evidence
 
 Parent: [runner plan](../2026-09-13-on-demand-nebius-runner.md).
-Status: live R14 remains blocked after four failed attempts; every recovery and cleanup completed.
+Status: live R14 remains blocked after five failed attempts; every recovery and cleanup completed.
 Entry: accepted Phase 3 plus explicit authorization to prepare this phase.
 Preparation alone does not authorize GitHub mutations or spending.
 
@@ -186,3 +186,35 @@ rejecting malformed values. The next proposal must bind a new candidate,
 `eu-west1` project, subnet, image and resource prefixes. R14 still has no
 self-hosted pass, and the failed-attempt contract requires fresh authorization
 before any new dispatch or resource creation.
+
+## Fifth live attempt result
+
+The repaired controller was published at commit
+`7576a5f8545ea2949d39971e60f6df45a43b2d3e` with CLI digest
+`635735d704f065637e4995ac54d12ced3273d3b556bf5d6dd51b8d4fb2fec2f7`.
+Its exact CI and CodeQL runs passed. A fresh receipt bound the same fixture to
+the active `eu-west1` project, one VM at a time, four starts, six cumulative
+hours and a USD 5 cap. The two hosted baselines passed in 40 and 38 seconds.
+
+The attended first-boot generation reached `RUNNING`. The controller attempted
+the pinned SSH path before the guest listener was ready, failed closed, and the
+separate provider stop reached `STOPPED` within the ten-minute recovery bound.
+Cleanup removed the exact VM and disk. The first-boot failure row therefore
+passed without registering a runner or starting the queued workload.
+
+The watchdog generation also reached `RUNNING`, but port 22 remained closed for
+more than eleven minutes. The five-minute start deadline expired before the
+controller could arm the guest watchdog. Provider and network readbacks showed
+an active VM, a reachable public IP and an allow-all default security group;
+the generated cloud-init placed package installation before its `runcmd`, where
+the watchdog helpers and SSH restart were installed. The watchdog-first row
+failed, so the queued self-hosted dispatch was cancelled and the fourth dispatch
+was not issued.
+
+Recovery stopped and deleted the exact watchdog generation. Final live reads
+returned empty R5 instance, disk and allocation inventories. Conservative
+provider-operation intervals and retained-disk accounting estimate USD 0.02895
+for both generations. The local repair removes cloud-init's pre-`runcmd` package
+work, installs and starts the watchdog control helpers first, opens the pinned
+SSH path, then performs package provisioning. A new candidate-bound receipt is
+required before another dispatch or resource creation.

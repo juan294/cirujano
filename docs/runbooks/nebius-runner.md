@@ -96,6 +96,10 @@ rate limiting, SSH identity, guest status or operation polling fails. Repair the
 read path and rerun the same command. Never delete state to bypass reconciliation.
 
 Before a live workload, prove the watchdog-only stop and `Stopped` readback.
+Cloud-init must install and start the watchdog helpers and restart the pinned SSH
+listener before package installation. Keep slow package and runner provisioning
+after that control path so the controller can arm the immutable grant while the
+guest is still booting.
 During first boot, stop via the separately observed Nebius API if watchdog
 readiness is absent after ten minutes. Record all provider state and cleanup
 readbacks under `.cirujano/runner/`; sanitize only the final report intended for

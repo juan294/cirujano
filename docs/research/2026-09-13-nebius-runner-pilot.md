@@ -1,7 +1,7 @@
 # Nebius runner pilot evidence
 
 Date: 2026-09-14
-Status: fourth live attempt failed on regional CPU quota; cleanup verified Nebius empty
+Status: fifth live attempt failed watchdog-first; cleanup verified Nebius empty
 
 ## Candidate and local evidence
 
@@ -34,11 +34,11 @@ managed disk, and verified empty instance, disk and allocation inventories.
 
 ## Read-only preflight
 
-The authenticated project is in `eu-north1`. It has one ready default subnet
-with private and public address pools. The selected immutable image is the ready
-AMD64 Ubuntu 24.04 driverless image recommended for `cpu-d3`. Private provider
-and repository identifiers remain in the ignored `.cirujano/runner/` evidence
-directory and are omitted here.
+The fourth attempt used `eu-north1`, where the selected project's CPU allowance
+was zero. The fifth attempt used the same tenant's active `eu-west1` capacity,
+ready default subnet and ready AMD64 Ubuntu 24.04 driverless image recommended
+for `cpu-d3`. Private provider and repository identifiers remain in the ignored
+`.cirujano/runner/` evidence directory and are omitted here.
 
 The intended resource remains one regular `cpu-d3` `4vcpu-16gb` VM with one
 80 GiB Network SSD disk and recovery policy `FAIL`. Nebius documents `cpu-d3`
@@ -131,3 +131,40 @@ The same Ubuntu 24.04 driverless image version is ready in that region. The loca
 parser repair maps only an omitted protobuf boolean to false and preserves strict
 rejection for every other malformed value. A new candidate and region-bound
 receipt are required before another live attempt.
+
+## Fifth authorized attempt
+
+The fifth receipt bound commit
+`7576a5f8545ea2949d39971e60f6df45a43b2d3e` and CLI digest
+`635735d704f065637e4995ac54d12ced3273d3b556bf5d6dd51b8d4fb2fec2f7`
+to the exact fixture, `eu-west1`, one concurrent VM and the existing USD 5 cap.
+Exact CI and CodeQL passed. The hosted runs passed the shared workload in 40 and
+38 seconds.
+
+The first self-hosted dispatch remained queued throughout the live safety work.
+Its attended first-boot VM reached `RUNNING`; the controller failed closed when
+SSH was not ready, and the separately observed provider stop completed within
+the ten-minute bound. Cleanup removed that VM and disk. No runner registered and
+the workload did not start.
+
+The watchdog generation reached `RUNNING` with a reachable public address and
+the default allow-all security group, but no SSH listener appeared for more than
+eleven minutes. The five-minute grant deadline expired before the controller
+could invoke the installed `arm-grant` helper. Inspection of the exact rendered
+cloud-init confirmed that cloud-init's package phase ran before `runcmd`, where
+the watchdog helpers and SSH restart were placed. This failed the mandatory
+watchdog-first row.
+
+Recovery cancelled the queued run, did not issue the second self-hosted dispatch,
+stopped the VM and removed its managed disk and allocation. Final live
+inventories returned empty arrays. Using full provider-operation intervals,
+generation one conservatively consumed 201.430 seconds of compute and 269.813
+seconds of retained disk; generation two consumed 764.147 seconds of compute and
+810.823 seconds of retained disk. At the recorded rates the combined estimate is
+USD 0.02895 before tax and provider rounding.
+
+The local repair disables cloud-init's early package phase, runs a safety-only
+bootstrap to install and start the watchdog helpers, restarts SSH, and then
+performs package and runner provisioning. Focused regression tests cover this
+ordering. This changes the candidate; another live attempt requires a new exact
+receipt.

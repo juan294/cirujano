@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-: "${RUNNER_VERSION:?RUNNER_VERSION is required}"
-: "${RUNNER_SHA256:?RUNNER_SHA256 is required}"
 install -d -m 0700 /var/lib/cirujano /opt/cirujano /opt/actions-runner
 install -m 0755 /tmp/cirujano/watchdog.sh /opt/cirujano/watchdog
 install -m 0755 /tmp/cirujano/arm-grant.sh /opt/cirujano/arm-grant
@@ -14,6 +12,13 @@ install -m 0755 /tmp/cirujano/resume-admission.sh /opt/cirujano/resume-admission
 install -m 0644 /tmp/cirujano/cirujano-watchdog.service /etc/systemd/system/cirujano-watchdog.service
 systemctl daemon-reload
 systemctl enable --now cirujano-watchdog
+
+if [[ "${CIRUJANO_SAFETY_ONLY:-0}" == 1 ]]; then
+  exit 0
+fi
+
+: "${RUNNER_VERSION:?RUNNER_VERSION is required}"
+: "${RUNNER_SHA256:?RUNNER_SHA256 is required}"
 
 archive="/tmp/actions-runner-${RUNNER_VERSION}.tar.gz"
 curl --fail --silent --show-error --location --output "$archive" \

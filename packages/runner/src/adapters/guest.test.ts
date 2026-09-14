@@ -26,6 +26,8 @@ describe('guest helpers (R08-R09)', () => {
   it('installs the watchdog before readiness and verifies the runner checksum', () => {
     const script = readFileSync(resolve(guestDir, 'bootstrap.sh'), 'utf8');
     expect(script.indexOf('systemctl enable --now cirujano-watchdog')).toBeLessThan(script.indexOf('touch /var/lib/cirujano/ready'));
+    expect(script.indexOf('systemctl enable --now cirujano-watchdog')).toBeLessThan(script.indexOf('RUNNER_VERSION:?'));
+    expect(script.indexOf('CIRUJANO_SAFETY_ONLY')).toBeLessThan(script.indexOf('RUNNER_VERSION:?'));
     expect(script).toContain('sha256sum --check');
   });
 

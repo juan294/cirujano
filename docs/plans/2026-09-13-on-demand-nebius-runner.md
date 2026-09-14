@@ -281,8 +281,16 @@ passed both hosted workloads, then created its attended first-boot VM in the
 required stopped state. The controller incorrectly counted creation as the
 generation's start and blocked the actual start. Recovery cancelled the queued
 self-hosted workload, deleted the stopped VM and disk, and again proved empty
-instance, disk and allocation inventories. The start accounting repair is local;
-R14 still requires a new candidate-bound authorization.
+instance, disk and allocation inventories. The integrated start-accounting
+repair reached the fourth attempt, which failed on zero `eu-north1` CPU quota
+and was cleaned.
+The fifth attempt moved to the active `eu-west1` capacity, passed both hosted
+baselines and the attended first-boot recovery, then failed watchdog-first
+because cloud-init completed package work before starting SSH and the watchdog
+control path. The queued self-hosted run was cancelled, the unused fourth
+dispatch was not issued, and live reads again proved all R5 VMs, disks and IP
+allocations absent. The local bootstrap-order repair requires a fresh
+candidate-bound authorization before R14 can continue.
 
 Automated final acceptance requires every scenario R01–R14 in the phase files,
 all existing repository gates and the real provider evidence in Phase 4. Missing

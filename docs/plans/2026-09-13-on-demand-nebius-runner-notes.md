@@ -70,3 +70,29 @@
   now advances only when `start-vm` is journaled, while the create intent keeps
   a separately validated reservation for the next generation. R14 requires a
   fresh candidate-bound authorization before another live attempt.
+
+### Fourth live regional quota failure
+
+- Plan said: start the exact owned VM only after the provider contract passed.
+- Found: the selected `eu-north1` project had a zero non-GPU vCPU allowance,
+  while the same tenant had an active `eu-west1` allowance and project.
+- Chose: cancel the queued workload, remove the stopped VM and disk, repair the
+  omitted protobuf-boolean parser case and bind the next proposal to `eu-west1`.
+- Why: region fallback was outside the receipt, and provider payloads must parse
+  before recovery can rely on ownership readback.
+
+### Fifth live bootstrap-order failure
+
+- Plan said: arm the five-minute watchdog grant before disconnecting the
+  controller, and admit no workload until the watchdog-only stop passed.
+- Found: both hosted baselines passed and first-boot recovery passed, but the
+  watchdog VM kept SSH closed for more than eleven minutes. Cloud-init processed
+  `package_update` and `packages` before `runcmd`, which contained the watchdog
+  installation and SSH restart. The five-minute grant expired before arming.
+- Chose: cancel the still-queued self-hosted run, leave the fourth dispatch
+  unused, stop and delete the exact VM and disk, and verify empty R5 instance,
+  disk and allocation inventories. Move package provisioning behind a
+  safety-only bootstrap that installs the watchdog helpers and opens SSH first.
+- Why: widening or replacing the expired receipt would hide a required R14
+  failure. The corrected ordering preserves single-slot scope and requires a
+  fresh candidate-bound authorization for the next live attempt.

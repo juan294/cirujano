@@ -91,6 +91,23 @@ describe('renderCloudInit (R08)', () => {
     expect(first).toContain('/tmp/cirujano/bootstrap.sh');
   });
 
+  it('opens the verified SSH path and starts the watchdog before slow package provisioning', () => {
+    const rendered = renderCloudInit(validInput);
+    const safetyBootstrap = rendered.indexOf('CIRUJANO_SAFETY_ONLY=1');
+    const sshRestart = rendered.indexOf('restart, ssh');
+    const packageInstall = rendered.indexOf('apt-get, install, --yes');
+    const fullBootstrap = rendered.indexOf('[env, "RUNNER_VERSION=');
+
+    expect(rendered).toContain('package_update: false');
+    expect(rendered).not.toContain('package_update: true');
+    expect(rendered).toContain('groups:\n  - docker\nusers:');
+    expect(rendered).not.toContain('\npackages:\n');
+    expect(safetyBootstrap).toBeGreaterThan(-1);
+    expect(safetyBootstrap).toBeLessThan(sshRestart);
+    expect(sshRestart).toBeLessThan(packageInstall);
+    expect(packageInstall).toBeLessThan(fullBootstrap);
+  });
+
   it('embeds every supplied guest helper and unit plus controller-generated SSH public keys', () => {
     const rendered = renderCloudInit(validInput);
     for (const name of guestFileNames) {
