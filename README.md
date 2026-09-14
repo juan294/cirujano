@@ -24,9 +24,10 @@ and every number it claims comes from a real run.
 
 The measurement core, single-run estimator, reporting Action, on-demand Nebius
 runner controller, and daily fleet telemetry are implemented. The runner is
-awaiting a fresh candidate-bound live pilot after a stopped-VM start-accounting
-defect was found and repaired locally. Workflow patch proposal and verification
-remain future work. The measured starting point that
+awaiting a fresh candidate-bound live pilot in a Nebius region with nonzero CPU
+quota. The selected `eu-north1` tenant quota rejected the first VM start; the
+same active tenant has capacity in `eu-west1`. Workflow patch proposal and
+verification remain future work. The measured starting point that
 motivates the project is in
 [docs/research/2026-09-08-github-actions-cost-baseline.md](docs/research/2026-09-08-github-actions-cost-baseline.md).
 

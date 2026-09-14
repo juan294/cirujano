@@ -1,7 +1,7 @@
 # Phase 4: authorized live pilot and evidence
 
 Parent: [runner plan](../2026-09-13-on-demand-nebius-runner.md).
-Status: live R14 remains blocked after three failed attempts on 2026-09-13; every recovery and cleanup completed.
+Status: live R14 remains blocked after four failed attempts; every recovery and cleanup completed.
 Entry: accepted Phase 3 plus explicit authorization to prepare this phase.
 Preparation alone does not authorize GitHub mutations or spending.
 
@@ -158,3 +158,31 @@ validates the create intent as a reservation for exactly the next generation.
 A regression test covers create, stopped readback and first start under a
 one-start permit. R14 still has no self-hosted pass and requires a new
 candidate-bound authorization before another live attempt.
+
+## Fourth live attempt result
+
+The repaired controller and exact fixture commit received a fresh bounded
+authorization. Both hosted dispatches passed the shared workload in 44 and 35
+seconds. The first self-hosted dispatch queued correctly and the controller
+created one owned stopped VM, reconciled it, and emitted the first authorized
+start.
+
+Nebius rejected that start with `QuotaFailure`: the active tenant's
+`compute.instance.non-gpu.vcpu` allowance is zero in the selected `eu-north1`
+region. The VM entered `STARTING` briefly but never ran, so no guest booted,
+runner registered or self-hosted workload began. The provider also omitted the
+protobuf `false` value for `spec.stopped` after the rejected start. The strict
+parser blocked interrupt recovery on that valid representation.
+
+Recovery cancelled the queued self-hosted dispatch and deleted the exact owned
+VM and managed disk through the separately authorized provider API. Final live
+readbacks returned empty instance, disk and allocation inventories. The fourth
+dispatch was not issued. Read-only quota inspection found 200 non-GPU vCPUs in
+the same tenant's `eu-west1` region and an existing active project, subnet and
+matching Ubuntu image there.
+
+The local repair treats only an omitted protobuf boolean as `false` while still
+rejecting malformed values. The next proposal must bind a new candidate,
+`eu-west1` project, subnet, image and resource prefixes. R14 still has no
+self-hosted pass, and the failed-attempt contract requires fresh authorization
+before any new dispatch or resource creation.

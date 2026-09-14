@@ -115,6 +115,15 @@ describe('strict provider response parsers', () => {
     });
   });
 
+  it('treats an omitted protobuf false stopped field as false', () => {
+    const value = instance({ status: { state: 'RUNNING' } });
+    delete (value.spec as Record<string, unknown>).stopped;
+
+    expect(parseInstancePage(JSON.stringify({ items: [value] })).items[0]?.stopped).toBe(false);
+    (value.spec as Record<string, unknown>).stopped = null;
+    expect(() => parseInstancePage(JSON.stringify({ items: [value] }))).toThrow(NebiusParseError);
+  });
+
   it.each(['CREATING', 'UPDATING', 'STARTING', 'RUNNING', 'STOPPING', 'STOPPED', 'DELETING', 'ERROR'])('accepts documented instance state %s', (state) => {
     expect(parseInstancePage(JSON.stringify({ items: [instance({ status: { state } })] })).items[0]?.providerState).toBe(state);
   });

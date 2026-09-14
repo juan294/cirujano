@@ -1,7 +1,7 @@
 # Nebius runner pilot evidence
 
-Date: 2026-09-13
-Status: third live attempt failed before first boot; cleanup verified Nebius empty
+Date: 2026-09-14
+Status: fourth live attempt failed on regional CPU quota; cleanup verified Nebius empty
 
 ## Candidate and local evidence
 
@@ -109,3 +109,25 @@ lint, build, bundle verification and 345 tests. The macOS launchd integration
 tests remain executable on macOS and are skipped on Linux, where their required
 system tools do not exist. This repair changes the candidate, so a fresh bounded
 authorization is required before R14 can resume.
+
+The fourth authorized attempt ran two new hosted baselines at the same fixture
+commit. They passed in 44 and 35 seconds. The queued self-hosted run caused the
+repaired controller to create and reconcile one owned stopped VM and emit its
+first start. Nebius rejected the start because the active tenant's
+`compute.instance.non-gpu.vcpu` limit is zero in `eu-north1`. The VM never
+reached `RUNNING`; no guest booted, runner registered or self-hosted workload
+began.
+
+After the rejected start, Nebius omitted `spec.stopped` from its protobuf JSON
+because the value was false. The strict parser rejected that valid wire shape
+during interrupt recovery. Recovery used the authorized provider API to delete
+the exact owned VM and managed disk, cancelled the queued workflow, and verified
+empty instance, disk and allocation inventories. No compute runtime was billed;
+only the brief retained-disk interval is chargeable.
+
+Read-only quota inspection found that the same active tenant has 200 non-GPU
+vCPUs in `eu-west1`, with an existing active regional project and default subnet.
+The same Ubuntu 24.04 driverless image version is ready in that region. The local
+parser repair maps only an omitted protobuf boolean to false and preserves strict
+rejection for every other malformed value. A new candidate and region-bound
+receipt are required before another live attempt.

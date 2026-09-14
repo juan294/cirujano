@@ -330,7 +330,7 @@ function parseInstance(value: unknown, location: string): NebiusInstance {
     labels: stringMapAt(metadata['labels'], `${location}.metadata.labels`),
     providerState,
     state: mapInstanceState(providerState),
-    stopped: booleanAt(spec['stopped'], `${location}.spec.stopped`),
+    stopped: protobufBooleanAt(spec['stopped'], `${location}.spec.stopped`),
     recoveryPolicy: stringAt(spec['recovery_policy'], `${location}.spec.recovery_policy`).toUpperCase(),
     platform: stringAt(resources['platform'], `${location}.spec.resources.platform`),
     preset: stringAt(resources['preset'], `${location}.spec.resources.preset`),
@@ -420,6 +420,10 @@ function nullableStringAt(value: unknown, location: string): string | null {
 function booleanAt(value: unknown, location: string): boolean {
   if (typeof value !== 'boolean') throw new NebiusParseError(`${location} must be a boolean`);
   return value;
+}
+
+function protobufBooleanAt(value: unknown, location: string): boolean {
+  return value === undefined ? false : booleanAt(value, location);
 }
 
 function finiteNumberAt(value: unknown, location: string): number {
