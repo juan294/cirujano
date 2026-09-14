@@ -22,7 +22,7 @@ pnpm --filter @cirujano/runner run build >/dev/null
   "$repository_root/packages/runner/test/cloud-init-26.1" >/dev/null
 node "$repository_root/scripts/render-runner-cloud-init.mjs" "$rendered"
 
-mode=$(stat -f '%Lp' "$rendered" 2>/dev/null || stat -c '%a' "$rendered")
+mode=$(stat -c '%a' "$rendered" 2>/dev/null || stat -f '%Lp' "$rendered")
 [[ "$mode" == 600 ]] || { echo 'rendered cloud-config mode is not 0600' >&2; exit 1; }
 
 if ! "$docker_path" run --rm --volume "$temporary_directory:/work:ro" "$image" schema -c /work/cloud-config.yaml --annotate >"$schema_output" 2>&1; then

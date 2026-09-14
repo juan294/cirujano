@@ -199,6 +199,7 @@ describe('cloud-init harness disclosure boundaries', () => {
     const directory = mkdtempSync(resolve(tmpdir(), 'cirujano-schema-error-'));
     try {
       const dockerStub = resolve(directory, 'docker-stub');
+      const statStub = resolve(directory, 'stat');
       const hostPrivate = resolve(directory, 'host-key');
       const hostPublic = resolve(directory, 'host-key.pub');
       const loginPublic = resolve(directory, 'login-key.pub');
@@ -206,7 +207,9 @@ describe('cloud-init harness disclosure boundaries', () => {
       writeFileSync(hostPublic, hostKeyPair.publicKey);
       writeFileSync(loginPublic, validInput.sshLoginPublicKey);
       writeFileSync(dockerStub, `#!/usr/bin/env bash\nif [[ "$1" == build ]]; then exit 0; fi\nprintf '%s\\n' "$CIRUJANO_TEST_PRIVATE_KEY"\nprintf '%s' "$CIRUJANO_TEST_PRIVATE_KEY" | base64\nexit 1\n`);
+      writeFileSync(statStub, `#!/usr/bin/env bash\nif [[ "$1" == -c ]]; then printf '600\\n'; exit 0; fi\nprintf 'GNU stat filesystem report\\n'\n`);
       chmodSync(dockerStub, 0o755);
+      chmodSync(statStub, 0o755);
       const result = spawnSync('/bin/bash', [resolve(guestDir, '../../../scripts/verify-runner-cloud-init-schema.sh')], {
         encoding: 'utf8',
         timeout: 60_000,
@@ -217,6 +220,7 @@ describe('cloud-init harness disclosure boundaries', () => {
           CIRUJANO_HOST_PUBLIC_KEY_PATH: hostPublic,
           CIRUJANO_LOGIN_PUBLIC_KEY_PATH: loginPublic,
           CIRUJANO_TEST_PRIVATE_KEY: hostKeyPair.privateKey,
+          PATH: `${directory}:${process.env.PATH ?? ''}`,
         },
       });
       const captured = `${result.stdout}${result.stderr}`;

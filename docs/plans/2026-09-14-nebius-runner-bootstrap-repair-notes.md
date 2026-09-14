@@ -39,6 +39,12 @@
 - Chose: rename only the job identifier to `ubuntu_24_04`; retain `runs-on: ubuntu-24.04` and the complete boot-oracle job body unchanged.
 - Regression: a repository test now fixes the valid job identifier and rejects the invalid dotted form. Local `actionlint` also accepts the repaired workflow.
 
+### Linux schema mode-probe repair
+
+- Found: exact-SHA CI run `34855699167` reached both jobs, but the standard test job exposed that GNU `stat -f '%Lp'` succeeds with filesystem output instead of rejecting the BSD-only format. The schema harness therefore reported a false mode failure before exercising its intended disclosure boundary.
+- Chose: try GNU `stat -c '%a'` first and fall back to BSD `stat -f '%Lp'`. The rendered file and required `0600` check remain unchanged.
+- Regression: the disclosure-boundary test now supplies a GNU-compatible `stat` fixture that reproduces the Linux behavior and proves the schema failure remains redacted after the portable mode probe.
+
 ## Phase 1 handoff
 
 - Scope: complete native Ed25519 host-key ownership, console suppression, deterministic renderer harness, and exact cloud-init 26.1 schema oracle.
