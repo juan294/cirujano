@@ -37,7 +37,9 @@ describe('SSH identity and invocation (R08)', () => {
   });
 
   it('renders the exact pinned host-key entry', () => {
-    expect(knownHostLine('192.0.2.10', 22, key)).toBe(`[192.0.2.10]:22 ${key.split(' ').slice(0, 2).join(' ')}`);
+    const identity = key.split(' ').slice(0, 2).join(' ');
+    expect(knownHostLine('192.0.2.10', 22, key)).toBe(`192.0.2.10 ${identity}`);
+    expect(knownHostLine('192.0.2.10', 2222, key)).toBe(`[192.0.2.10]:2222 ${identity}`);
   });
 
   it.each([

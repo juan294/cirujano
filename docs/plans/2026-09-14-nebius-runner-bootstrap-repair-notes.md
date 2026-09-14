@@ -27,6 +27,12 @@
 - Found: unresolved reconciliation readbacks were returned but not persisted, and the accepted configuration allowed poll intervals shorter than OpenSSH's one-second timeout granularity.
 - Chose: persist bounded unresolved readbacks through the existing atomic controller journal, reject poll intervals below two seconds, and derive both SSH and wrapper timeouts from one tested helper. This implements the plan's persisted-reason and poll-sized-attempt requirements without provider replay.
 
+### Phase 4 default-port host lookup repair
+
+- Found: the first authorized live bootstrap exposed an OpenSSH interoperability error. The controller wrote `[IPv4]:22` to `known_hosts`, while OpenSSH's default-port lookup used the plain IPv4 host name. A direct fingerprint comparison proved the guest served the exact authorized Ed25519 key, but strict lookup still rejected the entry.
+- Chose: render plain host names for port 22 and retain bracketed host-and-port entries for non-default ports. The regression test covers both forms. Strict host-key checking and the pinned fingerprint remain unchanged.
+- Cleanup: cancelled exact Archy run `34846465666`, stopped and deleted only VM `computeinstance-e01j36rtq99fyam6n9` and its managed disk, then confirmed zero instances, disks, and public-IP allocations. The VM started once; no token, runner registration, or workload admission occurred.
+
 ## Phase 1 handoff
 
 - Scope: complete native Ed25519 host-key ownership, console suppression, deterministic renderer harness, and exact cloud-init 26.1 schema oracle.

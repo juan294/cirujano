@@ -89,7 +89,8 @@ export function knownHostLine(host: string, port: number, publicKey: string): st
   if (!validHost(host)) throw new TypeError('known host is invalid');
   const [type, encoded] = publicKey.trim().split(/\s+/u);
   verifySshPublicKeyFingerprint(publicKey);
-  return `[${host}]:${port} ${type} ${encoded}`;
+  const destination = port === 22 ? host : `[${host}]:${port}`;
+  return `${destination} ${type} ${encoded}`;
 }
 
 export function classifySshReadinessFailure(result: SshProcessResult): SshReadinessClassification {
