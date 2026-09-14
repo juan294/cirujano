@@ -12,6 +12,7 @@ import {
   buildQueueSnapshot,
   buildRunnerReport,
   buildSshInvocation,
+  classifySshReadinessFailure,
   classifyOwnedRunners,
   decideDelete,
   decideStop,
@@ -28,6 +29,7 @@ import {
   knownHostLine,
   runInterruptRecovery,
   runProcess,
+  sshAttemptTiming,
   tickController,
   validatePermit,
   verifySshPublicKeyFingerprint,
@@ -46,6 +48,7 @@ import {
   type GuestFileName,
   type LifecycleJournal,
   type CostRates,
+  type SubprocessResult,
 } from '@cirujano/runner';
 
 import type { CliIo, RunnerCommandService } from './cli.js';
@@ -590,11 +593,25 @@ async function reconcileEffect(context: RuntimeContext, pending: PendingEffect):
     const instance = exactOwnedInstance(await listInstances(context), expectedResource(context));
     if (instance === null) return { resolved: false, readback: provider };
     const startedAtMs = Date.now();
-    await runGuest(context, instance, '/opt/cirujano/arm-grant', [
-      String(pending.effect.generation), String(startedAtMs), String(pending.effect.deadlineMs),
-      String(context.config.timing.maxJobMs), String(context.config.timing.shutdownMarginMs),
-      String(Math.max(0, pending.effect.generation - 1)),
-    ].join('\n') + '\n');
+    try {
+      await runGuest(context, instance, '/opt/cirujano/arm-grant', [
+        String(pending.effect.generation), String(startedAtMs), String(pending.effect.deadlineMs),
+        String(context.config.timing.maxJobMs), String(context.config.timing.shutdownMarginMs),
+        String(Math.max(0, pending.effect.generation - 1)),
+      ].join('\n') + '\n');
+    } catch (error) {
+      if (!(error instanceof SshInvocationError)) throw error;
+      const classification = classifySshReadinessFailure(error.result);
+      const bootDeadlineMs = pending.createdAtMs + context.config.timing.bootTimeoutMs;
+      if (classification.transient && Date.now() < bootDeadlineMs) {
+        return {
+          resolved: false,
+          readback: { provider, sshReadiness: { ...classification, bootDeadlineMs } },
+        };
+      }
+      if (classification.transient) throw new Error(`ssh readiness failed: boot deadline expired (${classification.reason})`);
+      throw new Error(`ssh readiness failed: ${classification.reason}`);
+    }
     return { resolved: true, readback: provider };
   }
   if (pending.effect.type === 'register-runner' || pending.effect.type === 'begin-drain' || pending.effect.type === 'resume-admission') {
@@ -772,22 +789,28 @@ async function runGuest(
   const identityFile = requiredAbsoluteEnvironment(context.environment, 'CIRUJANO_SSH_KEY_PATH');
   const sshPath = absolutePath(context.environment['CIRUJANO_SSH_PATH'] ?? '/usr/bin/ssh', 'SSH executable');
   const knownHostsFile = join(context.stateDirectory, 'known_hosts');
+  const attemptTiming = sshAttemptTiming(context.config.timing.pollIntervalMs);
   verifySshPublicKeyFingerprint(context.config.ssh.publicKey, context.config.ssh.fingerprint);
   await mkdir(context.stateDirectory, { recursive: true, mode: 0o700 });
   await writeFile(knownHostsFile, `${knownHostLine(instance.publicIp, 22, context.config.ssh.publicKey)}\n`, { mode: 0o600 });
   await chmod(knownHostsFile, 0o600);
   const invocation = buildSshInvocation({
     sshPath, host: instance.publicIp, port: 22, user: 'runner', identityFile, knownHostsFile,
-    helper, stdin, timeoutSeconds: Math.min(60, Math.max(1, Math.ceil(context.config.timing.pollIntervalMs / 1_000))),
+    helper, stdin, timeoutSeconds: attemptTiming.connectTimeoutSeconds,
   });
   const result = await runProcess({
     command: invocation.command, args: invocation.args,
     ...(invocation.stdin === undefined ? {} : { stdin: invocation.stdin }),
-    timeoutMs: context.config.timing.bootTimeoutMs, env: context.environment, secrets,
+    timeoutMs: attemptTiming.processTimeoutMs, env: context.environment, secrets,
   });
-  if (result.timedOut) throw new Error(`${helper} timed out`);
-  if (result.exitCode !== 0) throw new Error(`${helper} failed: ${result.stderr}`);
+  if (result.timedOut || result.exitCode !== 0) throw new SshInvocationError(helper, result);
   return result.stdout;
+}
+
+class SshInvocationError extends Error {
+  constructor(helper: string, readonly result: SubprocessResult) {
+    super(`${helper} failed: ${classifySshReadinessFailure(result).reason}`);
+  }
 }
 
 function parseGuestSnapshot(value: string): ExtendedGuestSnapshot {

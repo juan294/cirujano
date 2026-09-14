@@ -90,6 +90,7 @@ export function parseRunnerConfig(input: unknown): RunnerConfig {
   if (parsed.nebius.preset !== '4vcpu-16gb') throw new ConfigError('nebius.preset must be 4vcpu-16gb for the pilot');
   if (parsed.nebius.diskType !== 'network-ssd') throw new ConfigError('nebius.diskType must be network-ssd for the pilot');
   if (parsed.nebius.diskSizeGiB !== 80) throw new ConfigError('nebius.diskSizeGiB must equal 80 for the pilot');
+  if (parsed.timing.pollIntervalMs < 2_000) throw new ConfigError('timing.pollIntervalMs must be at least 2000');
   if (parsed.timing.maxJobMs + parsed.timing.shutdownMarginMs > parsed.timing.lifetimeMs) {
     throw new ConfigError('maxJobMs plus shutdownMarginMs must fit within lifetimeMs');
   }

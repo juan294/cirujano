@@ -53,6 +53,13 @@ describe('parseRunnerConfig (R01)', () => {
     expect(parsed.nebius.subnetId).toBe('subnet-1');
     expect(parsed).not.toHaveProperty('ipAddress');
   });
+
+  it('rejects poll intervals too short for a bounded SSH connection attempt', () => {
+    expect(() => parseRunnerConfig({
+      ...validConfig,
+      timing: { ...validConfig.timing, pollIntervalMs: 1_999 },
+    })).toThrow(/pollIntervalMs must be at least 2000/iu);
+  });
 });
 
 export { validConfig };

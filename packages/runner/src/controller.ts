@@ -89,7 +89,15 @@ export async function tickController(options: TickOptions): Promise<TickResult> 
       await writeJournalAtomic(options.journalPath, retryState);
       return executePendingEffect(options, retryState);
     }
-    if (!reconciliation.resolved) return { status: 'pending' };
+    if (!reconciliation.resolved) {
+      if (reconciliation.readback !== undefined) {
+        await writeJournalAtomic(options.journalPath, {
+          ...prior,
+          readbacks: [...prior.readbacks, reconciliation.readback].slice(-100),
+        });
+      }
+      return { status: 'pending' };
+    }
     const reconciled: ControllerState = {
       ...prior,
       lifecycle: { ...prior.lifecycle, outstandingIntent: null },

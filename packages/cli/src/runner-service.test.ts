@@ -305,6 +305,73 @@ describe('production runner command composition (R11/R12)', () => {
     const report = await executeFile(process.execPath, [executable, 'runner', 'report', '--state', reportPath, '--format', 'json'], { env: fixture.env });
     expect(JSON.parse(report.stdout)).toMatchObject({ complete: true, assignments: assignmentState.assignments, cleanup: { vmState: 'absent' }, finalProviderState: 'absent' });
   }, 60_000);
+
+  it.each([
+    'ssh: connect to host 203.0.113.4 port 22: Connection refused',
+    'kex_exchange_identification: read: Connection reset by peer',
+  ])('retries one transient start readiness failure without another provider start: %s', async (sshFailure) => {
+    const fixture = await createLifecycleFixture();
+    await builtTick(fixture);
+    await updateScenario(fixture, (state) => {
+      state.jobs[0]!.status = 'queued';
+      state.sshFailures.push(sshFailure);
+    });
+    await builtTick(fixture);
+    await builtTick(fixture);
+    await builtTick(fixture);
+    const statePath = join(fixture.directory, 'controller-state.json');
+    const before = JSON.parse(await readFile(statePath, 'utf8')) as { pendingEffect: unknown; lifecycle: unknown };
+    expect(await builtTick(fixture)).toContain('"status":"pending"');
+    const during = JSON.parse(await readFile(statePath, 'utf8')) as { pendingEffect: unknown; lifecycle: unknown; readbacks: unknown[] };
+    expect(during.pendingEffect).toEqual(before.pendingEffect);
+    expect(during.lifecycle).toEqual(before.lifecycle);
+    expect(during.readbacks.at(-1)).toMatchObject({ sshReadiness: { transient: true } });
+    expect(await builtTick(fixture)).toContain('"status":"reconciled"');
+    const log = await readFile(fixture.logPath, 'utf8');
+    expect(log.split('\n').filter((line) => line.includes('instance start'))).toHaveLength(1);
+    expect(log.split('\n').filter((line) => line.includes('/opt/cirujano/arm-grant'))).toHaveLength(2);
+    expect(log).not.toContain('/registration-token');
+    expect(log).not.toContain('/opt/cirujano/register-runner');
+  }, 30_000);
+
+  it('fails a transient SSH result at the original boot deadline without another start', async () => {
+    const fixture = await createLifecycleFixture();
+    await builtTick(fixture);
+    await updateScenario(fixture, (state) => {
+      state.jobs[0]!.status = 'queued';
+      state.sshFailures.push('ssh: connect to host 203.0.113.4 port 22: Connection refused');
+    });
+    await builtTick(fixture);
+    await builtTick(fixture);
+    await builtTick(fixture);
+    const statePath = join(fixture.directory, 'controller-state.json');
+    const state = JSON.parse(await readFile(statePath, 'utf8')) as { pendingEffect: { createdAtMs: number } };
+    state.pendingEffect.createdAtMs = Date.now() - validRunnerConfig.timing.bootTimeoutMs;
+    await writeFile(statePath, JSON.stringify(state));
+    await expect(builtTick(fixture)).rejects.toThrow(/boot deadline/iu);
+    const log = await readFile(fixture.logPath, 'utf8');
+    expect(log.split('\n').filter((line) => line.includes('instance start'))).toHaveLength(1);
+    expect(log).not.toContain('/registration-token');
+  }, 30_000);
+
+  it.each([
+    ['host-key', 'WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!'],
+    ['authentication', 'runner@203.0.113.4: Permission denied (publickey).'],
+  ])('fails closed on %s during start reconciliation', async (reason, sshFailure) => {
+    const fixture = await createLifecycleFixture();
+    await builtTick(fixture);
+    await updateScenario(fixture, (state) => {
+      state.jobs[0]!.status = 'queued';
+      state.sshFailures.push(sshFailure);
+    });
+    await builtTick(fixture);
+    await builtTick(fixture);
+    await builtTick(fixture);
+    await expect(builtTick(fixture)).rejects.toThrow(new RegExp(`ssh readiness failed: ${reason}`, 'u'));
+    const log = await readFile(fixture.logPath, 'utf8');
+    expect(log.split('\n').filter((line) => line.includes('instance start'))).toHaveLength(1);
+    expect(log).not.toContain('/registration-token');
+  }, 30_000);
 });
 
 function captureIo(): CliIo & { out: string[]; err: string[] } {
@@ -330,12 +397,13 @@ interface LifecycleScenario {
   runnerName: string | null;
   runnerId: number | null;
   runnerBusy: boolean;
+  sshFailures: string[];
   jobs: Array<{ runId: number; jobId: number; status: 'none' | 'queued' | 'in_progress' | 'completed'; conclusion: string | null; runnerId: number | null; runnerName: string | null }>;
 }
 
 interface KnownFixtureAssignment { runId: number; runAttempt: number; jobId: number; runnerId: number; runnerName: string; conclusion: string }
 
-interface LifecycleFixture { directory: string; scenarioPath: string; configPath: string; permitPath: string; env: NodeJS.ProcessEnv }
+interface LifecycleFixture { directory: string; scenarioPath: string; configPath: string; permitPath: string; logPath: string; env: NodeJS.ProcessEnv }
 
 async function builtTick(fixture: LifecycleFixture): Promise<string> {
   const executable = join(packageDirectory, 'dist/bin.js');
@@ -367,6 +435,7 @@ async function createLifecycleFixture(): Promise<LifecycleFixture> {
   const hostPublicKey = hostPair.publicKey;
   const scenario: LifecycleScenario = {
     provider: 'ABSENT', guest: 'booting', grant: null, runnerName: null, runnerId: null, runnerBusy: false,
+    sshFailures: [],
     jobs: [
       { runId: 1001, jobId: 2001, status: 'none', conclusion: null, runnerId: null, runnerName: null },
       { runId: 1002, jobId: 2002, status: 'none', conclusion: null, runnerId: null, runnerName: null },
@@ -399,7 +468,8 @@ process.stdout.write(JSON.stringify(body));
   await writeFile(sshPath, `#!/usr/bin/env node
 ${sharedPrelude}
 const helper=process.argv.at(-1);const lines=fs.readFileSync(0,'utf8').trim().split('\\n');
-if(helper==='/opt/cirujano/arm-grant'){s.grant={generation:Number(lines[0]),startedAtMs:Number(lines[1]),deadlineMs:Number(lines[2])};s.guest='ready';save();process.stdout.write('armed\\n');}
+if(helper==='/opt/cirujano/arm-grant'&&s.sshFailures.length>0){const failure=s.sshFailures.shift();save();process.stderr.write(failure);process.exit(255);}
+else if(helper==='/opt/cirujano/arm-grant'){s.grant={generation:Number(lines[0]),startedAtMs:Number(lines[1]),deadlineMs:Number(lines[2])};s.guest='ready';save();process.stdout.write('armed\\n');}
 else if(helper==='/opt/cirujano/register-runner'){const job=s.jobs.find(j=>j.status==='queued');s.runnerName=lines[1];s.runnerId=job.jobId===2001?301:302;s.runnerBusy=true;job.status='in_progress';job.runnerId=s.runnerId;job.runnerName=s.runnerName;s.guest='busy';save();process.stdout.write('registered\\n');}
 else if(helper==='/opt/cirujano/drain'){s.guest='drained';s.runnerName=null;s.runnerId=null;s.runnerBusy=false;save();process.stdout.write('drained\\n');}
 else if(helper==='/opt/cirujano/resume-admission'){s.guest='ready';save();process.stdout.write('resumed\\n');}
@@ -409,7 +479,7 @@ else{const ready=s.guest!=='booting';process.stdout.write(JSON.stringify({comple
   const config = {
     ...validRunnerConfig,
     ssh: { publicKey: hostPublicKey, fingerprint: verifySshPublicKeyFingerprint(hostPublicKey) },
-    timing: { ...validRunnerConfig.timing, pollIntervalMs: 1_000, idleGraceMs: 1 },
+    timing: { ...validRunnerConfig.timing, pollIntervalMs: 2_000, idleGraceMs: 1 },
   };
   const configPath = join(directory, 'config.json');
   const configText = JSON.stringify(config);
@@ -418,7 +488,7 @@ else{const ready=s.guest!=='booting';process.stdout.write(JSON.stringify({comple
   const permitPath = join(directory, 'permit.json');
   const now = Date.now();
   await writeFile(permitPath, JSON.stringify({ schemaVersion: 1, permitId: 'r11-permit', operations: ['create', 'start', 'register', 'stop', 'delete'], issuedAtMs: now - 1_000, expiresAtMs: now + 10_800_000, maxStarts: 3, maxRuntimeMs: 20_000_000, maxTotalCostUsd: 10, recoveryAllowed: true, configHash, candidateDigest: 'fixture-candidate', repositoryId: 123, projectId: 'project-1', controllerId: 'controller-a', resourcePrefix: 'cirujano-a' }));
-  return { directory, scenarioPath, configPath, permitPath, env: { ...process.env, CIRUJANO_GH_PATH: ghPath, CIRUJANO_NEBIUS_PATH: nebiusPath, CIRUJANO_SSH_PATH: sshPath, CIRUJANO_SSH_KEY_PATH: controllerKeyPath, CIRUJANO_GUEST_DIR: resolve(packageDirectory, '../runner/guest'), CIRUJANO_HOST_PRIVATE_KEY_PATH: hostKeyPath, CIRUJANO_LOGIN_PUBLIC_KEY_PATH: `${controllerKeyPath}.pub`, CIRUJANO_ACTIONS_RUNNER_VERSION: '2.328.0', CIRUJANO_ACTIONS_RUNNER_SHA256: 'a'.repeat(64), CIRUJANO_NETWORK_EGRESS_LIMIT_GIB: '1', CIRUJANO_CANDIDATE_DIGEST: 'fixture-candidate', CIRUJANO_CONFIG_HASH: configHash, CIRUJANO_SCENARIO_PATH: scenarioPath, CIRUJANO_FIXTURE_LOG: logPath } };
+  return { directory, scenarioPath, configPath, permitPath, logPath, env: { ...process.env, CIRUJANO_GH_PATH: ghPath, CIRUJANO_NEBIUS_PATH: nebiusPath, CIRUJANO_SSH_PATH: sshPath, CIRUJANO_SSH_KEY_PATH: controllerKeyPath, CIRUJANO_GUEST_DIR: resolve(packageDirectory, '../runner/guest'), CIRUJANO_HOST_PRIVATE_KEY_PATH: hostKeyPath, CIRUJANO_LOGIN_PUBLIC_KEY_PATH: `${controllerKeyPath}.pub`, CIRUJANO_ACTIONS_RUNNER_VERSION: '2.328.0', CIRUJANO_ACTIONS_RUNNER_SHA256: 'a'.repeat(64), CIRUJANO_NETWORK_EGRESS_LIMIT_GIB: '1', CIRUJANO_CANDIDATE_DIGEST: 'fixture-candidate', CIRUJANO_CONFIG_HASH: configHash, CIRUJANO_SCENARIO_PATH: scenarioPath, CIRUJANO_FIXTURE_LOG: logPath } };
 }
 
 function sshField(value: Buffer): Buffer {
