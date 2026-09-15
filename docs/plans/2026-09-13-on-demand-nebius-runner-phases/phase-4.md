@@ -1,7 +1,7 @@
 # Phase 4: authorized live pilot and evidence
 
 Parent: [runner plan](../2026-09-13-on-demand-nebius-runner.md).
-Status: live R14 remains blocked after five failed attempts; every recovery and cleanup completed.
+Status: live R14 remains blocked after six attempts; the sixth (2026-09-15) passed provider-contract, first-boot-failure and watchdog-first at the repaired candidate and failed queue-and-execute at runner registration. Every recovery and cleanup completed.
 Entry: accepted Phase 3 plus explicit authorization to prepare this phase.
 Preparation alone does not authorize GitHub mutations or spending.
 
@@ -218,3 +218,95 @@ for both generations. The local repair removes cloud-init's pre-`runcmd` package
 work, installs and starts the watchdog control helpers first, opens the pinned
 SSH path, then performs package provisioning. A new candidate-bound receipt is
 required before another dispatch or resource creation.
+
+## Sixth live attempt result
+
+The repaired bootstrap candidate (`develop` `291a9c0e97ff9dc5906e3d216f4133b16e2a2a64`,
+CLI digest identical to the accepted bootstrap proof) received a fresh bounded
+authorization on 2026-09-15: three sequential generations, four starts, six
+compute hours, USD 5, refreshed public rates. Both hosted baselines passed the
+shared workload in 43 and 37 seconds.
+
+Generation one proved the first-boot-failure row: the controller was
+interrupted before any readiness, the separately observed provider stop reached
+`STOPPED` within the ten-minute bound, and exact cleanup removed the VM and disk.
+Generation two proved the watchdog-first row at this candidate: strict SSH
+accepted the pinned host key, the grant armed about two minutes after start, the
+controller was disconnected, the guest powered itself off within about eighty
+seconds of its immutable deadline, and ten one-minute provider reads showed
+`STOPPED` with no automatic recovery. No runner registered in either generation.
+
+Generation three reached a fully provisioned guest (`ready`, watchdog active,
+Node 22 and Docker present) and emitted the first live `register-runner`. The
+guest helper exited before `config.sh` ran: the bootstrap creates the state
+directory `/var/lib/cirujano` with mode 0700, and the helper changes into
+`/var/lib/cirujano/runner-1` as the unprivileged `runner` user, which the
+parent directory forbids. Read-only guest inspection reproduced the
+`Permission denied`. The registration token was never used; GitHub listed zero
+runners throughout. The controller failed closed, `runner stop` drained and
+stopped the guest, `runner cleanup` removed the VM and disk, and the queued
+self-hosted dispatch was cancelled with zero steps executed. The fourth dispatch
+was not issued. Final reads returned empty instance, disk and allocation
+inventories and no runners.
+
+Conservative provider-interval accounting estimates about USD 0.043 for the
+three generations. Two further findings were recorded: helper failures persist
+only their classification, not a redacted stderr tail; and unrelated CI activity
+in the fixture repository made the GitHub pagination snapshot transiently
+inconsistent, so the controller correctly reported no complete demand for about
+twelve minutes before the first create. The local repair must make the runner
+working directory traversable by the `runner` user without exposing the grant
+file, add that assertion to the boot oracle, and persist bounded helper
+diagnostics. Queue-and-execute, sequential-isolation, normal-idle,
+restart-and-failure and comparison remain `not-run` or `failed`; a new
+candidate-bound receipt is required before another dispatch or resource
+creation.
+
+## Local repair after the sixth attempt
+
+Implemented on 2026-09-15 in an isolated worktree from `develop`
+`4478b55f1facd72d54c08b0843df384f2ac8bd92`, test first. Independent review and
+four simplify passes (reuse, simplification, efficiency, altitude) ran before
+integration; every actionable finding was applied or given a disposition.
+
+Findings and repairs:
+
+- The state directory `/var/lib/cirujano` is now 0711 in the bootstrap and,
+  because GNU `install -d` re-applies its mode to an existing directory, also
+  in `arm-grant.sh` and `watchdog.sh`. Review found that the two runtime
+  helpers would otherwise have reverted the bootstrap fix on the first grant.
+  A static test rejects any private mode on the shared state directory and a
+  behavioral test asserts 0711 after both helpers run.
+- `grant.env` is 0644 (generation, timestamps and margins only) so the
+  job-start hook can read it as the runner account. The hook also used
+  `deadline_ms` where the grant writes `grant_deadline_ms`, which would have
+  refused every job; it now uses the real field names, refuses a missing or
+  unreadable grant instead of treating the bounds as zero, and takes no
+  environment overrides because it runs inside the job's environment. The test
+  exercises a substituted copy against a grant that `arm-grant.sh` wrote.
+- The QEMU boot oracle additionally requires
+  `state-dir-traversable-not-listable` from the runner account. The oracle
+  arms no grant on purpose, so the arm-grant and watchdog mode paths are
+  covered by the unit tests above rather than by the oracle.
+- Guest helper failures persist a bounded, credential-shape-scrubbed
+  stderr/stdout tail to `helper-diagnostics.jsonl`. The per-tick status probe
+  never persists (its failure is already an incomplete snapshot), a
+  persistence failure never masks the classified SSH error, and
+  `SshInvocationError` classifies once. One `CREDENTIAL_SHAPE_PATTERN` in
+  `journal.ts` now backs cloud-init rejection, every redacted event and the
+  helper tails.
+
+Disposition: the altitude suggestion to arm a grant inside the boot oracle was
+declined because it would change the unarmed-poweroff timing the oracle
+exists to prove. The pre-existing telemetry scheduler lock test failed once
+under review-agent load and passed in the accepted sequential run; it is a
+100 ms startup race unrelated to this change and is recorded here rather than
+silently retried.
+
+Evidence at the candidate: complete local policy passed (typecheck, lint,
+build, bundle verification, 84 CLI and 293 runner tests among the workspace
+suites); the pinned Noble boot oracle passed with SSH ready after 51 s, the
+new traversal proof satisfied, unarmed poweroff 609 s after readiness and
+clean ephemeral cleanup; cloud-init 26.1 schema validation passed. No GitHub
+or Nebius mutation occurred. Queue-and-execute and the later R14 rows still
+require a new candidate-bound authorization.
