@@ -5,6 +5,25 @@ import { createConnection, createServer, type Server } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 
+// This module stays free of local imports: the lock test loads it directly under
+// --experimental-strip-types, which cannot resolve `.js` specifiers to `.ts` sources.
+
+export function redactSecrets(text: string, secrets: readonly string[]): string {
+  return secrets.filter((secret) => secret.length > 0).reduce(
+    (redacted, secret) => redacted.split(secret).join('[REDACTED]'),
+    text,
+  );
+}
+
+// Credential shapes the controller may never have been told about. Non-global so
+// `.test()` stays stateless; the scrubber below derives its own global copy.
+export const CREDENTIAL_SHAPE_PATTERN = /(?:\b(?:GITHUB_TOKEN|NEBIUS_API_KEY|AWS_SECRET_ACCESS_KEY)\s*=\s*[^\s]+|\bgithub_pat_[A-Za-z0-9_]+|\bgh[pousr]_[A-Za-z0-9_]{20,}|\bAKIA[0-9A-Z]{16}\b|-----BEGIN [A-Z ]*PRIVATE KEY-----(?:[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----)?)/u;
+const CREDENTIAL_SHAPE_SCRUBBER = new RegExp(CREDENTIAL_SHAPE_PATTERN.source, 'gu');
+
+export function redactCredentialShapes(text: string): string {
+  return text.replace(CREDENTIAL_SHAPE_SCRUBBER, '[REDACTED]');
+}
+
 export class ControllerLockError extends Error {
   override readonly name = 'ControllerLockError';
 }
@@ -134,7 +153,7 @@ async function socketIsHeld(path: string): Promise<boolean> {
 
 function redactValue(value: unknown, secrets: readonly string[], key = ''): unknown {
   if (/token|secret|password|private.?key|cloud.?init|user.?data/iu.test(key)) return '[REDACTED]';
-  if (typeof value === 'string') return secrets.filter(Boolean).reduce((text, secret) => text.split(secret).join('[REDACTED]'), value);
+  if (typeof value === 'string') return redactCredentialShapes(redactSecrets(value, secrets));
   if (Array.isArray(value)) return value.map((entry) => redactValue(entry, secrets));
   if (typeof value === 'object' && value !== null) {
     return Object.fromEntries(Object.entries(value).map(([name, entry]) => [name, redactValue(entry, secrets, name)]));

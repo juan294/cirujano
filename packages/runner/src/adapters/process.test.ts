@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
-import { redactSecrets, runProcess } from './process.js';
+import { redactSecrets } from '../journal.js';
+import { runProcess } from './process.js';
 
 describe('runProcess (R08)', () => {
   it('passes sensitive input through stdin and redacts bounded output', async () => {

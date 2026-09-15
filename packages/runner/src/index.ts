@@ -10,7 +10,7 @@ export * from './adapters/cloud-init.js';
 export * from './adapters/github.js';
 export * from './adapters/nebius.js';
 export * from './adapters/ssh.js';
-export { redactSecrets, runProcess } from './adapters/process.js';
+export { runProcess } from './adapters/process.js';
 export type {
   ProcessRequest,
   ProcessResult as SubprocessResult,

@@ -1,6 +1,8 @@
 import { Buffer } from 'node:buffer';
 import { createPrivateKey, createPublicKey } from 'node:crypto';
 
+import { CREDENTIAL_SHAPE_PATTERN } from '../journal.js';
+
 export const GUEST_FILE_NAMES = [
   'bootstrap.sh',
   'diagnose-ssh.sh',
@@ -30,7 +32,6 @@ export class CloudInitError extends Error {
   override readonly name = 'CloudInitError';
 }
 
-const SECRET_PATTERN = /(?:\b(?:GITHUB_TOKEN|NEBIUS_API_KEY|AWS_SECRET_ACCESS_KEY)\s*=\s*[^\s]+|\bgithub_pat_[A-Za-z0-9_]+|\bgh[pousr]_[A-Za-z0-9_]{20,}|\bAKIA[0-9A-Z]{16}\b|-----BEGIN [A-Z ]*PRIVATE KEY-----)/u;
 const SSH_PUBLIC_KEY_PATTERN = /^ssh-ed25519 [A-Za-z0-9+/]+={0,2}(?: [^\r\n]+)?$/u;
 
 export function renderCloudInit(input: CloudInitInput): string {
@@ -225,7 +226,7 @@ class BinaryCursor {
 }
 
 function rejectSecrets(content: string, sensitiveValues: readonly string[], context: string): void {
-  if (SECRET_PATTERN.test(content)) throw new CloudInitError(`${context} appears to contain credential material`);
+  if (CREDENTIAL_SHAPE_PATTERN.test(content)) throw new CloudInitError(`${context} appears to contain credential material`);
   for (const secret of sensitiveValues) {
     if (typeof secret !== 'string' || secret.length === 0) throw new CloudInitError('sensitiveValues must contain non-empty strings');
     if (content.includes(secret)) throw new CloudInitError(`${context} contains a supplied sensitive value`);

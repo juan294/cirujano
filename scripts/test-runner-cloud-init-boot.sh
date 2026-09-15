@@ -118,13 +118,13 @@ done
 ssh_ready_at=$(date +%s)
 proof_output="$temporary_directory/proof.txt"
 if ! ssh "${ssh_args[@]}" runner@127.0.0.1 \
-  'test -f /run/cirujano-ssh-ready && systemctl is-active ssh.socket && systemctl is-active ssh.service && systemctl is-active cirujano-watchdog && cloud-init status --wait && cloud-init --version 2>&1 && /opt/cirujano/status' \
+  'test -f /run/cirujano-ssh-ready && systemctl is-active ssh.socket && systemctl is-active ssh.service && systemctl is-active cirujano-watchdog && cloud-init status --wait && cloud-init --version 2>&1 && /opt/cirujano/status && test -x /var/lib/cirujano && ! test -r /var/lib/cirujano && echo state-dir-traversable-not-listable' \
   >"$proof_output"; then
   printf 'guest readiness proof failed; serial log sha256: %s\n' "$(sha256 "$serial_log")" >&2
   head -c 4096 "$proof_output" >&2
   exit 1
 fi
-for required in active 'status: done' '"watchdogReady":true' '"grant":null'; do
+for required in active 'status: done' '"watchdogReady":true' '"grant":null' state-dir-traversable-not-listable; do
   grep -q "$required" "$proof_output" || { printf 'guest proof is missing: %s\n' "$required" >&2; head -c 4096 "$proof_output" >&2; exit 1; }
 done
 watchdog_observed_at=$(date +%s)

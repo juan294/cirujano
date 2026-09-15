@@ -1,5 +1,5 @@
 import { execFile, spawn } from 'node:child_process';
-import { chmod, mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { access, chmod, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
@@ -352,6 +352,28 @@ describe('production runner command composition (R11/R12)', () => {
     const log = await readFile(fixture.logPath, 'utf8');
     expect(log.split('\n').filter((line) => line.includes('instance start'))).toHaveLength(1);
     expect(log).not.toContain('/registration-token');
+    // Transient readiness refusals are journaled as readbacks, never as helper diagnostics.
+    await expect(access(join(fixture.directory, 'helper-diagnostics.jsonl'))).rejects.toThrow();
+  }, 30_000);
+
+  it('persists a bounded redacted stderr tail when a guest helper fails', async () => {
+    const fixture = await createLifecycleFixture();
+    await builtTick(fixture);
+    await updateScenario(fixture, (state) => {
+      state.jobs[0]!.status = 'queued';
+      state.registerFailure = 'bash: line 1: cd: /var/lib/cirujano/runner-1: Permission denied';
+    });
+    // create, adopt, start, arm; the fifth tick registers.
+    for (let tick = 0; tick < 4; tick += 1) await builtTick(fixture);
+    await expect(builtTick(fixture)).rejects.toThrow(/register-runner failed: helper/u);
+    const diagnostics = (await readFile(join(fixture.directory, 'helper-diagnostics.jsonl'), 'utf8')).trim().split('\n').map((line) => JSON.parse(line) as Record<string, unknown>);
+    expect(diagnostics).toHaveLength(1);
+    expect(diagnostics[0]).toMatchObject({ type: 'helper-failure', helper: '/opt/cirujano/register-runner', exitCode: 1, timedOut: false, reason: 'helper' });
+    expect(diagnostics[0]!.stderrTail).toContain('Permission denied');
+    expect(diagnostics[0]!.stderrTail).toContain('token=[REDACTED]');
+    expect(JSON.stringify(diagnostics)).not.toContain('fixture-registration-token');
+    const log = await readFile(fixture.logPath, 'utf8');
+    expect(log.split('\n').filter((line) => line.includes('instance start'))).toHaveLength(1);
   }, 30_000);
 
   it.each([
@@ -398,6 +420,7 @@ interface LifecycleScenario {
   runnerId: number | null;
   runnerBusy: boolean;
   sshFailures: string[];
+  registerFailure?: string;
   jobs: Array<{ runId: number; jobId: number; status: 'none' | 'queued' | 'in_progress' | 'completed'; conclusion: string | null; runnerId: number | null; runnerName: string | null }>;
 }
 
@@ -470,6 +493,7 @@ ${sharedPrelude}
 const helper=process.argv.at(-1);const lines=fs.readFileSync(0,'utf8').trim().split('\\n');
 if(helper==='/opt/cirujano/arm-grant'&&s.sshFailures.length>0){const failure=s.sshFailures.shift();save();process.stderr.write(failure);process.exit(255);}
 else if(helper==='/opt/cirujano/arm-grant'){s.grant={generation:Number(lines[0]),startedAtMs:Number(lines[1]),deadlineMs:Number(lines[2])};s.guest='ready';save();process.stdout.write('armed\\n');}
+else if(helper==='/opt/cirujano/register-runner'&&s.registerFailure){process.stderr.write(s.registerFailure+'\\ntoken='+lines[4]+'\\n');process.exit(1);}
 else if(helper==='/opt/cirujano/register-runner'){const job=s.jobs.find(j=>j.status==='queued');s.runnerName=lines[1];s.runnerId=job.jobId===2001?301:302;s.runnerBusy=true;job.status='in_progress';job.runnerId=s.runnerId;job.runnerName=s.runnerName;s.guest='busy';save();process.stdout.write('registered\\n');}
 else if(helper==='/opt/cirujano/drain'){s.guest='drained';s.runnerName=null;s.runnerId=null;s.runnerBusy=false;save();process.stdout.write('drained\\n');}
 else if(helper==='/opt/cirujano/resume-admission'){s.guest='ready';save();process.stdout.write('resumed\\n');}

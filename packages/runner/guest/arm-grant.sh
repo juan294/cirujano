@@ -4,7 +4,9 @@ if (( EUID != 0 )) && [[ "${CIRUJANO_TEST_MODE:-0}" != 1 ]]; then exec sudo -n "
 
 state_dir=${CIRUJANO_STATE_DIR:-/var/lib/cirujano}
 grant_file="$state_dir/grant.env"
-install -d -m 0700 "$state_dir"
+# install -d re-applies the mode to an existing directory: keep the bootstrap's
+# 0711 so the runner account can still enter its generation directory.
+install -d -m 0711 "$state_dir"
 
 IFS= read -r generation
 IFS= read -r started_at_ms
@@ -51,7 +53,7 @@ trap 'rm -f "$tmp"' EXIT
   printf 'monotonic_elapsed_ms=%s\n' "$monotonic_elapsed_ms"
   printf 'maximum_wall_ms=%s\n' "$maximum_wall_ms"
 } > "$tmp"
-chmod 0600 "$tmp"
+chmod 0644 "$tmp"
 [[ "${CIRUJANO_SKIP_SYNC:-0}" == 1 ]] || sync "$tmp"
 mv "$tmp" "$grant_file"
 rm -f "$state_dir/admission-disabled"

@@ -1,5 +1,7 @@
 import { spawn } from 'node:child_process';
 
+import { redactSecrets } from '../journal.js';
+
 export interface ProcessRequest {
   command: string;
   args: readonly string[];
@@ -81,9 +83,3 @@ export function runProcess(request: ProcessRequest): Promise<ProcessResult> {
   });
 }
 
-export function redactSecrets(text: string, secrets: readonly string[]): string {
-  return secrets.filter((secret) => secret.length > 0).reduce(
-    (redacted, secret) => redacted.split(secret).join('[REDACTED]'),
-    text,
-  );
-}

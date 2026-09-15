@@ -2,7 +2,9 @@
 set -euo pipefail
 state_dir=${CIRUJANO_STATE_DIR:-/var/lib/cirujano}
 grant_file="$state_dir/grant.env"
-install -d -m 0700 "$state_dir"
+# install -d re-applies the mode to an existing directory: keep the bootstrap's
+# 0711 so the runner account can still enter its generation directory.
+install -d -m 0711 "$state_dir"
 boot_ms=${CIRUJANO_NOW_MS:-$(($(date +%s) * 1000))}
 unarmed_deadline_ms=$((boot_ms + 600000))
 
@@ -28,7 +30,7 @@ persist_grant() {
     printf 'monotonic_elapsed_ms=%s\n' "$monotonic_elapsed_ms"
     printf 'maximum_wall_ms=%s\n' "$maximum_wall_ms"
   } > "$tmp"
-  chmod 0600 "$tmp"
+  chmod 0644 "$tmp"
   [[ "${CIRUJANO_SKIP_SYNC:-0}" == 1 ]] || sync "$tmp"
   mv "$tmp" "$grant_file"
   [[ "${CIRUJANO_SKIP_SYNC:-0}" == 1 ]] || sync "$state_dir"

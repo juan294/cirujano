@@ -9,6 +9,7 @@ import {
   NebiusCli,
   RUNNER_SCHEMA_VERSION,
   acquireControllerLock,
+  appendRedactedEvent,
   buildQueueSnapshot,
   buildRunnerReport,
   buildSshInvocation,
@@ -21,6 +22,7 @@ import {
   parseOperationPage,
   parseMutationOperationId,
   parsePermit,
+  redactCredentialShapes,
   parseRunnerReportInput,
   parseRunnerConfig,
   readJournal,
@@ -48,6 +50,7 @@ import {
   type GuestFileName,
   type LifecycleJournal,
   type CostRates,
+  type SshReadinessClassification,
   type SubprocessResult,
 } from '@cirujano/runner';
 
@@ -131,6 +134,7 @@ interface RuntimeContext {
   directActionPath: string;
   activeJobPath: string;
   assignmentPath: string;
+  helperDiagnosticsPath: string;
   environment: NodeJS.ProcessEnv;
 }
 
@@ -191,6 +195,7 @@ async function createContext(configPath: string, permitPath: string | undefined,
     directActionPath: join(stateDirectory, 'direct-action-state.json'),
     activeJobPath: join(stateDirectory, 'active-job-state.json'),
     assignmentPath: join(stateDirectory, 'assignments.json'),
+    helperDiagnosticsPath: join(stateDirectory, 'helper-diagnostics.jsonl'),
   };
 }
 
@@ -601,7 +606,7 @@ async function reconcileEffect(context: RuntimeContext, pending: PendingEffect):
       ].join('\n') + '\n');
     } catch (error) {
       if (!(error instanceof SshInvocationError)) throw error;
-      const classification = classifySshReadinessFailure(error.result);
+      const { classification } = error;
       const bootDeadlineMs = pending.createdAtMs + context.config.timing.bootTimeoutMs;
       if (classification.transient && Date.now() < bootDeadlineMs) {
         return {
@@ -609,8 +614,8 @@ async function reconcileEffect(context: RuntimeContext, pending: PendingEffect):
           readback: { provider, sshReadiness: { ...classification, bootDeadlineMs } },
         };
       }
-      if (classification.transient) throw new Error(`ssh readiness failed: boot deadline expired (${classification.reason})`);
-      throw new Error(`ssh readiness failed: ${classification.reason}`);
+      if (classification.transient) throw new Error(`ssh readiness failed: boot deadline expired (${classification.reason})`, { cause: error });
+      throw new Error(`ssh readiness failed: ${classification.reason}`, { cause: error });
     }
     return { resolved: true, readback: provider };
   }
@@ -769,9 +774,11 @@ async function observeGuest(context: RuntimeContext, provider: LifecycleInput['p
     return { complete: false, status: status === 'starting' ? 'booting' : 'unknown', admissionEnabled: null, runnerActive: null, workerActive: null, grant: null };
   }
   try {
+    // The status probe runs every tick and its failure is already visible as an incomplete
+    // snapshot, so it never persists helper diagnostics.
     const output = await runGuest(context, {
       id: provider.network.vmId, publicIp: provider.network.ipAddress,
-    }, '/opt/cirujano/status', '');
+    }, '/opt/cirujano/status', '', [], { persistFailure: false });
     return parseGuestSnapshot(output);
   } catch {
     return { complete: false, status: status === 'starting' ? 'booting' : 'unknown', admissionEnabled: null, runnerActive: null, workerActive: null, grant: null };
@@ -784,6 +791,7 @@ async function runGuest(
   helper: string,
   stdin: string,
   secrets: readonly string[] = [],
+  options: { persistFailure: boolean } = { persistFailure: true },
 ): Promise<string> {
   if (instance.publicIp === null) throw new Error(`VM ${instance.id} has no public IP`);
   const identityFile = requiredAbsoluteEnvironment(context.environment, 'CIRUJANO_SSH_KEY_PATH');
@@ -803,13 +811,47 @@ async function runGuest(
     ...(invocation.stdin === undefined ? {} : { stdin: invocation.stdin }),
     timeoutMs: attemptTiming.processTimeoutMs, env: context.environment, secrets,
   });
-  if (result.timedOut || result.exitCode !== 0) throw new SshInvocationError(helper, result);
+  if (result.timedOut || result.exitCode !== 0) {
+    const error = new SshInvocationError(helper, result);
+    // Transient SSH readiness is expected during boot and already journaled as a readback;
+    // everything else is a helper or fatal transport failure whose output would otherwise be lost.
+    if (options.persistFailure && !error.classification.transient) await persistHelperFailure(context, error, secrets);
+    throw error;
+  }
   return result.stdout;
 }
 
+const HELPER_OUTPUT_TAIL_BYTES = 4096;
+
+// Scrub before truncating so a credential straddling the cut cannot leak its suffix.
+function outputTail(text: string): string {
+  const bytes = Buffer.from(redactCredentialShapes(text));
+  return bytes.length <= HELPER_OUTPUT_TAIL_BYTES
+    ? bytes.toString('utf8')
+    : `[truncated]${bytes.subarray(-HELPER_OUTPUT_TAIL_BYTES).toString('utf8')}`;
+}
+
+async function persistHelperFailure(context: RuntimeContext, error: SshInvocationError, secrets: readonly string[]): Promise<void> {
+  try {
+    // runProcess already substituted these secrets; passing them again is belt and braces.
+    await appendRedactedEvent(context.helperDiagnosticsPath, {
+      schemaVersion: 1, type: 'helper-failure', observedAtMs: Date.now(), helper: error.helper,
+      reason: error.classification.reason,
+      exitCode: error.result.exitCode, signal: error.result.signal, timedOut: error.result.timedOut,
+      stderrTail: outputTail(error.result.stderr), stdoutTail: outputTail(error.result.stdout),
+    }, { secrets });
+  } catch {
+    // Diagnostics are best effort; the classified SSH error must still reach the caller.
+  }
+}
+
 class SshInvocationError extends Error {
-  constructor(helper: string, readonly result: SubprocessResult) {
-    super(`${helper} failed: ${classifySshReadinessFailure(result).reason}`);
+  readonly classification: SshReadinessClassification;
+
+  constructor(readonly helper: string, readonly result: SubprocessResult) {
+    const classification = classifySshReadinessFailure(result);
+    super(`${helper} failed: ${classification.reason}`);
+    this.classification = classification;
   }
 }
 

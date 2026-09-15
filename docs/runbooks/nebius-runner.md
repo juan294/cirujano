@@ -84,6 +84,8 @@ The private state directory contains:
 - `active-job-state.json`: a remembered active assignment until runner and guest readbacks prove it idle.
 - `direct-action-state.json`: intent, emission and terminal readback for `stop`, `cleanup` and SIGINT recovery.
 - `events.jsonl`: redacted controller decisions and effect outcomes.
+- `helper-diagnostics.jsonl`: bounded, redacted stderr and stdout tails for guest
+  helper and fatal SSH failures (transient boot refusals stay in the journal readbacks).
 - `known_hosts`: the exact controller-generated VM host key for the current IP.
 - `.controller.sock`: the local single-controller lock, removed on clean exit.
 

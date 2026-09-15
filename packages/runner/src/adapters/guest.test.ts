@@ -1,5 +1,5 @@
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 
@@ -7,6 +7,12 @@ import { describe, expect, it } from 'vitest';
 
 const guestDir = resolve(import.meta.dirname, '../../guest');
 const scripts = ['bootstrap.sh', 'diagnose-ssh.sh', 'arm-grant.sh', 'watchdog.sh', 'register-runner.sh', 'job-start-hook.sh', 'drain.sh', 'status.sh', 'resume-admission.sh'];
+
+function armFirstGrant(state: string): NodeJS.ProcessEnv {
+  const env = { ...process.env, CIRUJANO_TEST_MODE: '1', CIRUJANO_STATE_DIR: state, CIRUJANO_BOOT_ID: 'boot-a', CIRUJANO_MONOTONIC_MS: '100', CIRUJANO_SKIP_SYNC: '1' };
+  execFileSync('/bin/bash', [resolve(guestDir, 'arm-grant.sh')], { env, input: '1\n1000\n91000\n60000\n5000\n0\n' });
+  return env;
+}
 
 describe('guest helpers (R08-R09)', () => {
   it.each(scripts)('%s passes bash syntax validation', (script) => {
@@ -26,7 +32,10 @@ describe('guest helpers (R08-R09)', () => {
   it('installs the watchdog before readiness and verifies the runner checksum', () => {
     const script = readFileSync(resolve(guestDir, 'bootstrap.sh'), 'utf8');
     expect(script).toContain('install -d -m 0755 /opt/cirujano');
-    expect(script).toContain('install -d -m 0700 /var/lib/cirujano');
+    // The runner user must traverse into its generation directory without listing the state directory.
+    expect(script).toContain('install -d -m 0711 /var/lib/cirujano');
+    expect(script).toContain('install -d -m 0700 /opt/actions-runner');
+    expect(script).not.toContain('install -d -m 0700 /var/lib/cirujano');
     expect(script.indexOf('systemctl enable --now cirujano-watchdog')).toBeLessThan(script.indexOf('touch /var/lib/cirujano/ready'));
     expect(script.indexOf('systemctl enable --now cirujano-watchdog')).toBeLessThan(script.indexOf('RUNNER_VERSION:?'));
     expect(script.indexOf('CIRUJANO_SAFETY_ONLY')).toBeLessThan(script.indexOf('RUNNER_VERSION:?'));
@@ -95,7 +104,41 @@ describe('guest helpers (R08-R09)', () => {
     const script = readFileSync(resolve(guestDir, 'job-start-hook.sh'), 'utf8');
     expect(script).toContain('timeout 10s');
     expect(script).toContain('safe_cutoff_ms');
+    expect(script).not.toContain('CIRUJANO_');
     expect(script).toContain('exit 1');
+  });
+
+  it('admits or refuses a job from the exact grant the guest persisted', () => {
+    const state = mkdtempSync(resolve(tmpdir(), 'cirujano-hook-'));
+    // The production hook takes no environment overrides, so the test runs a copy with the
+    // fixed path, clock and (absent on macOS) GNU timeout substituted.
+    const substitutions: Array<[string, string]> = [
+      ['grant_file=/var/lib/cirujano/grant.env', `grant_file=${state}/grant.env`],
+      ['now_ms=$(($(date +%s) * 1000))', 'now_ms=$CIRUJANO_NOW_MS'],
+      ['timeout 10s bash', 'bash'],
+    ];
+    const hook = resolve(state, 'job-start-hook.sh');
+    writeFileSync(hook, substitutions.reduce((script, [from, to]) => {
+      expect(script).toContain(from);
+      return script.replace(from, to);
+    }, readFileSync(resolve(guestDir, 'job-start-hook.sh'), 'utf8')));
+    const run = (nowMs: string) => spawnSync('/bin/bash', [hook], { env: { ...process.env, CIRUJANO_NOW_MS: nowMs }, encoding: 'utf8' });
+    // No grant yet: refuse instead of treating missing bounds as zero.
+    const missing = run('1000');
+    expect(missing.status).toBe(1);
+    expect(missing.stderr).toContain('grant');
+    armFirstGrant(state);
+    // deadline 91000 - maxJob 60000 - margin 5000 = cutoff 26000.
+    expect(run('26000').status).toBe(0);
+    const late = run('26001');
+    expect(late.status).toBe(1);
+    expect(late.stderr).toContain('cannot fit');
+  });
+
+  it('never re-applies a private mode to the shared state directory', () => {
+    for (const script of scripts) {
+      expect(readFileSync(resolve(guestDir, script), 'utf8')).not.toMatch(/install -d -m 0700 (?:"\$state_dir"|\/var\/lib\/cirujano)(?:\s|$)/u);
+    }
   });
 
   it('drains named processes and task-owned Docker resources without global cleanup', () => {
@@ -178,8 +221,7 @@ describe('guest helpers (R08-R09)', () => {
   it('persists an immutable grant, rejects extension, and permits exactly the confirmed next generation', () => {
     const state = mkdtempSync(resolve(tmpdir(), 'cirujano-grant-'));
     const arm = resolve(guestDir, 'arm-grant.sh');
-    const env = { ...process.env, CIRUJANO_TEST_MODE: '1', CIRUJANO_STATE_DIR: state, CIRUJANO_BOOT_ID: 'boot-a', CIRUJANO_MONOTONIC_MS: '100', CIRUJANO_SKIP_SYNC: '1' };
-    execFileSync('/bin/bash', [arm], { env, input: '1\n1000\n91000\n60000\n5000\n0\n' });
+    const env = armFirstGrant(state);
     expect(() => execFileSync('/bin/bash', [arm], { env, input: '1\n1000\n92000\n60000\n5000\n0\n' })).toThrow();
     expect(() => execFileSync('/bin/bash', [arm], { env, input: '2\n92000\n182000\n60000\n5000\n0\n' })).toThrow();
     execFileSync('/bin/bash', [arm], { env: { ...env, CIRUJANO_NOW_MS: '90000' }, input: '2\n92000\n182000\n60000\n5000\n1\n' });
@@ -203,11 +245,16 @@ describe('guest helpers (R08-R09)', () => {
   it('preserves a deadline across reboot and quarantines wall-clock rollback', () => {
     const state = mkdtempSync(resolve(tmpdir(), 'cirujano-watchdog-'));
     const poweroff = resolve(state, 'powered-off');
-    const arm = resolve(guestDir, 'arm-grant.sh');
-    execFileSync('/bin/bash', [arm], { env: { ...process.env, CIRUJANO_TEST_MODE: '1', CIRUJANO_STATE_DIR: state, CIRUJANO_BOOT_ID: 'boot-a', CIRUJANO_MONOTONIC_MS: '100', CIRUJANO_SKIP_SYNC: '1' }, input: '1\n1000\n91000\n60000\n5000\n0\n' });
+    armFirstGrant(state);
+    // The runner account reads the grant (0644) after entering, but never listing, the state directory (0711).
+    const grantPath = resolve(state, 'grant.env');
+    expect(statSync(grantPath).mode & 0o777).toBe(0o644);
+    expect(statSync(state).mode & 0o777).toBe(0o711);
     const watchdog = resolve(guestDir, 'watchdog.sh');
     execFileSync('/bin/bash', [watchdog], { env: { ...process.env, CIRUJANO_STATE_DIR: state, CIRUJANO_BOOT_ID: 'boot-b', CIRUJANO_MONOTONIC_MS: '10', CIRUJANO_NOW_MS: '2000', CIRUJANO_WATCHDOG_ONCE: '1', CIRUJANO_POWEROFF_FILE: poweroff, CIRUJANO_SKIP_SYNC: '1' } });
-    expect(readFileSync(resolve(state, 'grant.env'), 'utf8')).toContain('grant_deadline_ms=91000');
+    expect(readFileSync(grantPath, 'utf8')).toContain('grant_deadline_ms=91000');
+    expect(statSync(grantPath).mode & 0o777).toBe(0o644);
+    expect(statSync(state).mode & 0o777).toBe(0o711);
     expect(() => execFileSync('/bin/bash', [watchdog], { env: { ...process.env, CIRUJANO_STATE_DIR: state, CIRUJANO_BOOT_ID: 'boot-b', CIRUJANO_MONOTONIC_MS: '20', CIRUJANO_NOW_MS: '1500', CIRUJANO_WATCHDOG_ONCE: '1', CIRUJANO_POWEROFF_FILE: poweroff, CIRUJANO_SKIP_SYNC: '1' } })).toThrow();
     expect(readFileSync(resolve(state, 'quarantined'), 'utf8')).toBe('');
   });

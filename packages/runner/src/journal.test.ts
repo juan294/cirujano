@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { appendRedactedEvent, readJournal, writeJournalAtomic } from './journal.js';
+import { CREDENTIAL_SHAPE_PATTERN, appendRedactedEvent, readJournal, redactCredentialShapes, writeJournalAtomic } from './journal.js';
 
 const children: ChildProcessWithoutNullStreams[] = [];
 afterEach(() => children.splice(0).forEach((child) => child.kill('SIGKILL')));
@@ -27,6 +27,24 @@ describe('durable journal', () => {
     expect(line).not.toContain('hidden');
     expect(line).toContain('[REDACTED]');
     expect(Buffer.byteLength(line)).toBeLessThanOrEqual(181);
+  });
+
+  it('scrubs credential shapes it was never told about, in events and on their own', async () => {
+    const pem = '-----BEGIN OPENSSH PRIVATE KEY-----\nbody-line\n-----END OPENSSH PRIVATE KEY-----';
+    const text = `token ghp_${'a'.repeat(36)} pat github_pat_abc key AKIAABCDEFGHIJKLMNOP env GITHUB_TOKEN=plain\n${pem}\nafter`;
+    const scrubbed = redactCredentialShapes(text);
+    expect(scrubbed).toBe(`token [REDACTED] pat [REDACTED] key [REDACTED] env [REDACTED]\n[REDACTED]\nafter`);
+    // The non-global pattern stays stateless across repeated tests.
+    expect(CREDENTIAL_SHAPE_PATTERN.test(text)).toBe(true);
+    expect(CREDENTIAL_SHAPE_PATTERN.test(text)).toBe(true);
+    expect(CREDENTIAL_SHAPE_PATTERN.test('-----BEGIN RSA PRIVATE KEY-----')).toBe(true);
+    const directory = await mkdtemp(join(tmpdir(), 'cirujano-shapes-'));
+    const path = join(directory, 'events.jsonl');
+    await appendRedactedEvent(path, { type: 'helper-failure', stderrTail: text });
+    const line = await readFile(path, 'utf8');
+    expect(line).not.toContain('body-line');
+    expect(line).not.toContain('github_pat_abc');
+    expect(line).toContain('after');
   });
 });
 

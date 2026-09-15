@@ -22,4 +22,10 @@ describe('cloud-init boot harness', () => {
     expect(harness).not.toContain('file=$seed_image,format=raw,if=virtio,cache=unsafe');
     expect(harness).toContain("printf 'overlay cache: unsafe (ephemeral test disk)\\n'");
   });
+
+  it('proves the runner account can enter but not list the state directory', () => {
+    // The proof command runs over SSH as the unprivileged runner user.
+    expect(harness).toContain('test -x /var/lib/cirujano && ! test -r /var/lib/cirujano && echo state-dir-traversable-not-listable');
+    expect(harness).toContain("'\"grant\":null' state-dir-traversable-not-listable");
+  });
 });
