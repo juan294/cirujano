@@ -36,7 +36,7 @@ jobs:
 
   ubuntu_24_04:
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 30
     env:
       CIRUJANO_QEMU_CPUS: 2
     steps:

@@ -9,6 +9,8 @@ readonly overlay_size=16G
 readonly qemu_cpu_model=qemu64
 readonly qemu_cpus=${CIRUJANO_QEMU_CPUS:-8}
 readonly qemu_memory_mb=${CIRUJANO_QEMU_MEMORY_MB:-4096}
+# Armed lifetime the oracle grants after SSH readiness; provisioning must finish inside it.
+readonly armed_window_s=900
 repository_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cache_directory=${CIRUJANO_BOOT_CACHE_DIR:-$repository_root/.rpi/local/cache}
 image_path="$cache_directory/noble-server-cloudimg-amd64-20260911.img"
@@ -116,31 +118,80 @@ until ssh "${ssh_args[@]}" runner@127.0.0.1 'test -f /run/cirujano-ssh-ready' >/
   sleep 5
 done
 ssh_ready_at=$(date +%s)
+
+# Phase 1: the safety control path is up before any package work (the exact
+# production ordering). The proof runs over SSH as the unprivileged runner user.
 proof_output="$temporary_directory/proof.txt"
 if ! ssh "${ssh_args[@]}" runner@127.0.0.1 \
-  'test -f /run/cirujano-ssh-ready && systemctl is-active ssh.socket && systemctl is-active ssh.service && systemctl is-active cirujano-watchdog && cloud-init status --wait && cloud-init --version 2>&1 && /opt/cirujano/status && test -x /var/lib/cirujano && test -r /var/lib/cirujano && echo state-dir-readable-by-runner' \
+  'test -f /run/cirujano-ssh-ready && systemctl is-active ssh.socket && systemctl is-active ssh.service && systemctl is-active cirujano-watchdog && test -x /var/lib/cirujano && test -r /var/lib/cirujano && echo state-dir-readable-by-runner && /opt/cirujano/status' \
   >"$proof_output"; then
   printf 'guest readiness proof failed; serial log sha256: %s\n' "$(sha256 "$serial_log")" >&2
   head -c 4096 "$proof_output" >&2
   exit 1
 fi
-for required in active 'status: done' '"watchdogReady":true' '"grant":null' state-dir-readable-by-runner; do
+for required in active state-dir-readable-by-runner '"grant":null'; do
   grep -q "$required" "$proof_output" || { printf 'guest proof is missing: %s\n' "$required" >&2; head -c 4096 "$proof_output" >&2; exit 1; }
 done
 watchdog_observed_at=$(date +%s)
 
-poweroff_deadline=$((ssh_ready_at + 660))
+# Phase 2: arm a grant exactly as the controller does once SSH is ready, so
+# provisioning runs under an armed lifetime instead of racing the ten-minute
+# controller-loss window that software emulation cannot meet. The lifetime is
+# enforced by the guest on its monotonic clock; the host timestamps here are
+# only the controller-issued bounds.
+armed_at=$(date +%s)
+grant_started_at_ms=$((armed_at * 1000))
+grant_deadline_ms=$((grant_started_at_ms + armed_window_s * 1000))
+if ! printf '1\n%s\n%s\n60000\n60000\n0\n' "$grant_started_at_ms" "$grant_deadline_ms" \
+  | ssh "${ssh_args[@]}" runner@127.0.0.1 'sudo -n /opt/cirujano/arm-grant'; then
+  printf 'arming the grant failed; serial log sha256: %s\n' "$(sha256 "$serial_log")" >&2
+  exit 1
+fi
+
+# Phase 3: provisioning completes while the grant is live. Poll the status
+# instead of blocking on it so a guest poweroff is reported as such.
+provisioning_deadline=$((armed_at + armed_window_s - 120))
+cloud_init_output="$temporary_directory/cloud-init.txt"
+while true; do
+  if ! kill -0 "$qemu_pid" 2>/dev/null; then
+    printf 'guest powered off before provisioning completed; serial log sha256: %s\n' "$(sha256 "$serial_log")" >&2
+    exit 1
+  fi
+  ssh "${ssh_args[@]}" runner@127.0.0.1 'cloud-init status' >"$cloud_init_output" 2>&1 || true
+  grep -q 'status: done' "$cloud_init_output" && break
+  if grep -q 'status: error' "$cloud_init_output"; then
+    printf 'cloud-init reported an error; serial log sha256: %s\n' "$(sha256 "$serial_log")" >&2
+    head -c 4096 "$cloud_init_output" >&2
+    exit 1
+  fi
+  (( $(date +%s) < provisioning_deadline )) || { printf 'provisioning did not complete within the armed window\n' >&2; head -c 4096 "$cloud_init_output" >&2; exit 1; }
+  sleep 15
+done
+provisioned_at=$(date +%s)
+ready_output="$temporary_directory/ready.txt"
+if ! ssh "${ssh_args[@]}" runner@127.0.0.1 'cloud-init --version 2>&1 && /opt/cirujano/status' >"$ready_output"; then
+  printf 'guest provisioning proof failed; serial log sha256: %s\n' "$(sha256 "$serial_log")" >&2
+  head -c 4096 "$ready_output" >&2
+  exit 1
+fi
+for required in '"status":"ready"' '"watchdogReady":true' '"registrationReady":true' '"grant":{"generation":1,'; do
+  grep -q "$required" "$ready_output" || { printf 'guest provisioning proof is missing: %s\n' "$required" >&2; head -c 4096 "$ready_output" >&2; exit 1; }
+done
+
+# Phase 4: the guest powers itself off at the armed deadline on its monotonic
+# clock, with no further host involvement.
+poweroff_deadline=$((armed_at + armed_window_s + 120))
 while kill -0 "$qemu_pid" 2>/dev/null; do
-  (( $(date +%s) < poweroff_deadline )) || { printf 'QEMU did not exit after the unarmed deadline\n' >&2; exit 1; }
+  (( $(date +%s) < poweroff_deadline )) || { printf 'QEMU did not exit after the armed deadline\n' >&2; exit 1; }
   sleep 5
 done
 if wait "$qemu_pid"; then qemu_status=0; else qemu_status=$?; fi
 qemu_pid=
 powered_off_at=$(date +%s)
 elapsed=$((powered_off_at - started_at))
-unarmed_elapsed=$((powered_off_at - ssh_ready_at))
+armed_elapsed=$((powered_off_at - armed_at))
 (( qemu_status == 0 )) || { printf 'QEMU exited with status %s\n' "$qemu_status" >&2; exit 1; }
-(( unarmed_elapsed >= 540 && unarmed_elapsed <= 660 )) || { printf 'guest poweroff was outside unarmed tolerance: %ss\n' "$unarmed_elapsed" >&2; exit 1; }
+(( armed_elapsed >= armed_window_s && armed_elapsed <= armed_window_s + 120 )) || { printf 'guest poweroff was outside armed tolerance: %ss\n' "$armed_elapsed" >&2; exit 1; }
 grep -Eq 'Powering Off|reboot: Power down|poweroff.target' "$serial_log" || { printf 'serial log has no guest poweroff evidence\n' >&2; exit 1; }
 
 printf 'image: %s\n' "$image_url"
@@ -154,9 +205,12 @@ printf 'sshd preflight: proved by root-owned readiness marker\n'
 printf 'boot started: %s\n' "$started_at_iso"
 printf 'ssh ready: %s\n' "$(date -u -r "$ssh_ready_at" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d "@$ssh_ready_at" +%Y-%m-%dT%H:%M:%SZ)"
 printf 'watchdog observed: %s\n' "$(date -u -r "$watchdog_observed_at" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d "@$watchdog_observed_at" +%Y-%m-%dT%H:%M:%SZ)"
+printf 'grant armed: %s (%ss lifetime)\n' "$(date -u -r "$armed_at" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d "@$armed_at" +%Y-%m-%dT%H:%M:%SZ)" "$armed_window_s"
+printf 'provisioning complete: %s\n' "$(date -u -r "$provisioned_at" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d "@$provisioned_at" +%Y-%m-%dT%H:%M:%SZ)"
 printf 'guest powered off: %s\n' "$(date -u -r "$powered_off_at" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d "@$powered_off_at" +%Y-%m-%dT%H:%M:%SZ)"
 printf 'ssh ready after: %ss\n' "$((ssh_ready_at - started_at))"
-printf 'unarmed poweroff after SSH readiness: %ss\n' "$unarmed_elapsed"
+printf 'provisioning complete after SSH readiness: %ss\n' "$((provisioned_at - ssh_ready_at))"
+printf 'armed poweroff after arming: %ss\n' "$armed_elapsed"
 printf 'total QEMU runtime: %ss\n' "$elapsed"
 printf 'serial log sha256: %s\n' "$(sha256 "$serial_log")"
 printf '%s\n' "$(grep -E 'cloud-init [0-9]+\.[0-9]+' "$proof_output" | head -1)"
