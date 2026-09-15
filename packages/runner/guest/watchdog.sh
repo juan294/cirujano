@@ -2,11 +2,32 @@
 set -euo pipefail
 state_dir=${CIRUJANO_STATE_DIR:-/var/lib/cirujano}
 grant_file="$state_dir/grant.env"
+clock_file="$state_dir/clock.env"
+unarmed_window_ms=600000
 # install -d re-applies the mode to an existing directory: keep the bootstrap's
 # 0755 so the runner's config.sh can still enumerate its ancestors.
 install -d -m 0755 "$state_dir"
-boot_ms=${CIRUJANO_NOW_MS:-$(($(date +%s) * 1000))}
-unarmed_deadline_ms=$((boot_ms + 600000))
+
+# The wall clock is never read here: NTP steps it, and the controller's clock
+# that issues a grant is a different clock altogether. Both deadlines are
+# measured on the monotonic clock. The unarmed window counts from a persisted
+# per-boot anchor, so a watchdog restart within one boot cannot reset it and a
+# reboot re-anchors it; an armed grant accumulates running time across reboots.
+
+read_clock() {
+  current_boot_id=${CIRUJANO_BOOT_ID:-$(cat /proc/sys/kernel/random/boot_id)}
+  current_monotonic_ms=${CIRUJANO_MONOTONIC_MS:-$(awk '{ printf "%d", $1 * 1000 }' /proc/uptime)}
+}
+
+write_atomically() {
+  local target=$1 tmp
+  tmp=$(mktemp "$state_dir/.$(basename "$target").XXXXXX")
+  cat > "$tmp"
+  chmod 0644 "$tmp"
+  [[ "${CIRUJANO_SKIP_SYNC:-0}" == 1 ]] || sync "$tmp"
+  mv "$tmp" "$target"
+  [[ "${CIRUJANO_SKIP_SYNC:-0}" == 1 ]] || sync "$state_dir"
+}
 
 power_off() {
   if [[ -n "${CIRUJANO_POWEROFF_FILE:-}" ]]; then
@@ -16,60 +37,67 @@ power_off() {
   fi
 }
 
-persist_grant() {
-  local tmp
-  tmp=$(mktemp "$state_dir/.grant.XXXXXX")
-  {
-    printf 'grant_generation=%s\n' "$grant_generation"
-    printf 'grant_started_at_ms=%s\n' "$grant_started_at_ms"
-    printf 'grant_deadline_ms=%s\n' "$grant_deadline_ms"
-    printf 'max_job_ms=%s\n' "$max_job_ms"
-    printf 'shutdown_margin_ms=%s\n' "$shutdown_margin_ms"
-    printf 'grant_boot_id=%q\n' "$grant_boot_id"
-    printf 'last_monotonic_ms=%s\n' "$last_monotonic_ms"
-    printf 'monotonic_elapsed_ms=%s\n' "$monotonic_elapsed_ms"
-    printf 'maximum_wall_ms=%s\n' "$maximum_wall_ms"
-  } > "$tmp"
-  chmod 0644 "$tmp"
-  [[ "${CIRUJANO_SKIP_SYNC:-0}" == 1 ]] || sync "$tmp"
-  mv "$tmp" "$grant_file"
-  [[ "${CIRUJANO_SKIP_SYNC:-0}" == 1 ]] || sync "$state_dir"
+quarantine() {
+  touch "$state_dir/quarantined"
+  power_off
+  exit 1
 }
 
+expire() {
+  touch "$state_dir/deadline-reached"
+  power_off
+  exit 0
+}
+
+persist_anchor() {
+  write_atomically "$clock_file" <<EOF
+anchor_boot_id=$(printf '%q' "$anchor_boot_id")
+anchor_monotonic_ms=$anchor_monotonic_ms
+EOF
+}
+
+persist_grant() {
+  write_atomically "$grant_file" <<EOF
+grant_generation=$grant_generation
+grant_started_at_ms=$grant_started_at_ms
+grant_deadline_ms=$grant_deadline_ms
+max_job_ms=$max_job_ms
+shutdown_margin_ms=$shutdown_margin_ms
+grant_boot_id=$(printf '%q' "$grant_boot_id")
+last_monotonic_ms=$last_monotonic_ms
+monotonic_elapsed_ms=$monotonic_elapsed_ms
+EOF
+}
+
+read_clock
+anchor_boot_id=
+if [[ -f "$clock_file" ]]; then
+  # shellcheck disable=SC1090 -- root-owned file written atomically below
+  source "$clock_file"
+fi
+if [[ "$anchor_boot_id" != "$current_boot_id" ]]; then
+  anchor_boot_id=$current_boot_id
+  anchor_monotonic_ms=$current_monotonic_ms
+  persist_anchor
+fi
+
 while true; do
-  now_ms=${CIRUJANO_NOW_MS:-$(($(date +%s) * 1000))}
-  current_boot_id=${CIRUJANO_BOOT_ID:-$(cat /proc/sys/kernel/random/boot_id)}
-  current_monotonic_ms=${CIRUJANO_MONOTONIC_MS:-$(awk '{ printf "%d", $1 * 1000 }' /proc/uptime)}
-  deadline_ms=$unarmed_deadline_ms
+  read_clock
   if [[ -f "$grant_file" ]]; then
     # shellcheck disable=SC1090 -- file is root-owned and written atomically
     source "$grant_file"
-    deadline_ms=${grant_deadline_ms:?grant deadline missing}
-    maximum_wall_ms=${maximum_wall_ms:?grant maximum wall missing}
-    if (( now_ms < maximum_wall_ms )); then
-      touch "$state_dir/quarantined"
-      power_off
-      exit 1
-    fi
+    : "${grant_deadline_ms:?grant deadline missing}"
     if [[ "$current_boot_id" == "$grant_boot_id" ]]; then
-      (( current_monotonic_ms >= last_monotonic_ms )) || { touch "$state_dir/quarantined"; power_off; exit 1; }
+      (( current_monotonic_ms >= last_monotonic_ms )) || quarantine
       monotonic_elapsed_ms=$((monotonic_elapsed_ms + current_monotonic_ms - last_monotonic_ms))
     else
       grant_boot_id=$current_boot_id
     fi
     last_monotonic_ms=$current_monotonic_ms
-    maximum_wall_ms=$now_ms
     persist_grant
-    if (( monotonic_elapsed_ms >= grant_deadline_ms - grant_started_at_ms )); then
-      touch "$state_dir/deadline-reached"
-      power_off
-      exit 0
-    fi
-  fi
-  if (( now_ms >= deadline_ms )); then
-    touch "$state_dir/deadline-reached"
-    power_off
-    exit 0
+    (( monotonic_elapsed_ms < grant_deadline_ms - grant_started_at_ms )) || expire
+  elif (( current_monotonic_ms - anchor_monotonic_ms >= unarmed_window_ms )); then
+    expire
   fi
   [[ "${CIRUJANO_WATCHDOG_ONCE:-0}" == 1 ]] && exit 0
   sleep 5

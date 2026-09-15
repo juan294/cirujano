@@ -6,6 +6,7 @@ import { dirname, join, resolve } from 'node:path';
 import {
   GitHubAdapter,
   GUEST_FILE_NAMES,
+  GUEST_UP_STATES,
   NebiusCli,
   RUNNER_SCHEMA_VERSION,
   acquireControllerLock,
@@ -303,7 +304,7 @@ async function mutateOwned(context: RuntimeContext, action: 'stop' | 'cleanup', 
     else if (ownership.ownership !== 'absent') throw new Error(`runner ownership is ${ownership.ownership}`);
 
     let operationId: string | undefined;
-    if (decision.action === 'stop') operationId = (await operation(await context.nebius.stop(decision.instanceId), 'Nebius stop')).operationId;
+    if (decision.action === 'stop') operationId = (await emitControllerStop(context, decision.instanceId, 'Nebius stop')).operationId;
     if (decision.action === 'delete') operationId = (await operation(await context.nebius.delete(decision.instanceId), 'Nebius delete')).operationId;
     await directBoundary(context, 'direct-provider-io');
     await writeJournalAtomic(context.directActionPath, { schemaVersion: 1, identity: context.identity, action, stage: 'emitting', observedAtMs: Date.now(), instanceId: instance.id, ...(operationId === undefined ? {} : { operationId }) });
@@ -383,7 +384,7 @@ async function recoverDirectEmission(
     current = retrying;
     await writeJournalAtomic(context.directActionPath, retrying);
     const result = action === 'stop'
-      ? await operation(await context.nebius.stop(prior.instanceId), 'Nebius recovery stop')
+      ? await emitControllerStop(context, prior.instanceId, 'Nebius recovery stop')
       : await operation(await context.nebius.delete(prior.instanceId), 'Nebius recovery delete');
     await writeJournalAtomic(context.directActionPath, { ...retrying, observedAtMs: Date.now(), ...result });
     const terminal = await waitForTerminalProvider(context, action, prior.instanceId);
@@ -665,7 +666,7 @@ async function interruptRecovery(context: RuntimeContext) {
         else if (ownership.ownership !== 'absent') throw new Error(`interrupt runner ownership is ${ownership.ownership}`);
         await writeJournalAtomic(context.directActionPath, { schemaVersion: 1, identity: context.identity, action: 'stop', stage: 'intent', observedAtMs: Date.now(), instanceId: instance.id, source: 'SIGINT' });
         await writeJournalAtomic(context.directActionPath, { schemaVersion: 1, identity: context.identity, action: 'stop', stage: 'emitting', observedAtMs: Date.now(), instanceId: instance.id, source: 'SIGINT' });
-        const result = await operation(await context.nebius.stop(instance.id), 'Nebius interrupt stop');
+        const result = await emitControllerStop(context, instance.id, 'Nebius interrupt stop');
         await writeJournalAtomic(context.directActionPath, { schemaVersion: 1, identity: context.identity, action: 'stop', stage: 'emitting', observedAtMs: Date.now(), instanceId: instance.id, source: 'SIGINT', ...result });
         const terminal = await waitForTerminalProvider(context, 'stop', instance.id, signal);
         if (!terminal.complete) throw new Error(`interrupt recovery has unresolved VM ${instance.id} in ${terminal.state}`);
@@ -970,6 +971,18 @@ async function readDirectAction(context: RuntimeContext): Promise<{ action: 'sto
     if (typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT') return null;
     throw error;
   }
+}
+
+// A stop the controller itself emits (direct action, recovery retry or SIGINT recovery)
+// is recorded at emission, so the lifecycle guard can tell it from a guest that powered
+// itself off. Finding a VM already stopped records nothing: that stop was not ours.
+async function emitControllerStop(context: RuntimeContext, instanceId: string, label: string): Promise<{ operationId?: string }> {
+  const result = operation(await context.nebius.stop(instanceId), label);
+  const state = await priorState(context);
+  if (state !== null && GUEST_UP_STATES.includes(state.lifecycle.state)) {
+    await writeJournalAtomic(context.journalPath, { ...state, lifecycle: { ...state.lifecycle, state: 'stopping' } });
+  }
+  return result;
 }
 
 async function priorState(context: RuntimeContext): Promise<ControllerState | null> {

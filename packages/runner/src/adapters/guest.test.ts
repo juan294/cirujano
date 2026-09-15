@@ -14,6 +14,12 @@ function armFirstGrant(state: string): NodeJS.ProcessEnv {
   return env;
 }
 
+function tickWatchdog(state: string, clock: { boot: string; monotonic: string }): void {
+  execFileSync('/bin/bash', [resolve(guestDir, 'watchdog.sh')], {
+    env: { ...process.env, CIRUJANO_STATE_DIR: state, CIRUJANO_BOOT_ID: clock.boot, CIRUJANO_MONOTONIC_MS: clock.monotonic, CIRUJANO_WATCHDOG_ONCE: '1', CIRUJANO_POWEROFF_FILE: resolve(state, 'powered-off'), CIRUJANO_SKIP_SYNC: '1' },
+  });
+}
+
 describe('guest helpers (R08-R09)', () => {
   it.each(scripts)('%s passes bash syntax validation', (script) => {
     expect(() => execFileSync('/bin/bash', ['-n', resolve(guestDir, script)])).not.toThrow();
@@ -103,18 +109,20 @@ describe('guest helpers (R08-R09)', () => {
   it('fails delayed jobs before user code and bounds the hook itself', () => {
     const script = readFileSync(resolve(guestDir, 'job-start-hook.sh'), 'utf8');
     expect(script).toContain('timeout 10s');
-    expect(script).toContain('safe_cutoff_ms');
+    expect(script).toContain('remaining_ms < max_job_ms + shutdown_margin_ms');
     expect(script).not.toContain('CIRUJANO_');
+    expect(script).not.toContain('date +%s');
     expect(script).toContain('exit 1');
   });
 
-  it('admits or refuses a job from the exact grant the guest persisted', () => {
+  it('admits or refuses a job from the exact grant on the monotonic clock', () => {
     const state = mkdtempSync(resolve(tmpdir(), 'cirujano-hook-'));
     // The production hook takes no environment overrides, so the test runs a copy with the
-    // fixed path, clock and (absent on macOS) GNU timeout substituted.
+    // fixed path, clocks and (absent on macOS) GNU timeout substituted.
     const substitutions: Array<[string, string]> = [
       ['grant_file=/var/lib/cirujano/grant.env', `grant_file=${state}/grant.env`],
-      ['now_ms=$(($(date +%s) * 1000))', 'now_ms=$CIRUJANO_NOW_MS'],
+      ['boot_id=$(cat /proc/sys/kernel/random/boot_id)', 'boot_id=$CIRUJANO_BOOT_ID'],
+      ['uptime_ms=$(awk "{ printf \\"%d\\", \\$1 * 1000 }" /proc/uptime)', 'uptime_ms=$CIRUJANO_MONOTONIC_MS'],
       ['timeout 10s bash', 'bash'],
     ];
     const hook = resolve(state, 'job-start-hook.sh');
@@ -122,17 +130,20 @@ describe('guest helpers (R08-R09)', () => {
       expect(script).toContain(from);
       return script.replace(from, to);
     }, readFileSync(resolve(guestDir, 'job-start-hook.sh'), 'utf8')));
-    const run = (nowMs: string) => spawnSync('/bin/bash', [hook], { env: { ...process.env, CIRUJANO_NOW_MS: nowMs }, encoding: 'utf8' });
+    const run = (boot: string, monotonic: string) => spawnSync('/bin/bash', [hook], { env: { ...process.env, CIRUJANO_BOOT_ID: boot, CIRUJANO_MONOTONIC_MS: monotonic }, encoding: 'utf8' });
     // No grant yet: refuse instead of treating missing bounds as zero.
-    const missing = run('1000');
+    const missing = run('boot-a', '1000');
     expect(missing.status).toBe(1);
     expect(missing.stderr).toContain('grant');
-    armFirstGrant(state);
-    // deadline 91000 - maxJob 60000 - margin 5000 = cutoff 26000.
-    expect(run('26000').status).toBe(0);
-    const late = run('26001');
+    // Window 90000, job 60000 + margin 5000: at most 25000 ms of running time may have elapsed.
+    armFirstGrant(state); // boot-a, last_monotonic 100, elapsed 0
+    expect(run('boot-a', '25100').status).toBe(0);
+    const late = run('boot-a', '25101');
     expect(late.status).toBe(1);
     expect(late.stderr).toContain('cannot fit');
+    // A wall-clock step is invisible; only monotonic running time counts, and a new boot id
+    // falls back to the elapsed time the watchdog persisted.
+    expect(run('boot-b', '99999999').status).toBe(0);
   });
 
   it('never re-applies a private mode to the shared state directory', () => {
@@ -158,6 +169,17 @@ describe('guest helpers (R08-R09)', () => {
     });
     expect(readFileSync(resolve(state, 'diag-4', 'runner.log'), 'utf8')).toBe('preserved');
     expect(readFileSync(resolve(state, 'admission-disabled'), 'utf8')).toBe('');
+  });
+
+  it('drains a generation that never registered', () => {
+    // Recovery after a failed or skipped registration must still disable admission and report drained.
+    const state = mkdtempSync(resolve(tmpdir(), 'cirujano-drain-unregistered-'));
+    const output = execFileSync('/bin/bash', [resolve(guestDir, 'drain.sh')], {
+      env: { ...process.env, CIRUJANO_TEST_MODE: '1', CIRUJANO_STATE_DIR: state, CIRUJANO_RUNNER_ROOT: state, CIRUJANO_DOCKER_BIN: '/usr/bin/true', CIRUJANO_FLOCK_BIN: '/usr/bin/true' }, input: '2\n', encoding: 'utf8',
+    });
+    expect(output.trim()).toBe('drained');
+    expect(readFileSync(resolve(state, 'admission-disabled'), 'utf8')).toBe('');
+    expect(existsSync(resolve(state, 'runner-2'))).toBe(false);
   });
 
   it('serializes drain against a registration holding the generation lock', () => {
@@ -224,8 +246,16 @@ describe('guest helpers (R08-R09)', () => {
     const env = armFirstGrant(state);
     expect(() => execFileSync('/bin/bash', [arm], { env, input: '1\n1000\n92000\n60000\n5000\n0\n' })).toThrow();
     expect(() => execFileSync('/bin/bash', [arm], { env, input: '2\n92000\n182000\n60000\n5000\n0\n' })).toThrow();
-    execFileSync('/bin/bash', [arm], { env: { ...env, CIRUJANO_NOW_MS: '90000' }, input: '2\n92000\n182000\n60000\n5000\n1\n' });
-    expect(readFileSync(resolve(state, 'grant.env'), 'utf8')).toContain('grant_generation=2');
+    tickWatchdog(state, { boot: 'boot-a', monotonic: '600' });
+    expect(readFileSync(resolve(state, 'grant.env'), 'utf8')).toContain('monotonic_elapsed_ms=500');
+    execFileSync('/bin/bash', [arm], { env, input: '2\n92000\n182000\n60000\n5000\n1\n' });
+    const next = readFileSync(resolve(state, 'grant.env'), 'utf8');
+    expect(next).toContain('grant_generation=2');
+    // The new generation's running time starts from zero; the controller already sized its window.
+    expect(next).toContain('monotonic_elapsed_ms=0');
+    // Once the previous generation has used its whole window, only a fresh VM may be armed.
+    tickWatchdog(state, { boot: 'boot-a', monotonic: '90700' });
+    expect(() => execFileSync('/bin/bash', [arm], { env, input: '3\n182000\n272000\n60000\n5000\n2\n' })).toThrow(/expired grant/u);
   });
 
   it('powers off an expired prior generation even after guest drain', () => {
@@ -233,29 +263,55 @@ describe('guest helpers (R08-R09)', () => {
     writeFileSync(resolve(state, 'grant.env'), [
       'grant_generation=1', 'grant_started_at_ms=1000', 'grant_deadline_ms=2000',
       'max_job_ms=60000', 'shutdown_margin_ms=5000', 'grant_boot_id=boot-a',
-      'last_monotonic_ms=10', 'monotonic_elapsed_ms=1000', 'maximum_wall_ms=2000', '',
+      'last_monotonic_ms=10', 'monotonic_elapsed_ms=1000', '',
     ].join('\n'));
-    const poweroff = resolve(state, 'powered-off');
-    execFileSync('/bin/bash', [resolve(guestDir, 'watchdog.sh')], {
-      env: { ...process.env, CIRUJANO_STATE_DIR: state, CIRUJANO_NOW_MS: '3000', CIRUJANO_MONOTONIC_MS: '5', CIRUJANO_BOOT_ID: 'boot-b', CIRUJANO_WATCHDOG_ONCE: '1', CIRUJANO_POWEROFF_FILE: poweroff, CIRUJANO_SKIP_SYNC: '1' },
-    });
-    expect(existsSync(poweroff)).toBe(true);
+    tickWatchdog(state, { boot: 'boot-b', monotonic: '5' });
+    expect(existsSync(resolve(state, 'powered-off'))).toBe(true);
   });
 
-  it('preserves a deadline across reboot and quarantines wall-clock rollback', () => {
+  it('preserves a deadline across reboot, ignores the wall clock and quarantines monotonic regression', () => {
     const state = mkdtempSync(resolve(tmpdir(), 'cirujano-watchdog-'));
-    const poweroff = resolve(state, 'powered-off');
     armFirstGrant(state);
     // The runner account reads the grant (0644) inside a state directory its config.sh can enumerate (0755).
     const grantPath = resolve(state, 'grant.env');
     expect(statSync(grantPath).mode & 0o777).toBe(0o644);
     expect(statSync(state).mode & 0o777).toBe(0o755);
-    const watchdog = resolve(guestDir, 'watchdog.sh');
-    execFileSync('/bin/bash', [watchdog], { env: { ...process.env, CIRUJANO_STATE_DIR: state, CIRUJANO_BOOT_ID: 'boot-b', CIRUJANO_MONOTONIC_MS: '10', CIRUJANO_NOW_MS: '2000', CIRUJANO_WATCHDOG_ONCE: '1', CIRUJANO_POWEROFF_FILE: poweroff, CIRUJANO_SKIP_SYNC: '1' } });
+    const grant = readFileSync(grantPath, 'utf8');
+    expect(grant).not.toContain('maximum_wall_ms');
+    expect(readFileSync(resolve(guestDir, 'watchdog.sh'), 'utf8')).not.toMatch(/date \+%s|CIRUJANO_NOW_MS/u);
+    tickWatchdog(state, { boot: 'boot-b', monotonic: '10' });
     expect(readFileSync(grantPath, 'utf8')).toContain('grant_deadline_ms=91000');
     expect(statSync(grantPath).mode & 0o777).toBe(0o644);
     expect(statSync(state).mode & 0o777).toBe(0o755);
-    expect(() => execFileSync('/bin/bash', [watchdog], { env: { ...process.env, CIRUJANO_STATE_DIR: state, CIRUJANO_BOOT_ID: 'boot-b', CIRUJANO_MONOTONIC_MS: '20', CIRUJANO_NOW_MS: '1500', CIRUJANO_WATCHDOG_ONCE: '1', CIRUJANO_POWEROFF_FILE: poweroff, CIRUJANO_SKIP_SYNC: '1' } })).toThrow();
+    tickWatchdog(state, { boot: 'boot-b', monotonic: '20' });
+    expect(existsSync(resolve(state, 'quarantined'))).toBe(false);
+    expect(existsSync(resolve(state, 'powered-off'))).toBe(false);
+    // Monotonic time cannot go backwards within one boot.
+    expect(() => tickWatchdog(state, { boot: 'boot-b', monotonic: '15' })).toThrow();
     expect(readFileSync(resolve(state, 'quarantined'), 'utf8')).toBe('');
+  });
+
+  it('enforces the unarmed deadline from a persisted monotonic anchor', () => {
+    const state = mkdtempSync(resolve(tmpdir(), 'cirujano-unarmed-'));
+    tickWatchdog(state, { boot: 'boot-a', monotonic: '1000' });
+    const anchor = readFileSync(resolve(state, 'clock.env'), 'utf8');
+    expect(anchor).toContain('anchor_boot_id=boot-a');
+    expect(anchor).toContain('anchor_monotonic_ms=1000');
+    // 599 s of monotonic time since the anchor: still inside the ten-minute window.
+    tickWatchdog(state, { boot: 'boot-a', monotonic: '600000' });
+    expect(existsSync(resolve(state, 'powered-off'))).toBe(false);
+    // 600 s powers the guest off.
+    tickWatchdog(state, { boot: 'boot-a', monotonic: '601000' });
+    expect(existsSync(resolve(state, 'powered-off'))).toBe(true);
+    expect(existsSync(resolve(state, 'deadline-reached'))).toBe(true);
+  });
+
+  it('re-anchors the unarmed window after a reboot instead of trusting the previous boot', () => {
+    const state = mkdtempSync(resolve(tmpdir(), 'cirujano-reanchor-'));
+    tickWatchdog(state, { boot: 'boot-a', monotonic: '500000' });
+    tickWatchdog(state, { boot: 'boot-b', monotonic: '1000' });
+    expect(readFileSync(resolve(state, 'clock.env'), 'utf8')).toContain('anchor_boot_id=boot-b');
+    tickWatchdog(state, { boot: 'boot-b', monotonic: '500000' });
+    expect(existsSync(resolve(state, 'powered-off'))).toBe(false);
   });
 });

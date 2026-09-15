@@ -1,12 +1,16 @@
 import type {
   LifecycleDecision,
   LifecycleInput,
+  LifecycleState,
   Permit,
   PermitIdentity,
   PermitOperation,
 } from './contracts.js';
 
 const DRAIN_FALLBACK_MS = 600_000;
+// Journal states in which the controller believes its guest is up; a provider `stopped`
+// while in one of them means the guest powered itself off.
+export const GUEST_UP_STATES: readonly LifecycleState[] = ['starting', 'ready', 'busy', 'draining'];
 const PERMIT_OPERATIONS: readonly PermitOperation[] = ['create', 'start', 'register', 'stop', 'delete'];
 const PERMIT_KEYS = [
   'schemaVersion', 'permitId', 'configHash', 'candidateDigest', 'repositoryId',
@@ -150,6 +154,12 @@ export function decideLifecycle(input: LifecycleInput): LifecycleDecision {
 
   if (input.queue.ownedBusy || input.guest.workerActive === true || input.guest.status === 'busy') {
     return { state: 'busy', effect: { type: 'none' }, reason: 'owned job is busy' };
+  }
+
+  if (input.provider.vmStatus === 'stopped' && GUEST_UP_STATES.includes(input.journal.state)) {
+    // Only the guest watchdog stops a VM the controller believes is up: quarantine or an expired
+    // grant. Its disk will not re-run cloud-init, so a restart can never become ready again.
+    return blocked('owned VM stopped outside the controller; delete it and create a fresh generation');
   }
 
   if (input.journal.state === 'draining' && input.queue.eligibleQueuedJobs > 0) {

@@ -51,6 +51,9 @@ fi
 pgrep -f "${runner_dir}/bin/Runner.Worker|${runner_dir}/bin/Runner.Listener" >/dev/null && { echo busy; exit 3; }
 "$docker_bin" ps -aq --filter "label=cirujano.generation=${RUNNER_GENERATION}" | xargs -r "$docker_bin" rm -f
 "$docker_bin" volume ls -q --filter "label=cirujano.generation=${RUNNER_GENERATION}" | xargs -r "$docker_bin" volume rm
-find "$runner_dir" -mindepth 1 -maxdepth 1 -exec rm -r -- {} +
+# A generation that failed before or during registration has no directory yet.
+if [[ -d "$runner_dir" ]]; then
+  find "$runner_dir" -mindepth 1 -maxdepth 1 -exec rm -r -- {} +
+fi
 rm -f "$listener_pid_file"
 echo drained

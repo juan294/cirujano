@@ -98,9 +98,11 @@ export async function tickController(options: TickOptions): Promise<TickResult> 
       }
       return { status: 'pending' };
     }
+    // A reconciled create proves the VM exists in the requested stopped state; only a start moves it on.
+    const reconciledState = prior.pendingEffect.effect.type === 'create-vm' ? 'stopped' : prior.lifecycle.state;
     const reconciled: ControllerState = {
       ...prior,
-      lifecycle: { ...prior.lifecycle, outstandingIntent: null },
+      lifecycle: { ...prior.lifecycle, state: reconciledState, outstandingIntent: null },
       pendingEffect: null,
       readbacks: [...prior.readbacks, reconciliation.readback].slice(-100),
     };

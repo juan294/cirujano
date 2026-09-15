@@ -22,7 +22,6 @@ done
 
 boot_id=${CIRUJANO_BOOT_ID:-$(cat /proc/sys/kernel/random/boot_id)}
 monotonic_ms=${CIRUJANO_MONOTONIC_MS:-$(awk '{ printf "%d", $1 * 1000 }' /proc/uptime)}
-maximum_wall_ms=$started_at_ms
 monotonic_elapsed_ms=0
 
 if [[ -f "$grant_file" ]]; then
@@ -36,9 +35,12 @@ if [[ -f "$grant_file" ]]; then
   (( generation == grant_generation + 1 )) || { echo 'grant generation must increment exactly once' >&2; exit 3; }
   [[ "$confirmed_stopped_generation" == "$grant_generation" ]] \
     || { echo 'new generation requires confirmed normal provider stop' >&2; exit 3; }
-  now_ms=${CIRUJANO_NOW_MS:-$(($(date +%s) * 1000))}
-  (( now_ms < grant_deadline_ms )) || { echo 'expired grant requires fresh VM creation' >&2; exit 3; }
+  # Expiry is the running time the watchdog accumulated, never the guest wall clock.
+  (( monotonic_elapsed_ms < grant_deadline_ms - grant_started_at_ms )) || { echo 'expired grant requires fresh VM creation' >&2; exit 3; }
 fi
+# The controller sized the new generation's window from its remaining budget; its
+# running time starts from zero rather than inheriting the previous generation's.
+monotonic_elapsed_ms=0
 
 tmp=$(mktemp "$state_dir/.grant.XXXXXX")
 trap 'rm -f "$tmp"' EXIT
@@ -51,7 +53,6 @@ trap 'rm -f "$tmp"' EXIT
   printf 'grant_boot_id=%q\n' "$boot_id"
   printf 'last_monotonic_ms=%s\n' "$monotonic_ms"
   printf 'monotonic_elapsed_ms=%s\n' "$monotonic_elapsed_ms"
-  printf 'maximum_wall_ms=%s\n' "$maximum_wall_ms"
 } > "$tmp"
 chmod 0644 "$tmp"
 [[ "${CIRUJANO_SKIP_SYNC:-0}" == 1 ]] || sync "$tmp"

@@ -356,6 +356,39 @@ describe('production runner command composition (R11/R12)', () => {
     await expect(access(join(fixture.directory, 'helper-diagnostics.jsonl'))).rejects.toThrow();
   }, 30_000);
 
+  async function armedLifecycle(): Promise<LifecycleFixture> {
+    const fixture = await createLifecycleFixture();
+    await builtTick(fixture);
+    await updateScenario(fixture, (state) => { state.jobs[0]!.status = 'queued'; });
+    for (let tick = 0; tick < 4; tick += 1) await builtTick(fixture); // create, adopt, start, arm
+    return fixture;
+  }
+
+  const journalState = async (fixture: LifecycleFixture): Promise<string> =>
+    (JSON.parse(await readFile(join(fixture.directory, 'controller-state.json'), 'utf8')) as { lifecycle: { state: string } }).lifecycle.state;
+
+  it('refuses to restart a guest that stopped itself, even after a direct stop finds it stopped', async () => {
+    const fixture = await armedLifecycle();
+    // The guest watchdog powers the VM off (quarantine or expired grant) behind the controller's back.
+    await updateScenario(fixture, (state) => { state.provider = 'STOPPED'; state.guest = 'booting'; });
+    await expect(builtTick(fixture)).rejects.toThrow(/stopped outside the controller/u);
+    // A direct stop that finds the VM already stopped emits nothing and must not launder the guest's own stop.
+    await builtDirect(fixture, 'stop');
+    expect(await journalState(fixture)).toBe('starting');
+    await expect(builtTick(fixture)).rejects.toThrow(/stopped outside the controller/u);
+    const log = await readFile(fixture.logPath, 'utf8');
+    expect(log.split('\n').filter((line) => line.includes('instance start'))).toHaveLength(1);
+  }, 30_000);
+
+  it('records its own emitted stop and restarts on the next demand', async () => {
+    const fixture = await armedLifecycle();
+    await builtDirect(fixture, 'stop');
+    expect(await journalState(fixture)).toBe('stopping');
+    await builtTick(fixture);
+    const log = await readFile(fixture.logPath, 'utf8');
+    expect(log.split('\n').filter((line) => line.includes('instance start'))).toHaveLength(2);
+  }, 30_000);
+
   it('persists a bounded redacted stderr tail when a guest helper fails', async () => {
     const fixture = await createLifecycleFixture();
     await builtTick(fixture);
@@ -428,13 +461,16 @@ interface KnownFixtureAssignment { runId: number; runAttempt: number; jobId: num
 
 interface LifecycleFixture { directory: string; scenarioPath: string; configPath: string; permitPath: string; logPath: string; env: NodeJS.ProcessEnv }
 
-async function builtTick(fixture: LifecycleFixture): Promise<string> {
+async function builtRunner(fixture: LifecycleFixture, command: 'watch' | 'stop' | 'cleanup', extraEnv: NodeJS.ProcessEnv = {}): Promise<string> {
   const executable = join(packageDirectory, 'dist/bin.js');
-  const result = await executeFile(process.execPath, [executable, 'runner', 'watch', '--config', fixture.configPath, '--permit', fixture.permitPath], {
-    env: { ...fixture.env, CIRUJANO_RUNNER_ONCE: '1' }, maxBuffer: 1024 * 1024,
-  }).catch((error: { stderr?: string; stdout?: string }) => { throw new Error(`${error.stderr ?? ''}${error.stdout ?? ''}` || 'built tick failed'); });
+  const result = await executeFile(process.execPath, [executable, 'runner', command, '--config', fixture.configPath, '--permit', fixture.permitPath], {
+    env: { ...fixture.env, ...extraEnv }, maxBuffer: 1024 * 1024,
+  }).catch((error: { stderr?: string; stdout?: string }) => { throw new Error(`${error.stderr ?? ''}${error.stdout ?? ''}` || `built ${command} failed`); });
   return result.stdout;
 }
+
+const builtTick = (fixture: LifecycleFixture): Promise<string> => builtRunner(fixture, 'watch', { CIRUJANO_RUNNER_ONCE: '1' });
+const builtDirect = (fixture: LifecycleFixture, action: 'stop' | 'cleanup'): Promise<string> => builtRunner(fixture, action);
 
 async function updateScenario(fixture: LifecycleFixture, update: (state: LifecycleScenario) => void): Promise<void> {
   const state = JSON.parse(await readFile(fixture.scenarioPath, 'utf8')) as LifecycleScenario;

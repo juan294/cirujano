@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { LifecycleInput, Permit } from './contracts.js';
-import { canBeginAssignedJob, decideLifecycle, drainDeadlineMs, parsePermit, validatePermit } from './lifecycle.js';
+import { GUEST_UP_STATES, canBeginAssignedJob, decideLifecycle, drainDeadlineMs, parsePermit, validatePermit } from './lifecycle.js';
 import { validConfig as rawConfig } from './config.test.js';
 import { parseRunnerConfig } from './config.js';
 
@@ -110,6 +110,21 @@ describe('replay-safe transitions (R02)', () => {
     const result = decideLifecycle(input({ queue: { ...input().queue, ...queuePatch } }));
     expect(result.effect.type).toBe('none');
     expect(result.state).toBe('blocked');
+  });
+
+  it.each(GUEST_UP_STATES)('never restarts a guest that stopped itself while the controller believed it was %s', (state) => {
+    // A quarantined or expired guest powers itself off; its disk will not re-run cloud-init, so a
+    // restart can never become ready. The only safe path is cleanup and a fresh generation.
+    const result = decideLifecycle(input({ permit: { ...permit, maxStarts: 2 }, journal: { ...input().journal, state, startCount: 1 } }));
+    expect(result.effect).toEqual({ type: 'none' });
+    expect(result.state).toBe('blocked');
+    expect(result.reason).toMatch(/stopped outside the controller/u);
+  });
+
+  it('restarts a stopped VM after its own ordinary stop resolved', () => {
+    expect(decideLifecycle(input({ permit: { ...permit, maxStarts: 2 }, journal: { ...input().journal, state: 'stopping', startCount: 1 } }))).toMatchObject({
+      state: 'starting', effect: { type: 'start-vm', generation: 2 },
+    });
   });
 
   it('does not duplicate a start while an operation or intent is outstanding', () => {
