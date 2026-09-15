@@ -337,3 +337,45 @@ directory. The complete local policy and the pinned Noble boot oracle passed
 at that candidate (SSH ready after 55 s, unarmed poweroff 612 s after
 readiness). Queue-and-execute onward still requires a new candidate-bound
 authorization.
+
+## Eighth live attempt result
+
+The enumerable-state-directory candidate (`develop`
+`152a10acf7409e28c6415eddced76083c6607dad`) passed exact CI and CodeQL and
+received a bounded authorization for the workloads generation only. Both
+hosted baselines passed in 35 and 37 seconds. The controller created, started
+and armed generation one, but the guest watchdog quarantined it about two
+minutes after start, before provisioning finished, and powered it off. The
+controller then observed the stopped VM with eligible demand and emitted a
+second start; generation two booted from the same disk, which does not
+re-run cloud-init, so `ready` never appeared and the controller blocked on an
+uncertain guest state. Both permitted starts were consumed. Registration was
+therefore not reached and the previous repair remains unexercised.
+
+Read-only guest inspection showed the `quarantined` marker, a chrony
+configuration that steps the clock during its first three updates, and a guest
+clock within a third of a second of the controller after synchronization. The
+quarantine cause is inferred, not observed: the watchdog quarantined on any
+backward wall-clock movement and the grant seeded that comparison from the
+controller's clock, so an early NTP step or a small host/guest offset was
+sufficient. Interrupt recovery and `runner stop` both failed because the drain
+helper assumed a generation directory that a never-registered generation does
+not have; the separately authorized provider stop, exact cleanup and cancellation
+of the queued dispatch completed with empty final inventories and no runners.
+
+The local repair removes every wall-clock read from the guest deadline path:
+the watchdog measures the unarmed window from a persisted per-boot monotonic
+anchor and an armed grant by accumulated running time, quarantining only on
+in-boot monotonic regression; arm-grant judges expiry the same way and starts
+each generation at zero running time, which also fixes a latent inheritance of
+the previous generation's elapsed time; the job-start hook measures remaining
+running time on the same basis; drain tolerates a missing generation
+directory. The controller blocks instead of restarting when the provider reports
+`stopped` while the journal believes the guest is up, records a reconciled
+create as `stopped`, and records its own emitted stops so only those may
+restart. Independent review and a simplify pass were applied, including the
+review finding that a direct stop on an already-stopped VM must not be recorded
+as the controller's own. The complete local policy passed; the QEMU boot oracle
+passed on the pre-review watchdog and could not be rerun locally on the final
+scripts because the host was under memory pressure from unrelated containers,
+so the exact CI boot oracle is the acceptance for the guest change.
