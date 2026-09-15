@@ -5,8 +5,8 @@ if (( EUID != 0 )) && [[ "${CIRUJANO_TEST_MODE:-0}" != 1 ]]; then exec sudo -n "
 state_dir=${CIRUJANO_STATE_DIR:-/var/lib/cirujano}
 grant_file="$state_dir/grant.env"
 # install -d re-applies the mode to an existing directory: keep the bootstrap's
-# 0711 so the runner account can still enter its generation directory.
-install -d -m 0711 "$state_dir"
+# 0755 so the runner's config.sh can still enumerate its ancestors.
+install -d -m 0755 "$state_dir"
 
 IFS= read -r generation
 IFS= read -r started_at_ms

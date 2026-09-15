@@ -32,8 +32,8 @@ describe('guest helpers (R08-R09)', () => {
   it('installs the watchdog before readiness and verifies the runner checksum', () => {
     const script = readFileSync(resolve(guestDir, 'bootstrap.sh'), 'utf8');
     expect(script).toContain('install -d -m 0755 /opt/cirujano');
-    // The runner user must traverse into its generation directory without listing the state directory.
-    expect(script).toContain('install -d -m 0711 /var/lib/cirujano');
+    // The GitHub runner requires read permission on every ancestor of its working directory.
+    expect(script).toContain('install -d -m 0755 /var/lib/cirujano');
     expect(script).toContain('install -d -m 0700 /opt/actions-runner');
     expect(script).not.toContain('install -d -m 0700 /var/lib/cirujano');
     expect(script.indexOf('systemctl enable --now cirujano-watchdog')).toBeLessThan(script.indexOf('touch /var/lib/cirujano/ready'));
@@ -137,7 +137,7 @@ describe('guest helpers (R08-R09)', () => {
 
   it('never re-applies a private mode to the shared state directory', () => {
     for (const script of scripts) {
-      expect(readFileSync(resolve(guestDir, script), 'utf8')).not.toMatch(/install -d -m 0700 (?:"\$state_dir"|\/var\/lib\/cirujano)(?:\s|$)/u);
+      expect(readFileSync(resolve(guestDir, script), 'utf8')).not.toMatch(/install -d -m 07[0-4][0-9] (?:"\$state_dir"|\/var\/lib\/cirujano)(?:\s|$)/u);
     }
   });
 
@@ -246,15 +246,15 @@ describe('guest helpers (R08-R09)', () => {
     const state = mkdtempSync(resolve(tmpdir(), 'cirujano-watchdog-'));
     const poweroff = resolve(state, 'powered-off');
     armFirstGrant(state);
-    // The runner account reads the grant (0644) after entering, but never listing, the state directory (0711).
+    // The runner account reads the grant (0644) inside a state directory its config.sh can enumerate (0755).
     const grantPath = resolve(state, 'grant.env');
     expect(statSync(grantPath).mode & 0o777).toBe(0o644);
-    expect(statSync(state).mode & 0o777).toBe(0o711);
+    expect(statSync(state).mode & 0o777).toBe(0o755);
     const watchdog = resolve(guestDir, 'watchdog.sh');
     execFileSync('/bin/bash', [watchdog], { env: { ...process.env, CIRUJANO_STATE_DIR: state, CIRUJANO_BOOT_ID: 'boot-b', CIRUJANO_MONOTONIC_MS: '10', CIRUJANO_NOW_MS: '2000', CIRUJANO_WATCHDOG_ONCE: '1', CIRUJANO_POWEROFF_FILE: poweroff, CIRUJANO_SKIP_SYNC: '1' } });
     expect(readFileSync(grantPath, 'utf8')).toContain('grant_deadline_ms=91000');
     expect(statSync(grantPath).mode & 0o777).toBe(0o644);
-    expect(statSync(state).mode & 0o777).toBe(0o711);
+    expect(statSync(state).mode & 0o777).toBe(0o755);
     expect(() => execFileSync('/bin/bash', [watchdog], { env: { ...process.env, CIRUJANO_STATE_DIR: state, CIRUJANO_BOOT_ID: 'boot-b', CIRUJANO_MONOTONIC_MS: '20', CIRUJANO_NOW_MS: '1500', CIRUJANO_WATCHDOG_ONCE: '1', CIRUJANO_POWEROFF_FILE: poweroff, CIRUJANO_SKIP_SYNC: '1' } })).toThrow();
     expect(readFileSync(resolve(state, 'quarantined'), 'utf8')).toBe('');
   });

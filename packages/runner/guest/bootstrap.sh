@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# The runner account must traverse into /var/lib/cirujano/runner-<generation>
-# without being able to list the state directory; grant.env is world-readable
-# on purpose because the job-start hook reads it as that account.
-install -d -m 0711 /var/lib/cirujano
+# The GitHub runner's config.sh refuses to work under any ancestor directory it
+# cannot enumerate, so the state directory is world-readable. Nothing secret
+# lives at its top level: grant.env is 0644 on purpose (the job-start hook reads
+# it as the runner account), generation directories are 0700 runner-owned and
+# diag directories are 0700 root.
+install -d -m 0755 /var/lib/cirujano
 install -d -m 0700 /opt/actions-runner
 install -d -m 0755 /opt/cirujano
 install -m 0755 /tmp/cirujano/watchdog.sh /opt/cirujano/watchdog

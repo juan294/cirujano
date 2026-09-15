@@ -23,9 +23,9 @@ describe('cloud-init boot harness', () => {
     expect(harness).toContain("printf 'overlay cache: unsafe (ephemeral test disk)\\n'");
   });
 
-  it('proves the runner account can enter but not list the state directory', () => {
-    // The proof command runs over SSH as the unprivileged runner user.
-    expect(harness).toContain('test -x /var/lib/cirujano && ! test -r /var/lib/cirujano && echo state-dir-traversable-not-listable');
-    expect(harness).toContain("'\"grant\":null' state-dir-traversable-not-listable");
+  it('proves the runner account can enter and enumerate the state directory', () => {
+    // The proof command runs over SSH as the unprivileged runner user; config.sh needs both.
+    expect(harness).toContain('test -x /var/lib/cirujano && test -r /var/lib/cirujano && echo state-dir-readable-by-runner');
+    expect(harness).toContain("'\"grant\":null' state-dir-readable-by-runner");
   });
 });
