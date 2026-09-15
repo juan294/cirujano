@@ -379,3 +379,32 @@ as the controller's own. The complete local policy passed; the QEMU boot oracle
 passed on the pre-review watchdog and could not be rerun locally on the final
 scripts because the host was under memory pressure from unrelated containers,
 so the exact CI boot oracle is the acceptance for the guest change.
+
+## Ninth live attempt result
+
+The monotonic-watchdog candidate (`develop`
+`83dd477beca75c13788580ae733ccaddbf7149f9`, whose boot oracle now arms a
+grant after SSH readiness instead of racing the controller-loss window)
+passed exact CI and CodeQL and received a bounded authorization for the
+workloads generation only. Both hosted baselines passed in 37 and 45 seconds.
+The controller created, started and armed the guest, the guest reached
+`ready`, and `register-runner` completed for the first time: the runner
+`cirujano-archy-r12-g3-g1` appeared in the repository with the expected
+labels. It stayed offline. The runner's own diagnostic log recorded the
+cause: GitHub answered the listener's first message request with "Runner
+version v2.328.0 is deprecated and cannot receive messages", and the
+`--disableupdate` registration cannot self-upgrade. The state directory mode,
+grant, watchdog, provisioning and registration repairs therefore all held;
+the pinned runner archive was the remaining blocker.
+
+SIGINT recovery drained the registered generation, removed the owned runner,
+stopped the VM and returned `completed: true`; cleanup removed the exact VM and
+disk and the queued dispatch was cancelled with zero steps executed. Final
+reads showed empty inventories and no runners. One start and about ten
+minutes of compute were consumed.
+
+The repair pins Actions runner v2.337.0, the latest release, with the
+SHA-256 published in its release notes and verified against the downloaded
+linux-x64 archive; the runbook records that the pin must be compared with the
+latest release before every live attempt. Queue-and-execute onward still
+requires a new candidate-bound authorization.
