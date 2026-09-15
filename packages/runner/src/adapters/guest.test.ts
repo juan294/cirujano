@@ -115,6 +115,13 @@ describe('guest helpers (R08-R09)', () => {
     expect(script).toContain('exit 1');
   });
 
+  it('installs the job hook at a path the runner accepts and points registration at it', () => {
+    // The Actions runner rejects a job hook whose path does not end in .sh, .ps1 or .js.
+    const hookPath = '/opt/cirujano/job-start-hook.sh';
+    expect(readFileSync(resolve(guestDir, 'bootstrap.sh'), 'utf8')).toContain(`install -m 0755 /tmp/cirujano/job-start-hook.sh ${hookPath}`);
+    expect(readFileSync(resolve(guestDir, 'register-runner.sh'), 'utf8')).toContain(`ACTIONS_RUNNER_HOOK_JOB_STARTED=${hookPath}`);
+  });
+
   it('admits or refuses a job from the exact grant on the monotonic clock', () => {
     const state = mkdtempSync(resolve(tmpdir(), 'cirujano-hook-'));
     // The production hook takes no environment overrides, so the test runs a copy with the

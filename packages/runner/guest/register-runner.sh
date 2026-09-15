@@ -22,7 +22,7 @@ runner_dir="$runner_root/runner-${RUNNER_GENERATION}"
 [[ ! -e "$state_dir/admission-disabled" ]] || { echo 'runner admission is disabled' >&2; exit 3; }
 if [[ "${CIRUJANO_TEST_MODE:-0}" == 1 ]]; then install -d -m 0700 "$runner_dir"; else install -d -m 0700 -o runner -g runner "$runner_dir"; fi
 cp -a "$runner_template/." "$runner_dir/"
-printf '%s\n' 'ACTIONS_RUNNER_HOOK_JOB_STARTED=/opt/cirujano/job-start-hook' > "$runner_dir/.env"
+printf '%s\n' 'ACTIONS_RUNNER_HOOK_JOB_STARTED=/opt/cirujano/job-start-hook.sh' > "$runner_dir/.env"
 [[ "${CIRUJANO_TEST_MODE:-0}" == 1 ]] || chown runner:runner "$runner_dir/.env"
 export ACTIONS_RUNNER_INPUT_TOKEN="$RUNNER_TOKEN"
 unset RUNNER_TOKEN

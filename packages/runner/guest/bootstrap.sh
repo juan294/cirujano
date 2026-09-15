@@ -12,7 +12,7 @@ install -d -m 0755 /opt/cirujano
 install -m 0755 /tmp/cirujano/watchdog.sh /opt/cirujano/watchdog
 install -m 0755 /tmp/cirujano/diagnose-ssh.sh /opt/cirujano/diagnose-ssh
 install -m 0755 /tmp/cirujano/arm-grant.sh /opt/cirujano/arm-grant
-install -m 0755 /tmp/cirujano/job-start-hook.sh /opt/cirujano/job-start-hook
+install -m 0755 /tmp/cirujano/job-start-hook.sh /opt/cirujano/job-start-hook.sh
 install -m 0755 /tmp/cirujano/register-runner.sh /opt/cirujano/register-runner
 install -m 0755 /tmp/cirujano/drain.sh /opt/cirujano/drain
 install -m 0755 /tmp/cirujano/status.sh /opt/cirujano/status
