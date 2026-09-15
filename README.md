@@ -23,13 +23,16 @@ and every number it claims comes from a real run.
 ## Status
 
 The measurement core, single-run estimator, reporting Action, on-demand Nebius
-runner controller, and daily fleet telemetry are implemented. The runner is
-awaiting a fresh candidate-bound live pilot. The `eu-west1` pilot proved quota,
-VM start, independent stop and cleanup, but exposed that slow package setup ran
-before the SSH and watchdog control path. The repaired bootstrap now opens that
-control path first; its live watchdog and workload checks remain pending.
-Workflow patch proposal and verification remain future work. The measured
-starting point that motivates the project is in
+runner controller, and daily fleet telemetry are implemented. On 2026-09-15
+the runner passed its live pilot on Nebius `eu-west1`: a queued job started a
+VM and ran on it about four and a half minutes after dispatch, a second job
+reused the stopped VM with a fresh registration, the controller drained and
+stopped the VM after the idle grace, survived being killed mid-job, and cleaned
+up every resource. The full matrix and its limits are in
+[docs/research/2026-09-15-nebius-runner-pilot-r14.md](docs/research/2026-09-15-nebius-runner-pilot-r14.md).
+Fleet enrollment and the 45-day savings evidence come next. Workflow patch
+proposal and verification remain future work. The measured starting point that
+motivates the project is in
 [docs/research/2026-09-08-github-actions-cost-baseline.md](docs/research/2026-09-08-github-actions-cost-baseline.md).
 
 ## How it works

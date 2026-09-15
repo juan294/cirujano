@@ -1,7 +1,7 @@
 # On-demand Nebius runner: implementation plan
 
 Date: 2026-09-13
-Status: Phases 1-3 complete and independently approved; Phase 4 remains blocked after three fully cleaned live attempts.
+Status: Phases 1-4 complete. The live R14 matrix passed on 2026-09-15 at candidate `5a86aab` after six attempts and five repairs; see `docs/research/2026-09-15-nebius-runner-pilot-r14.md`.
 Base: `189f5f163a9e4745cd9b6d5848b81aa231909505`, `develop`.
 Workspace: `/Users/juan/code/cirujano`.
 

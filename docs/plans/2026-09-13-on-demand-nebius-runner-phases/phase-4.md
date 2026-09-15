@@ -1,7 +1,7 @@
 # Phase 4: authorized live pilot and evidence
 
 Parent: [runner plan](../2026-09-13-on-demand-nebius-runner.md).
-Status: live R14 remains blocked after six attempts; the sixth (2026-09-15) passed provider-contract, first-boot-failure and watchdog-first at the repaired candidate and failed queue-and-execute at runner registration. Every recovery and cleanup completed.
+Status: complete. The eleventh live attempt (2026-09-15, candidate `5a86aab`) passed every R14 row and `runner report` returned `complete: true`; see the exit record at the end of this file.
 Entry: accepted Phase 3 plus explicit authorization to prepare this phase.
 Preparation alone does not authorize GitHub mutations or spending.
 
@@ -389,7 +389,7 @@ passed exact CI and CodeQL and received a bounded authorization for the
 workloads generation only. Both hosted baselines passed in 37 and 45 seconds.
 The controller created, started and armed the guest, the guest reached
 `ready`, and `register-runner` completed for the first time: the runner
-`cirujano-archy-r12-g3-g1` appeared in the repository with the expected
+the generation-one runner appeared in the repository with the expected
 labels. It stayed offline. The runner's own diagnostic log recorded the
 cause: GitHub answered the listener's first message request with "Runner
 version v2.328.0 is deprecated and cannot receive messages", and the
@@ -417,7 +417,7 @@ authorization for the workloads generation only. Both hosted baselines passed
 in 38 and 39 seconds. The controller created, started and armed the guest, the
 guest reached `ready`, registration completed, the listener came online, and
 GitHub assigned the queued self-hosted job to runner
-`cirujano-archy-r13-g3-g1` on the Nebius VM: the first self-hosted execution
+the generation-one runner on the Nebius VM: the first self-hosted execution
 of the pilot. The job failed in its "Set up runner" step before any fixture
 step ran, because the Actions runner rejects a job-started hook whose path
 does not end in `.sh`, `.ps1` or `.js`, and the bootstrap installed the hook
@@ -435,3 +435,35 @@ The repair installs the hook as `/opt/cirujano/job-start-hook.sh` and points
 queue-and-execute row remains failed at this candidate; sequential isolation,
 normal idle, restart-and-failure and comparison remain not run. Another live
 attempt requires a new candidate-bound authorization.
+
+## Eleventh live attempt result and Phase 4 exit
+
+The hook-path candidate (`develop` `5a86aab1646dd3ae98a537af6752f86e2d47fe6a`)
+passed exact CI and CodeQL and received a bounded authorization for the
+workloads generation only. Both hosted baselines passed in 38 and 40 seconds.
+The controller created, started and armed the guest, registered the runner,
+and GitHub assigned the first self-hosted job, which ran all sixteen fixture
+steps green on the Nebius VM in 85 seconds. The controller drained four
+seconds later, observed the five-minute idle grace and stopped the VM. The
+second dispatch restarted the stopped VM as generation two with a fresh
+registration and a fresh grant; the job proved the previous workspace and
+sentinel absent and the fixed Docker port free, in 42 seconds. During that job
+the controller process was killed by the host; the job finished on the guest,
+one tick with failing GitHub reads produced no intent and no start, and the
+restarted controller adopted the same VM, drained it and stopped it. Cleanup
+resolved absent with empty instance, disk and allocation inventories and no
+runners.
+
+`runner report` over the collected evidence returned `complete: true`: R10
+through R13 at the candidate's CI run, and every R14 row passed. The
+sanitized report is `docs/research/2026-09-15-nebius-runner-pilot-r14.md`;
+the raw evidence, report input and report stay under the ignored
+`.cirujano/runner/r14-*`. Recorded limits: first-boot-failure and
+watchdog-first were proven at the r9 candidate and the current monotonic
+watchdog by the armed boot oracle in CI; the restart used SIGKILL rather than
+SIGINT; the comparison is one fixture on one preset.
+
+Phase 4 exit is met: nonzero passes, every required R14 row passing, candidate
+and cleanup evidence present, all local gates and exact CI passing, and local
+integration verified. No release, tag, npm publication or production migration
+is included. Telemetry Phase 3 may start.
