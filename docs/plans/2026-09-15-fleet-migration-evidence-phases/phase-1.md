@@ -98,3 +98,15 @@ Manual: none. External state: none (no GitHub writes, no Nebius).
 ## Exit
 
 Record commit, checks and findings here; stop for acceptance.
+
+## Handoff (2026-09-15)
+
+- [x] U1 registry module, validator, fixture, tests (`packages/cli/src/fleet-registry.ts`, `fleet-registry.test.ts`, `fixtures/fleet-registry.example.json`)
+- [x] U2 `fleet init|enroll|cutover|verify|show` + service over the injected page runner (`fleet-service.ts`, `fleet-service.test.ts`, `github-api.ts`, `args.ts`, `cli.ts`)
+- [x] U3 `telemetry report --registry`, `enrollments[]`, Markdown table, byte-identical pin (`telemetry.ts`, `telemetry-enrollments.test.ts`, `fixtures/telemetry-report.expected.{json,md}`)
+- [x] Runbook section in `docs/runbooks/fleet-telemetry.md`
+- Commit `0b28e3b` on `feat/fleet-migration-evidence` (worktree `/Users/juan/code/cirujano-fleet-migration`).
+- Checks on that commit: `pnpm run typecheck`, `pnpm run lint`, `pnpm run build`, `node scripts/verify-bundle.mjs`, `pnpm run test` (cli 139, all packages green).
+- Deviations D-1, D-2 in `../2026-09-15-fleet-migration-evidence-notes.md`.
+- Live read-only check (2026-09-15): real registry initialised and P1 enrolled; `fleet verify` green; report over the private store shows the P1 before window.
+- Independent review: see the notes file (findings and dispositions).

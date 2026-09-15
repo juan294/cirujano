@@ -70,7 +70,7 @@ describe('fleet registry (phase 1 U1)', () => {
     }, /cut-over enrollment P1 requires an after record/u],
     ['a cut-over after record whose runs-on lacks the enrolled label', (registry: FleetRegistry) => {
       registry.enrollments[0]!.after!.runsOn = ['self-hosted', 'linux', 'x64'];
-    }, /after\.runsOn must include self-hosted and cirujano-baseline-actions_linux/u],
+    }, /after\.runsOn must include self-hosted, linux, x64 and cirujano-baseline-actions_linux/u],
     ['a window that ends before it starts', (registry: FleetRegistry) => {
       registry.measurementWindow.through = '2026-09-01';
     }, /measurementWindow\.since must not follow through/u],
@@ -86,6 +86,14 @@ describe('fleet registry (phase 1 U1)', () => {
     expect(() => parseFleetRegistry(JSON.parse(JSON.stringify(registry)))).toThrow(message);
   });
 
+  it('lets a reverted enrollment coexist with a fresh enrollment of the same job', async () => {
+    const registry = parseFleetRegistry(JSON.parse(await readFile(fixturePath(), 'utf8')));
+    const reverted = { ...registry.enrollments[0]!, status: 'reverted' as const };
+    const fresh = { ...registry.enrollments[0]!, id: 'P3', status: 'proposed' as const, after: null, controller: null };
+    expect(() => parseFleetRegistry(JSON.parse(JSON.stringify({ ...registry, enrollments: [reverted, registry.enrollments[1], fresh] })))).not.toThrow();
+    expect(() => parseFleetRegistry(JSON.parse(JSON.stringify({ ...registry, enrollments: [registry.enrollments[0], fresh] })))).toThrow(/already enrolled as P1/u);
+  });
+
   it('matches exclusions exactly and through the frozen product companion suffixes only', async () => {
     const registry = parseFleetRegistry(JSON.parse(await readFile(fixturePath(), 'utf8')));
     expect(isExcludedRepository(registry, `${OWNER}/chapa`)).toBe(true);
@@ -98,7 +106,7 @@ describe('fleet registry (phase 1 U1)', () => {
     expect(isExcludedRepository(registry, `${OWNER}/private-one`)).toBe(false);
   });
 
-  it('maps every priced SKU to its enrolled baseline label and refuses unpriced ones', () => {
+  it('maps the Linux SKU to its enrolled baseline label and refuses a SKU without one', () => {
     expect(enrollmentLabelFor('actions_linux')).toBe('cirujano-baseline-actions_linux');
     expect(() => enrollmentLabelFor('actions_windows')).toThrow(/no enrolled Cirujano label/u);
   });

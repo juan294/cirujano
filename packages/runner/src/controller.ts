@@ -102,9 +102,11 @@ export async function tickController(options: TickOptions): Promise<TickResult> 
     const reconciledState = prior.pendingEffect.effect.type === 'create-vm' ? 'stopped' : prior.lifecycle.state;
     const reconciledEffect = prior.pendingEffect.effect;
     // A reconciled start or adoption has armed the guest grant; its deadline outlives the guest
-    // status probe so expired-generation recovery can recognise a self-stop after the fact.
+    // status probe so expired-generation recovery can recognise a self-stop after the fact. A
+    // reconciled create or delete belongs to no armed generation, so the journal drops it.
     const grantDeadlineMs = reconciledEffect.type === 'start-vm' || reconciledEffect.type === 'adopt-vm'
-      ? reconciledEffect.deadlineMs : prior.lifecycle.grantDeadlineMs;
+      ? reconciledEffect.deadlineMs
+      : reconciledEffect.type === 'create-vm' || reconciledEffect.type === 'delete-vm' ? null : prior.lifecycle.grantDeadlineMs;
     const reconciled: ControllerState = {
       ...prior,
       lifecycle: { ...prior.lifecycle, state: reconciledState, outstandingIntent: null, grantDeadlineMs },

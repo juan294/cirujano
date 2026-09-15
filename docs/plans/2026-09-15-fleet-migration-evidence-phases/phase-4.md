@@ -60,3 +60,14 @@ none.
 
 Record the first real figures in the private targets file; the publishable
 report is produced on 2026-10-28 or on demand for the submission.
+
+## Handoff (2026-09-15)
+
+- [x] Enrollment cost fields, assignments, unmatched jobs, `complete`/`incompleteReason`, fleet totals (`packages/cli/src/telemetry.ts`, `telemetry-enrollments.test.ts`)
+- [x] `readControllerEvidence` / `loadControllerEvidence` with identity checks (`fleet-service.ts` + tests)
+- [x] Markdown fleet line, public-repository note, limits paragraph; sanitized `renderFleetSavingsMarkdown`
+- [x] `fleet publish` with the `assertPublishable` guard (private names, owner prefix, controller identity, Nebius resource ids)
+- [x] Runbook "Net savings and the 45-day report" in `docs/runbooks/fleet-telemetry.md`
+- Commit `042736f`. Checks on that commit: typecheck, lint, build, verify-bundle, `pnpm run test` (506 tests green).
+- Deviations D-4, D-5 in the notes file. The acceptance item "report over the real private store runs with `complete: true` for every cut-over enrollment" is vacuous until phase 3 cuts an enrollment over; today the real store reports `fleet.enrollments: 0`.
+- Independent review: see the notes file (findings and dispositions).

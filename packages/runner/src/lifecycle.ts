@@ -162,7 +162,7 @@ export function decideLifecycle(input: LifecycleInput): LifecycleDecision {
     // Past the journaled grant deadline the stop is the expected end of the immutable lifetime:
     // delete the spent generation so the next eligible demand creates a fresh one.
     const deadline = input.journal.grantDeadlineMs;
-    if (deadline !== null && Number.isFinite(deadline) && input.nowMs >= deadline) {
+    if (deadline !== null && Number.isFinite(deadline) && input.nowMs >= deadline && input.journal.startCount >= 1) {
       return authorized(input, 'delete', {
         state: 'absent',
         effect: { type: 'delete-vm', generation: input.journal.startCount },

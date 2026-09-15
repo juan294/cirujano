@@ -27,6 +27,7 @@ import {
   parseRunnerReportInput,
   parseRunnerConfig,
   readJournal,
+  runnerConfigHash,
   renderCloudInit,
   renderCreateRequest,
   knownHostLine,
@@ -155,7 +156,7 @@ async function createContext(configPath: string, permitPath: string | undefined,
   const rawConfig = await readFile(configPath, 'utf8');
   const config = parseRunnerConfig(JSON.parse(rawConfig) as unknown);
   const permit = permitPath === undefined ? null : parsePermit(JSON.parse(await readFile(permitPath, 'utf8')) as unknown);
-  const configHash = createHash('sha256').update(JSON.stringify(config)).digest('hex');
+  const configHash = runnerConfigHash(config);
   const candidateDigest = environment['CIRUJANO_CANDIDATE_DIGEST'] ?? await executableDigest();
   const identity: PermitIdentity = {
     configHash,
@@ -571,12 +572,7 @@ async function executeEffect(context: RuntimeContext, effect: Exclude<LifecycleE
     // runner registration and the spent VM remain. Never delete a VM that is not stopped.
     requirePermit(context, 'delete');
     if (instance.state !== 'stopped') throw new Error(`delete-vm requires a stopped VM, found ${instance.state}`);
-    const runners = await context.github.listRunners(context.owner, context.repository);
-    if (!runners.complete) throw new Error(runners.reason ?? 'GitHub runner observation is incomplete before delete');
-    const ownership = classifyOwnedRunners(runners.items, { expectedName: expectedRunnerName(context, state), ownershipLabel: context.config.runnerLabel });
-    if (ownership.runner?.busy === true) throw new Error('owned runner reports busy; refusing to delete its VM');
-    if (ownership.ownership === 'owned') await context.github.removeOwnedRunner(context.owner, context.repository, ownership);
-    else if (ownership.ownership !== 'absent') throw new Error(`runner ownership is ${ownership.ownership} before delete`);
+    await removeOwnedRegistration(context, state, 'before delete', { refuseBusy: true });
     return operation(await context.nebius.delete(instance.id), 'Nebius delete');
   }
   if (effect.type === 'register-runner') {
@@ -592,11 +588,7 @@ async function executeEffect(context: RuntimeContext, effect: Exclude<LifecycleE
   }
   if (effect.type === 'begin-drain') {
     await runGuest(context, instance, '/opt/cirujano/drain', `${generation}\n`);
-    const runners = await context.github.listRunners(context.owner, context.repository);
-    if (!runners.complete) throw new Error(runners.reason ?? 'GitHub runner observation is incomplete after drain');
-    const ownership = classifyOwnedRunners(runners.items, { expectedName: expectedRunnerName(context, state), ownershipLabel: context.config.runnerLabel });
-    if (ownership.ownership === 'owned') await context.github.removeOwnedRunner(context.owner, context.repository, ownership);
-    else if (ownership.ownership !== 'absent') throw new Error(`runner ownership is ${ownership.ownership} after drain`);
+    await removeOwnedRegistration(context, state, 'after drain', { refuseBusy: false });
     return {};
   }
   if (effect.type === 'resume-admission') {
@@ -604,6 +596,16 @@ async function executeEffect(context: RuntimeContext, effect: Exclude<LifecycleE
     return {};
   }
   return {};
+}
+
+/** Removes the owned GitHub runner registration, tolerating its absence and refusing any other ownership. */
+async function removeOwnedRegistration(context: RuntimeContext, state: ControllerState | null, phase: string, options: { refuseBusy: boolean }): Promise<void> {
+  const runners = await context.github.listRunners(context.owner, context.repository);
+  if (!runners.complete) throw new Error(runners.reason ?? `GitHub runner observation is incomplete ${phase}`);
+  const ownership = classifyOwnedRunners(runners.items, { expectedName: expectedRunnerName(context, state), ownershipLabel: context.config.runnerLabel });
+  if (options.refuseBusy && ownership.runner?.busy === true) throw new Error(`owned runner reports busy ${phase}; refusing to continue`);
+  if (ownership.ownership === 'owned') await context.github.removeOwnedRunner(context.owner, context.repository, ownership);
+  else if (ownership.ownership !== 'absent') throw new Error(`runner ownership is ${ownership.ownership} ${phase}`);
 }
 
 async function reconcileEffect(context: RuntimeContext, pending: PendingEffect): Promise<{ resolved: boolean; readback?: unknown }> {

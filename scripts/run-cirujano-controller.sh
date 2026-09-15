@@ -1,8 +1,9 @@
 #!/bin/bash
 # Operating controller wrapper for one fleet enrollment, run by launchd with KeepAlive.
 # Reads the enrollment state directory (config.json, optional permit.json, host key) and the
-# installed CLI bundle; the candidate digest is always the hash of the bundle actually run, so a
-# replaced bundle no longer matches its permit and the controller fails closed.
+# installed CLI bundle. The CLI hashes the bundle it runs from as its candidate digest, so a
+# replaced bundle no longer matches its permit and the controller fails closed; this wrapper never
+# sets CIRUJANO_CANDIDATE_DIGEST, which would override that self-measurement.
 # Without permit.json the controller runs --dry-run: it observes and journals but never mutates.
 # This wrapper prints paths and status lines only; it never echoes tokens or key material.
 
@@ -44,8 +45,7 @@ export CIRUJANO_HOST_PRIVATE_KEY_PATH="$STATE_DIR/ssh_host_ed25519_key"
 export CIRUJANO_LOGIN_PUBLIC_KEY_PATH="$CONTROLLER_KEY_PATH.pub"
 export CIRUJANO_ACTIONS_RUNNER_VERSION CIRUJANO_ACTIONS_RUNNER_SHA256
 export CIRUJANO_NETWORK_EGRESS_LIMIT_GIB="${CIRUJANO_NETWORK_EGRESS_LIMIT_GIB:-10}"
-CIRUJANO_CANDIDATE_DIGEST="$(/usr/bin/shasum -a 256 "$CLI_PATH" | /usr/bin/awk '{print $1}')"
-export CIRUJANO_CANDIDATE_DIGEST
+unset CIRUJANO_CANDIDATE_DIGEST
 
 ARGS=(runner watch --config "$CONFIG_PATH")
 if [ "${CIRUJANO_RUNNER_DRY_RUN:-0}" = "1" ] || [ ! -r "$PERMIT_PATH" ]; then
@@ -55,5 +55,6 @@ else
   ARGS+=(--permit "$PERMIT_PATH")
 fi
 
-echo "runner: starting controller for $STATE_DIR with bundle $CLI_PATH"
-exec node "$CLI_PATH" "${ARGS[@]}"
+NODE_PATH_RESOLVED="${CIRUJANO_NODE_PATH:-$(command -v node)}"
+echo "runner: starting controller for $STATE_DIR with bundle $CLI_PATH via $NODE_PATH_RESOLVED ($("$NODE_PATH_RESOLVED" --version))"
+exec "$NODE_PATH_RESOLVED" "$CLI_PATH" "${ARGS[@]}"

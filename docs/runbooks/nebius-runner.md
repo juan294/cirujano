@@ -163,9 +163,9 @@ mode `0600` and restarts the agent:
 launchctl kickstart -k "gui/$(id -u)/com.thecreativetoken.cirujano-runner-P1"
 ```
 
-The wrapper (`scripts/run-cirujano-controller.sh`) computes the candidate
-digest from the bundle it runs, so a rebuilt bundle no longer matches the
-permit and the controller fails closed. Without `permit.json` it runs
+The CLI hashes the bundle it runs from as its candidate digest (the wrapper
+`scripts/run-cirujano-controller.sh` never overrides it), so a rebuilt bundle
+no longer matches the permit and the controller fails closed. Without `permit.json` it runs
 `--dry-run`, which is the installer's smoke test. Installing a new bundle
 changes the shared digest and the installer lists the other agents whose
 permits then need reissuing.
@@ -202,5 +202,6 @@ cirujano runner stop --config ~/.local/share/cirujano/runner/P1/config.json --pe
 cirujano runner cleanup --config ~/.local/share/cirujano/runner/P1/config.json --permit .../P1/permit.json
 ```
 
-Run `stop` and `cleanup` with the wrapper's environment (see the script) so the
-candidate digest matches the permit.
+Run `stop` and `cleanup` through the installed bundle
+(`~/.local/lib/cirujano/runner/cirujano.mjs`) with the wrapper's path
+variables (see the script) so the candidate digest matches the permit.

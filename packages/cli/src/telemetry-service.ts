@@ -1,7 +1,8 @@
 import type { TelemetryArguments } from './args.js';
 import type { CliIo, TelemetryCommandService } from './cli.js';
-import { absoluteRegistry, loadControllerEvidence, readRegistry } from './fleet-service.js';
+import { loadControllerEvidence, readRegistry } from './fleet-service.js';
 import {
+  absolutePath,
   array,
   boolean,
   defaultGitHubPageRunner,
@@ -15,7 +16,7 @@ import {
   timestamp,
   type GitHubPageRunner,
 } from './github-api.js';
-import { absoluteStore, buildStoreReport, readLatestSnapshot } from './telemetry-store.js';
+import { buildStoreReport, readLatestSnapshot } from './telemetry-store.js';
 import {
   collectTelemetry,
   renderTelemetryMarkdown,
@@ -44,7 +45,7 @@ async function collect(
   environment: NodeJS.ProcessEnv,
   pageRunner: GitHubPageRunner,
 ): Promise<0> {
-  const storePath = absoluteStore(args.storePath);
+  const storePath = absolutePath(args.storePath, 'telemetry store');
   const source = githubSource(githubCliPath(environment), pageRunner);
   const priorSnapshot = await readLatestSnapshot(storePath, new Date().toISOString().slice(0, 10));
   const snapshot = await collectTelemetry({
@@ -62,7 +63,7 @@ async function report(
   args: Extract<TelemetryArguments, { action: 'report' }>,
   io: CliIo,
 ): Promise<0> {
-  const registry = args.registryPath === undefined ? undefined : await readRegistry(absoluteRegistry(args.registryPath));
+  const registry = args.registryPath === undefined ? undefined : await readRegistry(absolutePath(args.registryPath, 'fleet registry'));
   const evidenceById = registry === undefined ? undefined : await loadControllerEvidence(registry);
   const value = await buildStoreReport({
     storePath: args.storePath, since: args.since,

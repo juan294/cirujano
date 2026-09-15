@@ -1,8 +1,6 @@
 import { execFile as execFileCallback } from 'node:child_process';
-import { createHash } from 'node:crypto';
 import { access, chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
-import { isAbsolute, join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 
 import {
@@ -13,6 +11,7 @@ import {
   parsePermit,
   parseRunnerConfig,
   renderOperatingPermit,
+  runnerConfigHash,
   verifySshPublicKeyFingerprint,
   type Permit,
   type PilotQuote,
@@ -23,21 +22,28 @@ import type { FleetArguments } from './args.js';
 import type { CliIo, FleetCommandService } from './cli.js';
 import {
   enrollmentLabelFor,
+  findActiveEnrollment,
   isExcludedRepository,
   lockedExclusionRepositories,
   LOCKED_EXCLUSIONS,
   parseFleetRegistry,
+  requiredSelfHostedLabels,
+  SHA_PATTERN,
   writeFleetRegistry,
   type FleetEnrollment,
   type FleetRegistry,
   type WorkflowIdentity,
 } from './fleet-registry.js';
 import {
+  absolutePath,
   array,
   defaultGitHubPageRunner,
+  expandHome,
   githubCliPath,
   githubPages,
+  nonnegativeNumber,
   positiveInteger,
+  readOptionalJson,
   record,
   text,
   type GitHubPageRunner,
@@ -73,7 +79,7 @@ export function createFleetCommandService(
   const source = githubFleetSource(githubCliPath(environment), pageRunner);
   return {
     async run(args, io) {
-      const registryPath = absoluteRegistry(args.registryPath);
+      const registryPath = absolutePath(args.registryPath, 'fleet registry');
       if (args.action === 'init') return init(args, registryPath, io);
       const registry = await readRegistry(registryPath);
       if (args.action === 'show') {
@@ -119,7 +125,7 @@ async function enroll(
 ): Promise<0> {
   if (!args.repository.startsWith(`${registry.owner}/`)) throw new Error(`repository ${args.repository} must belong to ${registry.owner}`);
   if (isExcludedRepository(registry, args.repository)) throw new Error(`repository ${args.repository} is excluded from migration`);
-  const existing = registry.enrollments.find((entry) => entry.repository === args.repository && entry.workflowPath === args.workflowPath && entry.jobKey === args.jobKey);
+  const existing = findActiveEnrollment(registry, args.repository, args.workflowPath, args.jobKey);
   if (existing !== undefined) throw new Error(`${args.repository} ${args.workflowPath} job ${args.jobKey} is already enrolled as ${existing.id}`);
   const runnerLabel = enrollmentLabelFor(args.sku);
   const repository = await source.repository(args.repository);
@@ -135,6 +141,9 @@ async function enroll(
   const hostedSku = hostedSkuForLabels(job.runsOn);
   if (hostedSku !== args.sku) {
     throw new Error(`job ${args.jobKey} runs-on ${JSON.stringify(job.runsOn)} is priced as ${hostedSku ?? 'an unknown SKU'}, not ${args.sku}`);
+  }
+  if (job.matrix && args.jobNames.length === 0) {
+    throw new Error(`job ${args.jobKey} uses a strategy matrix; pass --job-name once per display name GitHub reports for it`);
   }
   const jobNames = args.jobNames.length > 0 ? args.jobNames : [job.name ?? args.jobKey];
   const enrollment: FleetEnrollment = {
@@ -173,8 +182,9 @@ async function cutover(
     throw new Error(`commit ${args.commit} is not on the default branch ${repository.defaultBranch} of ${enrollment.repository}`);
   }
   const live = await readLiveIdentity(source, enrollment, args.commit);
-  if (!live.runsOn.includes('self-hosted') || !live.runsOn.includes(enrollment.runnerLabel)) {
-    throw new Error(`job ${enrollment.jobKey} at ${args.commit} runs-on lacks ${enrollment.runnerLabel}: ${JSON.stringify(live.runsOn)}; cutover not recorded`);
+  const missing = requiredSelfHostedLabels(enrollment.runnerLabel).filter((label) => !live.runsOn.includes(label));
+  if (missing.length > 0) {
+    throw new Error(`job ${enrollment.jobKey} at ${args.commit} runs-on lacks ${missing.join(', ')}: ${JSON.stringify(live.runsOn)}; cutover not recorded`);
   }
   const updated: FleetEnrollment = { ...enrollment, status: 'cut-over', after: live };
   await writeFleetRegistry(registryPath, replaceEnrollment(registry, updated));
@@ -189,7 +199,7 @@ async function verify(registry: FleetRegistry, registryPath: string, source: Git
     const repository = await source.repository(enrollment.repository);
     const head = await source.branchHead(enrollment.repository, repository.defaultBranch);
     const live = await readLiveIdentity(source, enrollment, head);
-    const labelled = live.runsOn.includes('self-hosted') && live.runsOn.includes(enrollment.runnerLabel);
+    const labelled = requiredSelfHostedLabels(enrollment.runnerLabel).every((label) => live.runsOn.includes(label));
     if (enrollment.status === 'proposed') {
       if (live.workflowBlobSha === enrollment.before.workflowBlobSha) continue;
       if (labelled) {
@@ -237,15 +247,15 @@ async function controllerConfig(
 ): Promise<0> {
   const enrollment = requireEnrollment(registry, args.id);
   if (enrollment.status === 'reverted') throw new Error(`enrollment ${args.id} is reverted; enroll it afresh before configuring a controller`);
-  const template = parseRunnerConfig(JSON.parse(await readFile(absoluteRegistry(args.templatePath), 'utf8')));
-  const stateRoot = absoluteRegistry(args.stateRoot);
+  const template = parseRunnerConfig(JSON.parse(await readFile(absolutePath(args.templatePath, 'config template'), 'utf8')));
+  const stateRoot = absolutePath(args.stateRoot, 'state root');
   const stateDirectory = join(stateRoot, enrollment.id);
   await mkdir(stateDirectory, { recursive: true, mode: 0o700 });
   await chmod(stateDirectory, 0o700);
   const hostKey = await ensureHostKey(stateDirectory, enrollment.id, environment);
   const allowedBranch = args.allowedBranch ?? (await source.repository(enrollment.repository)).defaultBranch;
   const handle = enrollment.id.toLowerCase();
-  const controllerId = enrollment.controller?.controllerId ?? `cirujano-${handle}-${new Date().toISOString().slice(0, 10).replaceAll('-', '')}`;
+  const controllerId = enrollment.controller?.controllerId ?? `cirujano-${handle}-${compactDate(Date.now())}`;
   const resourcePrefix = enrollment.controller?.resourcePrefix ?? `cirujano-${handle}`;
   const config: RunnerConfig = parseRunnerConfig({
     schemaVersion: 1,
@@ -268,7 +278,7 @@ async function controllerConfig(
   await writeFleetRegistry(registryPath, replaceEnrollment(registry, { ...enrollment, controller }));
   io.stdout(`${JSON.stringify({
     status: 'configured', id: enrollment.id, configPath, hostKeyPath: hostKey.privateKeyPath,
-    identity: { configHash: configHash(config), repositoryId: config.repository.id, projectId: config.nebius.projectId, controllerId, resourcePrefix },
+    identity: { configHash: runnerConfigHash(config), repositoryId: config.repository.id, projectId: config.nebius.projectId, controllerId, resourcePrefix },
     note: 'candidateDigest is the SHA-256 of the installed CLI bundle; runner inspect prints the full permit identity',
   })}\n`);
   return 0;
@@ -282,23 +292,25 @@ async function permitProposal(
   const enrollment = requireEnrollment(registry, args.id);
   if (enrollment.controller === null) throw new Error(`enrollment ${args.id} has no controller; run fleet controller-config first`);
   const config = parseRunnerConfig(JSON.parse(await readFile(join(enrollment.controller.stateDirectory, 'config.json'), 'utf8')));
-  const rawQuote = JSON.parse(await readFile(absoluteRegistry(args.quotePath), 'utf8')) as Record<string, unknown>;
+  const rawQuote = JSON.parse(await readFile(absolutePath(args.quotePath, 'quote file'), 'utf8')) as Record<string, unknown>;
   const nowMs = Date.now();
   const bounds = OPERATING_PERMIT_BOUNDS;
   const lifetimeMs = bounds.expiresAtMs - nowMs;
   const quote = completeQuote(rawQuote, bounds.maxRuntimeMs, lifetimeMs);
+  // Every other enrollment's issued permit, or failing that its proposal, counts toward the
+  // fleet ceiling: a proposal made before the others are issued must not slip past it.
   const otherPermits: Array<Pick<Permit, 'permitId' | 'maxTotalCostUsd'>> = [];
   for (const other of registry.enrollments) {
     if (other.id === enrollment.id || other.controller === null) continue;
-    const permit = await readOptionalPermit(join(other.controller.stateDirectory, 'permit.json'));
-    if (permit !== null) otherPermits.push({ permitId: permit.permitId, maxTotalCostUsd: permit.maxTotalCostUsd });
+    const committed = await readCommittedCeiling(other.controller.stateDirectory, other.id);
+    if (committed !== null) otherPermits.push(committed);
   }
   const result = buildOperatingPermitProposal({
     enrollmentId: enrollment.id,
     nowMs,
     expiresAtMs: bounds.expiresAtMs,
     candidateDigest: args.candidateDigest,
-    configHash: configHash(config),
+    configHash: runnerConfigHash(config),
     repositoryId: config.repository.id,
     projectId: config.nebius.projectId,
     controllerId: config.ownership.controllerId,
@@ -315,7 +327,7 @@ async function permitProposal(
   }
   const proposalPath = join(enrollment.controller.stateDirectory, 'permit-proposal.json');
   const draftPath = join(enrollment.controller.stateDirectory, 'permit.draft.json');
-  const permitId = `${enrollment.id}-operating-${new Date(nowMs).toISOString().slice(0, 10).replaceAll('-', '')}`;
+  const permitId = `${enrollment.id}-operating-${compactDate(nowMs)}`;
   await writeFile(proposalPath, `${JSON.stringify(result.proposal, null, 2)}\n`, { mode: 0o600 });
   await writeFile(draftPath, `${JSON.stringify(renderOperatingPermit(result.proposal, permitId), null, 2)}\n`, { mode: 0o600 });
   await chmod(proposalPath, 0o600);
@@ -328,28 +340,37 @@ async function permitProposal(
   return 0;
 }
 
+/** A quote file may omit estimatedMaximumUsd (it is derived); a supplied value must match the derivation. */
 function completeQuote(raw: Record<string, unknown>, maxRuntimeMs: number, lifetimeMs: number): PilotQuote {
   const quote = raw as unknown as Extract<PilotQuote, { complete: true }>;
   if (quote.complete !== true) return { complete: false, reason: 'quote file must declare complete: true' };
-  const estimatedMaximumUsd = calculateOperatingQuoteMaximum(quote, maxRuntimeMs, lifetimeMs);
+  const estimatedMaximumUsd = raw['estimatedMaximumUsd'] === undefined
+    ? calculateOperatingQuoteMaximum(quote, maxRuntimeMs, lifetimeMs)
+    : quote.estimatedMaximumUsd;
   return { ...quote, estimatedMaximumUsd };
 }
 
-async function readOptionalPermit(path: string): Promise<Permit | null> {
-  try {
-    return parsePermit(JSON.parse(await readFile(path, 'utf8')));
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
-    throw error;
+async function readCommittedCeiling(stateDirectory: string, id: string): Promise<Pick<Permit, 'permitId' | 'maxTotalCostUsd'> | null> {
+  const rawPermit = await readOptionalJson(join(stateDirectory, 'permit.json'));
+  if (rawPermit !== null) {
+    const permit = parsePermit(rawPermit);
+    return { permitId: permit.permitId, maxTotalCostUsd: permit.maxTotalCostUsd };
   }
+  const rawProposal = await readOptionalJson(join(stateDirectory, 'permit-proposal.json'));
+  if (rawProposal === null) return null;
+  const proposal = record(rawProposal, 'permit-proposal.json');
+  return { permitId: `${id}-permit-proposal`, maxTotalCostUsd: nonnegativeNumber(proposal['maxTotalCostUsd'], `${id} permit-proposal.json maxTotalCostUsd`) };
+}
+
+function compactDate(ms: number): string {
+  return new Date(ms).toISOString().slice(0, 10).replaceAll('-', '');
 }
 
 async function ensureHostKey(stateDirectory: string, id: string, environment: NodeJS.ProcessEnv): Promise<{ privateKeyPath: string; publicKey: string; fingerprint: string }> {
   const privateKeyPath = join(stateDirectory, 'ssh_host_ed25519_key');
   const publicKeyPath = `${privateKeyPath}.pub`;
   if (!(await exists(privateKeyPath))) {
-    const keygen = environment['CIRUJANO_SSH_KEYGEN_PATH'] ?? '/usr/bin/ssh-keygen';
-    if (!isAbsolute(keygen)) throw new Error('CIRUJANO_SSH_KEYGEN_PATH must be absolute');
+    const keygen = absolutePath(environment['CIRUJANO_SSH_KEYGEN_PATH'] ?? '/usr/bin/ssh-keygen', 'CIRUJANO_SSH_KEYGEN_PATH');
     await execFile(keygen, ['-q', '-t', 'ed25519', '-N', '', '-C', `cirujano-host-${id}`, '-f', privateKeyPath]);
   }
   await chmod(privateKeyPath, 0o600);
@@ -357,30 +378,32 @@ async function ensureHostKey(stateDirectory: string, id: string, environment: No
   return { privateKeyPath, publicKey, fingerprint: verifySshPublicKeyFingerprint(publicKey) };
 }
 
-/** Identical to the runner service's permit identity hash: sha256 of the parsed config's JSON. */
-function configHash(config: RunnerConfig): string {
-  return createHash('sha256').update(JSON.stringify(config)).digest('hex');
-}
-
 /**
- * Reads one enrollment's controller journals. Every file must carry the same identity and that
- * identity must name the enrollment's controller; a missing journal throws with its path.
+ * Reads one enrollment's controller journals. `config.json`, `controller-state.json` and
+ * `accounting-state.json` must exist and carry one identity that names the enrollment's
+ * controller, repository and the config's own hash; `assignments.json` is written lazily by the
+ * controller (only once a job was assigned), so its absence means no assignments yet. A missing
+ * required journal throws with its path.
  */
 export async function readControllerEvidence(
   stateDirectory: string,
-  controller: { controllerId: string; resourcePrefix: string },
+  controller: { controllerId: string; resourcePrefix: string; repositoryId?: number },
 ): Promise<ControllerEvidence> {
   const config = parseRunnerConfig(JSON.parse(await readFile(join(stateDirectory, 'config.json'), 'utf8')));
-  const state = parseControllerState(JSON.parse(await readJournalFile(join(stateDirectory, 'controller-state.json'))));
+  const state = parseControllerState(JSON.parse(await readFile(join(stateDirectory, 'controller-state.json'), 'utf8')));
   if (state.identity.controllerId !== controller.controllerId) throw new Error(`controller-state.json controllerId ${state.identity.controllerId} does not match enrollment controller ${controller.controllerId}`);
   if (state.identity.resourcePrefix !== controller.resourcePrefix) throw new Error(`controller-state.json resourcePrefix ${state.identity.resourcePrefix} does not match enrollment controller ${controller.resourcePrefix}`);
   if (config.ownership.controllerId !== controller.controllerId || config.ownership.resourcePrefix !== controller.resourcePrefix) throw new Error('config.json ownership does not match the enrollment controller');
+  if (state.identity.configHash !== runnerConfigHash(config)) throw new Error('controller-state.json configHash does not match config.json; the journals belong to another config');
+  if (state.identity.repositoryId !== config.repository.id) throw new Error('controller-state.json repositoryId does not match config.json');
+  if (controller.repositoryId !== undefined && config.repository.id !== controller.repositoryId) throw new Error(`config.json repository ${config.repository.id} does not match enrollment repository ${controller.repositoryId}`);
   const identity = JSON.stringify(state.identity);
-  const accounting = record(JSON.parse(await readJournalFile(join(stateDirectory, 'accounting-state.json'))), 'accounting-state.json');
+  const accounting = record(JSON.parse(await readFile(join(stateDirectory, 'accounting-state.json'), 'utf8')), 'accounting-state.json');
   if (accounting['schemaVersion'] !== 1 || JSON.stringify(accounting['identity']) !== identity) throw new Error('accounting-state.json identity does not match controller-state.json');
-  const assignmentsFile = record(JSON.parse(await readJournalFile(join(stateDirectory, 'assignments.json'))), 'assignments.json');
-  if (assignmentsFile['schemaVersion'] !== 1 || JSON.stringify(assignmentsFile['identity']) !== identity) throw new Error('assignments.json identity does not match controller-state.json');
-  const assignments = array(assignmentsFile['assignments'], 'assignments').map((entry, index) => {
+  const rawAssignments = await readOptionalJson(join(stateDirectory, 'assignments.json'));
+  const assignmentsFile = rawAssignments === null ? null : record(rawAssignments, 'assignments.json');
+  if (assignmentsFile !== null && (assignmentsFile['schemaVersion'] !== 1 || JSON.stringify(assignmentsFile['identity']) !== identity)) throw new Error('assignments.json identity does not match controller-state.json');
+  const assignments = array(assignmentsFile?.['assignments'] ?? [], 'assignments').map((entry, index) => {
     const item = record(entry, `assignments[${index}]`);
     const conclusion = item['conclusion'];
     if (conclusion !== null && typeof conclusion !== 'string') throw new Error(`assignments[${index}].conclusion is invalid`);
@@ -413,13 +436,23 @@ export async function loadControllerEvidence(registry: FleetRegistry): Promise<M
   for (const enrollment of registry.enrollments) {
     if (enrollment.controller === null) continue;
     try {
-      evidence.set(enrollment.id, await readControllerEvidence(enrollment.controller.stateDirectory, enrollment.controller));
+      evidence.set(enrollment.id, await readControllerEvidence(enrollment.controller.stateDirectory, { ...enrollment.controller, repositoryId: enrollment.repositoryId }));
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
       throw new Error(`${enrollment.id} controller evidence is unreadable: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
   return evidence;
+}
+
+/** Whole-word occurrence: the needle is not preceded or followed by a letter or digit. */
+function containsWord(haystack: string, needle: string): boolean {
+  for (let index = haystack.indexOf(needle); index !== -1; index = haystack.indexOf(needle, index + 1)) {
+    const before = haystack[index - 1];
+    const after = haystack[index + needle.length];
+    if (!/[a-z0-9]/u.test(before ?? ' ') && !/[a-z0-9]/u.test(after ?? ' ')) return true;
+  }
+  return false;
 }
 
 const RESOURCE_ID_PATTERN = /\b(?:computeinstance|computedisk|computeimage|vpcsubnet|vpcnetwork|project|serviceaccount)-e0[0-9a-z]+/u;
@@ -430,7 +463,7 @@ async function publish(args: Extract<FleetArguments, { action: 'publish' }>, reg
   const report = await buildStoreReport({ storePath: args.storePath, since: args.since, registry, evidenceById });
   const markdown = renderFleetSavingsMarkdown(report);
   assertPublishable(markdown, registry);
-  const outputPath = absoluteRegistry(args.outputPath);
+  const outputPath = resolve(expandHome(args.outputPath));
   await writeFile(outputPath, markdown, { mode: 0o644 });
   io.stdout(`${JSON.stringify({ status: 'published', outputPath, enrollments: report.fleet?.enrollments ?? 0, complete: report.fleet?.complete ?? false, netSavingsUsd: report.fleet?.netSavingsUsd ?? null })}\n`);
   return 0;
@@ -442,8 +475,12 @@ export function assertPublishable(markdown: string, registry: FleetRegistry): vo
     ...registry.enrollments.map(({ repository }) => repository),
     ...registry.exclusions.map(({ repository }) => repository),
   ];
+  const lowered = markdown.toLowerCase();
   for (const name of privateNames) {
-    if (markdown.includes(name)) throw new Error(`refusing to publish: output contains private repository ${name}`);
+    const segment = name.split('/')[1] ?? name;
+    if (lowered.includes(name.toLowerCase()) || containsWord(lowered, segment.toLowerCase())) {
+      throw new Error(`refusing to publish: output contains private repository ${name}`);
+    }
   }
   for (const enrollment of registry.enrollments) {
     if (enrollment.controller === null) continue;
@@ -451,23 +488,9 @@ export function assertPublishable(markdown: string, registry: FleetRegistry): vo
       if (markdown.includes(value)) throw new Error(`refusing to publish: output contains controller identity ${value}`);
     }
   }
-  if (markdown.includes(`${registry.owner}/`)) throw new Error(`refusing to publish: output contains the owner prefix ${registry.owner}/`);
+  if (lowered.includes(`${registry.owner.toLowerCase()}/`)) throw new Error(`refusing to publish: output contains the owner prefix ${registry.owner}/`);
   const resourceId = RESOURCE_ID_PATTERN.exec(markdown);
   if (resourceId !== null) throw new Error(`refusing to publish: output contains resource identity ${resourceId[0]}`);
-}
-
-async function readJournalFile(path: string): Promise<string> {
-  try {
-    return await readFile(path, 'utf8');
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') throw Object.assign(new Error(`${path} does not exist`), { code: 'ENOENT' });
-    throw error;
-  }
-}
-
-function nonnegativeNumber(value: unknown, name: string): number {
-  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) throw new Error(`${name} must be a non-negative finite number`);
-  return value;
 }
 
 async function readLiveIdentity(source: GitHubFleetSource, enrollment: FleetEnrollment, commit: string): Promise<WorkflowIdentity> {
@@ -495,12 +518,6 @@ export async function readRegistry(path: string): Promise<FleetRegistry> {
   return parseFleetRegistry(JSON.parse(await readFile(path, 'utf8')));
 }
 
-export function absoluteRegistry(value: string): string {
-  const expanded = value.startsWith('~/') ? join(homedir(), value.slice(2)) : value;
-  if (!isAbsolute(expanded)) throw new Error('fleet registry must be an absolute path');
-  return expanded;
-}
-
 async function exists(path: string): Promise<boolean> {
   try {
     await access(path);
@@ -515,7 +532,7 @@ async function exists(path: string): Promise<boolean> {
  * workflow file without a YAML dependency. Expressions and matrices are refused: the registry
  * records exact runner selections, never guesses.
  */
-export function extractJobRunsOn(workflow: string, jobKey: string): { runsOn: string[]; name: string | null } {
+export function extractJobRunsOn(workflow: string, jobKey: string): { runsOn: string[]; name: string | null; matrix: boolean } {
   const lines = workflow.split(/\r?\n/u);
   const jobsIndex = lines.findIndex((line) => /^jobs:\s*(?:#.*)?$/u.test(line));
   if (jobsIndex === -1) throw new Error('workflow has no jobs block');
@@ -527,6 +544,7 @@ export function extractJobRunsOn(workflow: string, jobKey: string): { runsOn: st
   if (bodyIndent === null) throw new Error(`job ${jobKey} has no body`);
   let runsOn: string[] | null = null;
   let name: string | null = null;
+  let matrix = false;
   for (let index = jobStart + 1; index < lines.length; index += 1) {
     const line = lines[index]!;
     if (stripComment(line).trim().length === 0) continue;
@@ -534,18 +552,23 @@ export function extractJobRunsOn(workflow: string, jobKey: string): { runsOn: st
     if (indent <= jobIndent) break;
     if (indent !== bodyIndent) continue;
     const content = stripComment(line).trim();
+    if (/^strategy:/u.test(content)) matrix = true;
     const nameMatch = /^name:\s*(.*)$/u.exec(content);
     if (nameMatch !== null) name = unquote(nameMatch[1]!);
     const runsOnMatch = /^runs-on:\s*(.*)$/u.exec(content);
     if (runsOnMatch === null) continue;
     const value = runsOnMatch[1]!;
+    if (value.startsWith('|') || value.startsWith('>')) {
+      throw new Error(`job ${jobKey} runs-on uses a block scalar; enroll a job with a literal runner selection`);
+    }
     if (value.length === 0) {
+      // Block sequence: items may sit at the key's own indentation or deeper (both are valid YAML).
       const items: string[] = [];
       for (let itemIndex = index + 1; itemIndex < lines.length; itemIndex += 1) {
         const item = stripComment(lines[itemIndex]!);
         if (item.trim().length === 0) continue;
-        if (indentation(item) <= bodyIndent) break;
         const entry = /^\s*-\s*(.+)$/u.exec(item);
+        if (indentation(item) < bodyIndent || (indentation(item) === bodyIndent && entry === null)) break;
         if (entry === null) throw new Error(`job ${jobKey} runs-on block has an unsupported entry`);
         items.push(unquote(entry[1]!.trim()));
       }
@@ -561,7 +584,7 @@ export function extractJobRunsOn(workflow: string, jobKey: string): { runsOn: st
   if (runsOn.length === 0) throw new Error(`job ${jobKey} runs-on is empty`);
   if (runsOn.some((label) => label.includes('${{') || label.startsWith('{'))) throw new Error(`job ${jobKey} runs-on uses an expression or matrix; enroll a job with a literal runner selection`);
   if (name !== null && name.includes('${{')) name = null;
-  return { runsOn, name };
+  return { runsOn, name, matrix };
 }
 
 function yamlKey(key: string): string {
@@ -582,8 +605,20 @@ function indentation(line: string): number {
   return line.length - line.trimStart().length;
 }
 
+/** Drops a YAML comment: `#` after whitespace, outside single or double quotes. */
 function stripComment(line: string): string {
-  return line.replace(/\s+#.*$/u, '').replace(/^\s*#.*$/u, '');
+  if (/^\s*#/u.test(line)) return '';
+  let quote: '"' | "'" | null = null;
+  for (let index = 0; index < line.length; index += 1) {
+    const character = line[index]!;
+    if (quote !== null) {
+      if (character === quote) quote = null;
+      continue;
+    }
+    if (character === '"' || character === "'") quote = character;
+    else if (character === '#' && index > 0 && /\s/u.test(line[index - 1]!)) return line.slice(0, index);
+  }
+  return line;
 }
 
 function unquote(value: string): string {
@@ -625,7 +660,8 @@ function githubFleetSource(ghPath: string, pageRunner: GitHubPageRunner): GitHub
       return { sha: sha(value['sha'], 'workflow file sha'), content: Buffer.from(text(value['content'], 'workflow file content'), 'base64').toString('utf8') };
     },
     async isOnBranch(repository, commit, branch) {
-      const value = await single(`/repos/${repository}/compare/${commit}...${encodeURIComponent(branch)}`, 'compare');
+      // per_page=1 keeps the commit list to one entry; only `status` is read.
+      const value = await single(`/repos/${repository}/compare/${commit}...${encodeURIComponent(branch)}?per_page=1`, 'compare');
       const status = text(value['status'], 'compare.status');
       return status === 'ahead' || status === 'identical';
     },
@@ -634,6 +670,6 @@ function githubFleetSource(ghPath: string, pageRunner: GitHubPageRunner): GitHub
 
 function sha(value: unknown, name: string): string {
   const result = text(value, name);
-  if (!/^[0-9a-f]{40}$/u.test(result)) throw new Error(`${name} must be a 40-character SHA`);
+  if (!SHA_PATTERN.test(result)) throw new Error(`${name} must be a 40-character SHA`);
   return result;
 }

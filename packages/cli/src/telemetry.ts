@@ -6,7 +6,8 @@ import { estimateRunnerCost, type CostRates } from '@cirujano/runner';
 
 import type { EnrollmentStatus, FleetEnrollment, FleetRegistry } from './fleet-registry.js';
 
-export type HostedSku = 'actions_linux' | 'actions_linux_arm' | 'actions_windows' | 'actions_macos';
+export const HOSTED_SKUS = ['actions_linux', 'actions_linux_arm', 'actions_windows', 'actions_macos'] as const;
+export type HostedSku = typeof HOSTED_SKUS[number];
 
 export const TELEMETRY_RATES = {
   currency: 'USD' as const,
@@ -346,11 +347,14 @@ export function aggregateTelemetry(
   const byKey = new Map<string, TelemetryJob>();
   let latestSnapshot: TelemetrySnapshot | undefined;
   let throughMs = sinceMs;
+  // With a registry the measurement window bounds the report; jobs created after it are out.
+  const windowEndMs = registry === undefined ? Number.POSITIVE_INFINITY : Date.parse(`${registry.measurementWindow.through}T23:59:59.999Z`);
   for (const snapshot of snapshots) {
-    throughMs = Math.max(throughMs, Date.parse(snapshot.collectedAt));
+    throughMs = Math.max(throughMs, Math.min(windowEndMs, Date.parse(snapshot.collectedAt)));
     if (latestSnapshot === undefined || Date.parse(snapshot.collectedAt) > Date.parse(latestSnapshot.collectedAt)) latestSnapshot = snapshot;
     for (const job of snapshot.jobs) {
       if (Date.parse(job.completedAt ?? job.startedAt ?? job.createdAt) < sinceMs) continue;
+      if (Date.parse(job.createdAt) > windowEndMs) continue;
       const existing = byKey.get(job.key);
       if (existing !== undefined && JSON.stringify(existing) !== JSON.stringify(job)) {
         throw new Error(`conflicting duplicate telemetry job ${job.key}`);
@@ -488,6 +492,7 @@ function enrollmentReport(
 }
 
 function fleetSavings(enrollments: readonly TelemetryEnrollmentReport[]): FleetSavingsReport {
+  // A reverted enrollment keeps the evidence it gathered while cut over, so it counts here.
   const cutOver = enrollments.filter(({ status }) => status !== 'proposed');
   const grossHostedCostAvoidedUsd = money(cutOver.reduce((total, row) => total + row.after.grossHostedCostAvoidedUsd, 0));
   const costed = cutOver.every((row) => row.nebiusTotalUsd !== null);
@@ -518,7 +523,7 @@ function percentile(sorted: readonly number[], fraction: number): number | null 
 }
 
 export function renderTelemetryMarkdown(report: TelemetryReport): string {
-  const success = report.successRate === null ? 'n/a' : `${(report.successRate * 100).toFixed(1)}%`;
+  const success = percent(report.successRate);
   return [
     '# Cirujano fleet telemetry',
     '',
@@ -562,23 +567,53 @@ function renderEnrollmentsMarkdown(enrollments: readonly TelemetryEnrollmentRepo
     '',
     '| Enrollment | Repository | Workflow / job | Status | Before jobs | Before hosted min | Before hosted cost | After jobs | After hosted jobs | After Cirujano jobs | After Cirujano min | Gross avoided | Queue p50 | Queue p95 | Nebius cost | Net savings |',
     '| --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |',
-    ...enrollments.map((row) => [
+    ...enrollments.map((row) => tableRow([
       row.id, `\`${row.repository}\``, `${row.workflowName} / ${row.jobNames.join(', ')}`, row.status,
-      row.before.jobs, row.before.hostedMinutes, usd(row.before.hostedListCostUsd),
-      row.after.jobs, row.after.hostedJobs, row.after.cirujanoJobs, row.after.cirujanoMinutes, usd(row.after.grossHostedCostAvoidedUsd),
-      minutes(row.after.queueLatencyP50Ms), minutes(row.after.queueLatencyP95Ms),
-      row.nebiusTotalUsd === null ? 'n/a' : usd(row.nebiusTotalUsd), row.netSavingsUsd === null ? 'n/a' : usd(row.netSavingsUsd),
-    ].map(String).join(' | ')).map((cells) => `| ${cells} |`),
+      ...enrollmentWindowCells(row),
+      ...enrollmentCostCells(row),
+    ])),
     '',
+    ...enrollmentFootnotes(enrollments, fleet),
+  ];
+}
+
+const QUEUE_LATENCY_NOTE = 'Queue latency is job start minus run creation (the first attempt) for Cirujano jobs after the cutover; it includes controller poll, VM start and boot time, and a re-run attempt inflates it.';
+
+function enrollmentWindowCells(row: TelemetryEnrollmentReport): Array<string | number> {
+  return [
+    row.before.jobs, row.before.hostedMinutes, usd(row.before.hostedListCostUsd),
+    row.after.jobs, row.after.hostedJobs, row.after.cirujanoJobs, row.after.cirujanoMinutes, usd(row.after.grossHostedCostAvoidedUsd),
+    minutes(row.after.queueLatencyP50Ms), minutes(row.after.queueLatencyP95Ms),
+  ];
+}
+
+function enrollmentCostCells(row: TelemetryEnrollmentReport): string[] {
+  return [row.nebiusTotalUsd === null ? 'n/a' : usd(row.nebiusTotalUsd), row.netSavingsUsd === null ? 'n/a' : usd(row.netSavingsUsd)];
+}
+
+function tableRow(cells: ReadonlyArray<string | number>): string {
+  return `| ${cells.map(String).join(' | ')} |`;
+}
+
+/** Public-repository and incompleteness notes, the fleet line, the latency note and the limits. */
+function enrollmentFootnotes(enrollments: readonly TelemetryEnrollmentReport[], fleet: FleetSavingsReport | undefined): string[] {
+  const notes = [
     ...enrollments.filter((row) => row.visibility === 'public').map((row) => `- ${row.id} is a public repository: hosted minutes are free, so migration only adds provider cost.`),
     ...enrollments.filter((row) => !row.complete && row.status !== 'proposed').map((row) => `- ${row.id} is incomplete: ${row.incompleteReason ?? 'unknown reason'}.`),
-    ...(enrollments.some((row) => row.visibility === 'public' || (!row.complete && row.status !== 'proposed')) ? [''] : []),
+  ];
+  return [
+    ...notes,
+    ...(notes.length > 0 ? [''] : []),
     ...(fleet === undefined ? [] : [fleetLine(fleet), '']),
-    'Queue latency is job start minus run creation for Cirujano jobs after the cutover; it includes controller poll, VM start and boot time.',
+    QUEUE_LATENCY_NOTE,
     '',
     ...LIMITS_PARAGRAPH,
     '',
   ];
+}
+
+function percent(rate: number | null): string {
+  return rate === null ? 'n/a' : `${(rate * 100).toFixed(1)}%`;
 }
 
 const LIMITS_PARAGRAPH = [
@@ -603,7 +638,7 @@ function fleetLine(fleet: FleetSavingsReport): string {
  */
 export function renderFleetSavingsMarkdown(report: TelemetryReport): string {
   if (report.enrollments === undefined || report.fleet === undefined) throw new Error('fleet savings report requires a registry');
-  const success = report.successRate === null ? 'n/a' : `${(report.successRate * 100).toFixed(1)}%`;
+  const success = percent(report.successRate);
   return [
     '# Cirujano fleet migration: net savings',
     '',
@@ -624,25 +659,15 @@ export function renderFleetSavingsMarkdown(report: TelemetryReport): string {
     '',
     '| Enrollment | Status | Before jobs | Before hosted min | Before hosted cost | After jobs | After hosted jobs | After Cirujano jobs | After Cirujano min | Gross avoided | Queue p50 | Queue p95 | VM starts | Nebius cost | Net savings | Complete |',
     '| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |',
-    ...report.enrollments.map((row) => [
+    ...report.enrollments.map((row) => tableRow([
       row.id, row.status,
-      row.before.jobs, row.before.hostedMinutes, usd(row.before.hostedListCostUsd),
-      row.after.jobs, row.after.hostedJobs, row.after.cirujanoJobs, row.after.cirujanoMinutes, usd(row.after.grossHostedCostAvoidedUsd),
-      minutes(row.after.queueLatencyP50Ms), minutes(row.after.queueLatencyP95Ms),
+      ...enrollmentWindowCells(row),
       row.vmStarts === null ? 'n/a' : row.vmStarts,
-      row.nebiusTotalUsd === null ? 'n/a' : usd(row.nebiusTotalUsd), row.netSavingsUsd === null ? 'n/a' : usd(row.netSavingsUsd),
+      ...enrollmentCostCells(row),
       row.complete ? 'yes' : 'no',
-    ].map(String).join(' | ')).map((cells) => `| ${cells} |`),
+    ])),
     '',
-    ...report.enrollments.filter((row) => row.visibility === 'public').map((row) => `- ${row.id} is a public repository: hosted minutes are free, so migration only adds provider cost.`),
-    ...report.enrollments.filter((row) => !row.complete && row.status !== 'proposed').map((row) => `- ${row.id} is incomplete: ${row.incompleteReason ?? 'unknown reason'}.`),
-    ...(report.enrollments.some((row) => row.visibility === 'public' || (!row.complete && row.status !== 'proposed')) ? [''] : []),
-    fleetLine(report.fleet),
-    '',
-    'Queue latency is job start minus run creation for Cirujano jobs after the cutover; it includes controller poll, VM start and boot time.',
-    '',
-    ...LIMITS_PARAGRAPH,
-    '',
+    ...enrollmentFootnotes(report.enrollments, report.fleet),
   ].join('\n');
 }
 

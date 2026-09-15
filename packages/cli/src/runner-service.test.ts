@@ -94,6 +94,27 @@ describe('production runner command composition (R11/R12)', () => {
     expect(await readFile(fixture.logPath, 'utf8')).not.toMatch(/--method (?:POST|DELETE)| instance (?:create|start|stop|delete)/u);
   });
 
+  it('runs the launchd wrapper against the built bundle in dry-run and journals a first tick', async () => {
+    const fixture = await createFixture();
+    const stateDirectory = resolve(fixture.configPath, '..');
+    const controllerKeyPath = join(stateDirectory, 'controller_ed25519');
+    await executeFile('/usr/bin/ssh-keygen', ['-q', '-t', 'ed25519', '-N', '', '-f', controllerKeyPath]);
+    await writeFile(join(stateDirectory, 'ssh_host_ed25519_key'), 'fixture host key\n', { mode: 0o600 });
+    await writeFile(join(stateDirectory, 'actions-runner.env'), 'CIRUJANO_ACTIONS_RUNNER_VERSION=2.337.0\nCIRUJANO_ACTIONS_RUNNER_SHA256=' + 'a'.repeat(64) + '\n');
+    const wrapper = resolve(packageDirectory, '../../scripts/run-cirujano-controller.sh');
+    const result = await executeFile(wrapper, [], {
+      env: {
+        ...fixture.env, CIRUJANO_RUNNER_ONCE: '1',
+        CIRUJANO_RUNNER_STATE_DIR: stateDirectory, CIRUJANO_CLI_PATH: join(packageDirectory, 'dist/bin.js'),
+        CIRUJANO_GUEST_DIR: resolve(packageDirectory, '../runner/guest'), CIRUJANO_CONTROLLER_KEY_PATH: controllerKeyPath,
+      },
+    });
+    expect(result.stdout).toContain('observing only');
+    expect(result.stdout).toContain('"type":"tick","status":"idle"');
+    expect(await readFile(join(stateDirectory, 'events.jsonl'), 'utf8')).toContain('"type":"decision"');
+    expect(await readFile(fixture.logPath, 'utf8')).not.toMatch(/instance (?:create|start|stop|delete)/u);
+  });
+
   it('preserves built CLI estimate exit 0, runtime exit 1 and usage exit 2', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'cirujano-built-exits-'));
     const jobsPath = join(directory, 'jobs.json');
@@ -330,13 +351,15 @@ describe('production runner command composition (R11/R12)', () => {
     const deleting = await builtTick(fixture);
     expect(deleting).toContain('"type":"delete-vm"');
     expect(await builtTick(fixture)).toContain('"status":"reconciled"');
-    const afterDelete = JSON.parse(await readFile(statePath, 'utf8')) as { lifecycle: { state: string; startCount: number; cumulativeCostUsd: number; cumulativeRuntimeMs: number }; pendingEffect: unknown };
-    expect(afterDelete).toMatchObject({ lifecycle: { state: 'absent', startCount: 1 }, pendingEffect: null });
+    const afterDelete = JSON.parse(await readFile(statePath, 'utf8')) as { lifecycle: { state: string; startCount: number; cumulativeCostUsd: number; cumulativeRuntimeMs: number; grantDeadlineMs: number | null }; pendingEffect: unknown };
+    // The spent generation's deadline never survives into the next one.
+    expect(afterDelete).toMatchObject({ lifecycle: { state: 'absent', startCount: 1, grantDeadlineMs: null }, pendingEffect: null });
     expect(afterDelete.lifecycle.cumulativeCostUsd).toBeGreaterThanOrEqual(armed.lifecycle.cumulativeCostUsd);
     expect(afterDelete.lifecycle.cumulativeRuntimeMs).toBeGreaterThanOrEqual(armed.lifecycle.cumulativeRuntimeMs);
     await updateScenario(fixture, (state) => { state.jobs[1]!.status = 'queued'; });
     expect(await builtTick(fixture)).toContain('"type":"create-vm","generation":2');
     await builtTick(fixture); // reconcile create
+    expect((JSON.parse(await readFile(statePath, 'utf8')) as { lifecycle: { grantDeadlineMs: number | null } }).lifecycle.grantDeadlineMs).toBeNull();
     expect(await builtTick(fixture)).toContain('"type":"start-vm","generation":2');
     const restarted = JSON.parse(await readFile(statePath, 'utf8')) as { lifecycle: { startCount: number; cumulativeCostUsd: number } };
     expect(restarted.lifecycle.startCount).toBe(2);

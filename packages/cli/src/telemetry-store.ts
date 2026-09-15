@@ -1,9 +1,9 @@
 import { readdir, readFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
-import { isAbsolute, join } from 'node:path';
+import { join } from 'node:path';
 
 import type { FleetRegistry } from './fleet-registry.js';
 import {
+  absolutePath,
   array,
   boolean,
   nonnegativeInteger,
@@ -31,7 +31,7 @@ export async function buildStoreReport(input: {
   registry?: FleetRegistry;
   evidenceById?: ReadonlyMap<string, ControllerEvidence>;
 }): Promise<TelemetryReport> {
-  const snapshots = await readSnapshots(absoluteStore(input.storePath));
+  const snapshots = await readSnapshots(absolutePath(input.storePath, 'telemetry store'));
   const sinceMs = Date.parse(`${input.since}T00:00:00Z`);
   if (!snapshots.some((snapshot) => Date.parse(snapshot.windowStart) <= sinceMs && Date.parse(snapshot.collectedAt) >= sinceMs)) {
     throw new Error(`telemetry snapshots do not cover ${input.since}`);
@@ -184,10 +184,4 @@ function validateJob(value: unknown, name: string): TelemetrySnapshot['jobs'][nu
     if (JSON.stringify(job[key]) !== JSON.stringify(expected[key])) throw new Error(`${name}.${key} is inconsistent with source evidence`);
   }
   return expected;
-}
-
-export function absoluteStore(value: string): string {
-  const expanded = value.startsWith('~/') ? join(homedir(), value.slice(2)) : value;
-  if (!isAbsolute(expanded)) throw new Error('telemetry store must be an absolute path');
-  return expanded;
 }

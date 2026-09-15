@@ -108,7 +108,8 @@ chmod 700 "$WRAPPER_TEMP" "$CLI_TEMP"
 printf 'CIRUJANO_ACTIONS_RUNNER_VERSION=%s\nCIRUJANO_ACTIONS_RUNNER_SHA256=%s\n' "$RUNNER_VERSION" "$RUNNER_SHA256" > "$RELEASE_TEMP"
 chmod 600 "$RELEASE_TEMP"
 
-escape() { printf '%s' "${1//&/\\&}"; }
+# sed replacement text: escape the delimiter, backslashes and ampersands.
+escape() { local value="${1//\\/\\\\}"; value="${value//|/\\|}"; printf '%s' "${value//&/\\&}"; }
 sed \
   -e "s|__ENROLLMENT_ID__|$ENROLLMENT_ID|g" \
   -e "s|__WRAPPER_PATH__|$(escape "$WRAPPER")|g" \
@@ -139,14 +140,14 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
     VERIFIED=1
     break
   fi
-  STATE="$("$LAUNCHCTL_PATH" print "$DOMAIN/$LABEL" | awk '/^[[:space:]]*state = / { print $3; exit }')"
+  STATE="$("$LAUNCHCTL_PATH" print "$DOMAIN/$LABEL" 2>/dev/null | awk '/^[[:space:]]*state = / { print $3; exit }' || true)"
   if [ "$STATE" = "not" ]; then
     break
   fi
   sleep "$POLL_SECONDS"
 done
 
-DETAILS="$("$LAUNCHCTL_PATH" print "$DOMAIN/$LABEL")"
+DETAILS="$("$LAUNCHCTL_PATH" print "$DOMAIN/$LABEL" 2>/dev/null || echo 'launchctl print failed')"
 if [ "$VERIFIED" != "1" ]; then
   printf '%s\n' "$DETAILS"
   echo "runner: the agent did not journal a first tick within ${WAIT_SECONDS}s; inspect $LOG_DIR/runner-$ENROLLMENT_ID-error.log" >&2

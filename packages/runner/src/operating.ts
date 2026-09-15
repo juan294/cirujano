@@ -1,5 +1,5 @@
 import { RUNNER_SCHEMA_VERSION, type Permit, type PermitOperation } from './contracts.js';
-import type { PilotQuote } from './pilot.js';
+import { finitePositive, validRecentQuoteDate, type PilotQuote } from './pilot.js';
 
 /** Plan D3: per-enrollment operating permit bounds and the fleet ceiling across enrollments. */
 export const OPERATING_PERMIT_BOUNDS = {
@@ -182,16 +182,4 @@ export function renderOperatingPermit(proposal: OperatingPermitProposal, permitI
     maxTotalCostUsd: proposal.maxTotalCostUsd,
     recoveryAllowed: proposal.recoveryAllowed,
   };
-}
-
-function finitePositive(value: number): boolean {
-  return Number.isFinite(value) && value > 0;
-}
-
-function validRecentQuoteDate(value: string, nowMs: number): boolean {
-  if (!/^\d{4}-\d{2}-\d{2}$/u.test(value)) return false;
-  const parsed = Date.parse(`${value}T00:00:00Z`);
-  if (!Number.isFinite(parsed) || new Date(parsed).toISOString().slice(0, 10) !== value) return false;
-  const ageMs = nowMs - parsed;
-  return ageMs >= 0 && ageMs <= 7 * 24 * 60 * 60 * 1000;
 }

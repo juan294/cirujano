@@ -79,3 +79,13 @@ fail: any -> { accepted: false, reasons }
 Automated: tests above and the full gate. Manual: owner approves the launchd
 installation once (`install-runner-agent.sh` against a dry-run config on the
 Mac; no permit, no provider writes). External state: none.
+
+## Handoff (2026-09-15)
+
+- [x] U1 `buildOperatingPermitProposal`, `OPERATING_PERMIT_BOUNDS`, `renderOperatingPermit` (`packages/runner/src/operating.ts` + test); `fleet controller-config` and `fleet permit-proposal` (`fleet-service.ts` + tests)
+- [x] U2 lifecycle expired-generation recovery (`lifecycle.ts`, `contracts.ts` `grantDeadlineMs` + `delete-vm`, `controller.ts` persist/parse), `delete-vm` execution and reconciliation (`runner-service.ts`), built-CLI fixture tests (delete then create generation 2; blocked before the deadline)
+- [x] U3 `scripts/launchd/com.thecreativetoken.cirujano-runner.plist.in`, `scripts/run-cirujano-controller.sh`, `scripts/install-runner-agent.sh` (+ `--remove`), `runner-scheduler.test.ts` (fake launchctl), runbook operating section in `docs/runbooks/nebius-runner.md`
+- Commit `0e32b3f`. Checks on that commit: typecheck, lint, build, verify-bundle, `pnpm run test` (494 tests green).
+- Deviation D-3 in the notes file. Manual acceptance pending: the owner approves one launchd installation against the P1 dry-run config (no permit, no provider writes).
+- Local prep: `~/.local/share/cirujano/runner/P1/config.json` and host key generated for P1 with the R14 template.
+- Independent review: see the notes file (findings and dispositions).

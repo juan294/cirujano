@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import { RUNNER_SCHEMA_VERSION, type RunnerConfig } from './contracts.js';
 
 export class ConfigError extends Error {
@@ -95,6 +97,11 @@ export function parseRunnerConfig(input: unknown): RunnerConfig {
     throw new ConfigError('maxJobMs plus shutdownMarginMs must fit within lifetimeMs');
   }
   return parsed;
+}
+
+/** The permit identity hash of a parsed config: sha256 of its canonical JSON (the parser fixes key order). */
+export function runnerConfigHash(config: RunnerConfig): string {
+  return createHash('sha256').update(JSON.stringify(config)).digest('hex');
 }
 
 function objectAt(value: unknown, path: string): Record<string, unknown> {

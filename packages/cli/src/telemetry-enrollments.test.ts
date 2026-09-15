@@ -99,6 +99,16 @@ describe('telemetry net savings (phase 4)', () => {
     expect(markdown).toContain('Fleet: gross avoided $0.000 / Nebius cost $0.299 / net savings -$0.299');
   });
 
+  it('bounds a registry report by the measurement window and leaves the plain report unbounded', async () => {
+    const snapshot = await fixtureSnapshot();
+    const bounded = parseFleetRegistry({ ...registry([enrollment({})]), measurementWindow: { since: '2026-09-13', through: '2026-09-18' } });
+    const report = aggregateTelemetry([snapshot], SINCE, bounded, new Map([['P1', evidence()]]));
+    expect(report.through).toBe('2026-09-18T23:59:59.999Z');
+    expect(report.jobs).toBe(6);
+    expect(report.enrollments![0]!.after).toMatchObject({ jobs: 1, cirujanoJobs: 1, cirujanoMinutes: 3 });
+    expect(aggregateTelemetry([snapshot], SINCE).jobs).toBe(9);
+  });
+
   it('renders the sanitized fleet savings report with P-handles only', async () => {
     const report = aggregateTelemetry([await fixtureSnapshot()], SINCE, registry([enrollment({}), enrollment({ id: 'P2', repository: 'juan294/private-two', repositoryId: 1002, workflowId: 502, jobKey: 'test', jobNames: ['test'], status: 'proposed', after: null })]), new Map([['P1', evidence()]]));
     const markdown = renderFleetSavingsMarkdown(report);
@@ -164,7 +174,7 @@ describe('telemetry enrollment section (phase 1 U3)', () => {
     const markdown = renderTelemetryMarkdown(aggregateTelemetry([snapshot], SINCE, registry([enrollment({})])));
     expect(markdown).toContain('## Enrollments');
     expect(markdown).toContain('| P1 | `juan294/private-one` | CI / check | cut-over | 2 | 5 | $0.030 | 3 | 1 | 2 | 6 | $0.036 | 1.5 min | 5.0 min | n/a | n/a |');
-    expect(markdown).toContain('Queue latency is job start minus run creation for Cirujano jobs after the cutover');
+    expect(markdown).toContain('Queue latency is job start minus run creation (the first attempt) for Cirujano jobs after the cutover');
     expect(renderTelemetryMarkdown(aggregateTelemetry([snapshot], SINCE))).not.toContain('## Enrollments');
   });
 

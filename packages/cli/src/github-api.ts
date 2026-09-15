@@ -1,4 +1,7 @@
 import { execFile as execFileCallback } from 'node:child_process';
+import { readFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import { isAbsolute, join } from 'node:path';
 import { promisify } from 'node:util';
 
 const execFile = promisify(execFileCallback);
@@ -72,6 +75,11 @@ export function positiveInteger(value: unknown, name: string): number {
   return value;
 }
 
+export function nonnegativeNumber(value: unknown, name: string): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) throw new Error(`${name} must be a non-negative finite number`);
+  return value;
+}
+
 export function nonnegativeInteger(value: unknown, name: string): number {
   if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) throw new Error(`${name} must be a non-negative integer`);
   return value;
@@ -85,4 +93,25 @@ export function timestamp(value: unknown, name: string): string {
 
 export function nullableTimestamp(value: unknown, name: string): string | null {
   return value === null ? null : timestamp(value, name);
+}
+
+/** Expands a leading `~/` to the home directory. */
+export function expandHome(value: string): string {
+  return value.startsWith('~/') ? join(homedir(), value.slice(2)) : value;
+}
+
+export function absolutePath(value: string, name: string): string {
+  const expanded = expandHome(value);
+  if (!isAbsolute(expanded)) throw new Error(`${name} must be an absolute path`);
+  return expanded;
+}
+
+/** Parsed JSON of a file, or null when the file does not exist. */
+export async function readOptionalJson(path: string): Promise<unknown | null> {
+  try {
+    return JSON.parse(await readFile(path, 'utf8')) as unknown;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw error;
+  }
 }

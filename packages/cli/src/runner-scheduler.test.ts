@@ -23,12 +23,14 @@ describe('operating controller launch agent (phase 2 U3)', () => {
     expect(template).not.toMatch(/GITHUB_TOKEN|NEBIUS_API_KEY|ghp_|github_pat_|PRIVATE KEY/u);
   });
 
-  it('runs the controller with the bundle digest as candidate and falls back to dry-run without a permit', async () => {
+  it('leaves the candidate digest to the bundle itself and falls back to dry-run without a permit', async () => {
     const wrapper = await readFile(resolve(root, 'scripts/run-cirujano-controller.sh'), 'utf8');
-    expect(wrapper).toContain('/usr/bin/shasum -a 256 "$CLI_PATH"');
+    expect(wrapper).toContain('unset CIRUJANO_CANDIDATE_DIGEST');
+    expect(wrapper).not.toContain('shasum');
     expect(wrapper).toContain('ARGS+=(--dry-run)');
     expect(wrapper).toContain('--permit "$PERMIT_PATH"');
-    expect(wrapper).toContain('exec node "$CLI_PATH" "${ARGS[@]}"');
+    expect(wrapper).toContain('exec "$NODE_PATH_RESOLVED" "$CLI_PATH" "${ARGS[@]}"');
+    expect(wrapper).toContain('--version');
     expect(wrapper).not.toContain('2>&1');
     expect(wrapper).not.toMatch(/GITHUB_TOKEN|ghp_|github_pat_|cat .*key/u);
   });
@@ -48,7 +50,7 @@ describe('operating controller launch agent (phase 2 U3)', () => {
     expect((await stat(resolve(fixture.home, '.local/share/cirujano/runner/controller_ed25519'))).mode & 0o777).toBe(0o600);
     const invocation = await readFile(resolve(fixture.home, 'invocation'), 'utf8');
     expect(invocation).toContain(`runner watch --config ${fixture.stateDir}/config.json --dry-run`);
-    expect(invocation).toMatch(/CIRUJANO_CANDIDATE_DIGEST=[0-9a-f]{64}/u);
+    expect(invocation).toContain('CIRUJANO_CANDIDATE_DIGEST=undefined');
     expect(invocation).toContain(`CIRUJANO_HOST_PRIVATE_KEY_PATH=${fixture.stateDir}/ssh_host_ed25519_key`);
     expect(await readFile(resolve(fixture.stateDir, 'events.jsonl'), 'utf8')).toContain('"type":"dry-run"');
     const removal = await execFile(resolve(root, 'scripts/install-runner-agent.sh'), ['P1', '--remove'], { env: fixture.env, timeout: 15_000 });

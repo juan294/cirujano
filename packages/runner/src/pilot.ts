@@ -497,11 +497,11 @@ function stringArray(value: unknown, name: string): string[] {
   return value;
 }
 
-function finitePositive(value: number): boolean {
+export function finitePositive(value: number): boolean {
   return Number.isFinite(value) && value > 0;
 }
 
-function validRecentQuoteDate(value: string, nowMs: number): boolean {
+export function validRecentQuoteDate(value: string, nowMs: number): boolean {
   if (!/^\d{4}-\d{2}-\d{2}$/u.test(value)) return false;
   const parsed = Date.parse(`${value}T00:00:00Z`);
   if (!Number.isFinite(parsed) || new Date(parsed).toISOString().slice(0, 10) !== value) return false;

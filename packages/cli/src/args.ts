@@ -1,3 +1,6 @@
+import { SHA_PATTERN } from './fleet-registry.js';
+import { HOSTED_SKUS, type HostedSku } from './telemetry.js';
+
 export const VERSION = '0.0.1';
 
 export const USAGE = [
@@ -89,9 +92,6 @@ export interface TelemetryReportArguments {
 
 export type TelemetryArguments = TelemetryCollectArguments | TelemetryReportArguments;
 
-export const FLEET_SKUS = ['actions_linux', 'actions_linux_arm', 'actions_windows', 'actions_macos'] as const;
-export type FleetSku = typeof FLEET_SKUS[number];
-
 export interface FleetInitArguments {
   command: 'fleet';
   action: 'init';
@@ -109,7 +109,7 @@ export interface FleetEnrollArguments {
   workflowPath: string;
   jobKey: string;
   jobNames: string[];
-  sku: FleetSku;
+  sku: HostedSku;
 }
 
 export interface FleetCutoverArguments {
@@ -252,7 +252,8 @@ function parseTelemetryArguments(argv: readonly string[]): TelemetryArguments {
 }
 
 const FLEET_ACTIONS = ['init', 'enroll', 'cutover', 'verify', 'show', 'controller-config', 'permit-proposal', 'publish'] as const;
-const FLEET_OPTIONS: Record<typeof FLEET_ACTIONS[number], readonly string[]> = {
+type FleetAction = typeof FLEET_ACTIONS[number];
+const FLEET_OPTIONS: Record<FleetAction, readonly string[]> = {
   init: ['--registry', '--owner', '--since', '--through'],
   enroll: ['--registry', '--repository', '--workflow', '--job', '--job-name', '--sku'],
   cutover: ['--registry', '--id', '--commit'],
@@ -266,8 +267,8 @@ const FLEET_OPTIONS: Record<typeof FLEET_ACTIONS[number], readonly string[]> = {
 function parseFleetArguments(argv: readonly string[]): FleetArguments {
   const [action, ...rest] = argv;
   if (action === undefined) throw new ArgumentError('fleet requires a subcommand.');
-  if (!FLEET_ACTIONS.includes(action as typeof FLEET_ACTIONS[number])) throw new ArgumentError(`Unknown fleet command "${action}".`);
-  const allowed = FLEET_OPTIONS[action as typeof FLEET_ACTIONS[number]];
+  if (!isFleetAction(action)) throw new ArgumentError(`Unknown fleet command "${action}".`);
+  const allowed = FLEET_OPTIONS[action];
   const values = new Map<string, string>();
   const jobNames: string[] = [];
   for (let index = 0; index < rest.length; index += 1) {
@@ -323,7 +324,7 @@ function parseFleetArguments(argv: readonly string[]): FleetArguments {
     const commit = values.get('--commit');
     if (id === undefined) throw new ArgumentError('fleet cutover requires --id <P#>.');
     if (commit === undefined) throw new ArgumentError('fleet cutover requires --commit <sha>.');
-    if (!/^[0-9a-f]{40}$/u.test(commit)) throw new ArgumentError('fleet cutover --commit must be a 40-character lowercase SHA.');
+    if (!SHA_PATTERN.test(commit)) throw new ArgumentError('fleet cutover --commit must be a 40-character lowercase SHA.');
     return { command: 'fleet', action, registryPath, id, commit };
   }
   const repository = values.get('--repository');
@@ -334,11 +335,19 @@ function parseFleetArguments(argv: readonly string[]): FleetArguments {
   if (!/^[^/\s]+\/[^/\s]+$/u.test(repository)) throw new ArgumentError('fleet enroll --repository must be owner/name.');
   if (workflowPath === undefined) throw new ArgumentError('fleet enroll requires --workflow <path>.');
   if (jobKey === undefined) throw new ArgumentError('fleet enroll requires --job <key>.');
-  if (!FLEET_SKUS.includes(sku as FleetSku)) throw new ArgumentError(`fleet enroll --sku must be one of ${FLEET_SKUS.join(', ')}.`);
-  return { command: 'fleet', action: 'enroll', registryPath, repository, workflowPath, jobKey, jobNames, sku: sku as FleetSku };
+  if (!isHostedSku(sku)) throw new ArgumentError(`fleet enroll --sku must be one of ${HOSTED_SKUS.join(', ')}.`);
+  return { command: 'fleet', action: 'enroll', registryPath, repository, workflowPath, jobKey, jobNames, sku };
 }
 
-function validIsoDate(value: string): boolean {
+function isFleetAction(value: string): value is FleetAction {
+  return (FLEET_ACTIONS as readonly string[]).includes(value);
+}
+
+function isHostedSku(value: string): value is HostedSku {
+  return (HOSTED_SKUS as readonly string[]).includes(value);
+}
+
+export function validIsoDate(value: string): boolean {
   if (!/^\d{4}-\d{2}-\d{2}$/u.test(value)) return false;
   const timestamp = Date.parse(`${value}T00:00:00Z`);
   return Number.isFinite(timestamp) && new Date(timestamp).toISOString().slice(0, 10) === value;

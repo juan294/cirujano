@@ -1,7 +1,8 @@
 import { chmod, mkdir, rename, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 
-import { TELEMETRY_RATES, type HostedSku } from './telemetry.js';
+import { validIsoDate } from './args.js';
+import { HOSTED_SKUS, TELEMETRY_RATES, type HostedSku } from './telemetry.js';
 
 /**
  * Exclusions locked by the fleet telemetry plan (docs/plans/2026-09-13-fleet-telemetry.md).
@@ -68,7 +69,7 @@ export class FleetRegistryError extends Error {
 
 const OWNER_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/u;
 const REPOSITORY_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})\/[A-Za-z0-9._-]{1,100}$/u;
-const SHA_PATTERN = /^[0-9a-f]{40}$/u;
+export const SHA_PATTERN = /^[0-9a-f]{40}$/u;
 const ENROLLMENT_ID_PATTERN = /^P[1-9]\d{0,3}$/u;
 const STATUSES: readonly EnrollmentStatus[] = ['proposed', 'cut-over', 'reverted'];
 const ENROLLMENT_KEYS = [
@@ -88,6 +89,16 @@ export function enrollmentLabelFor(sku: HostedSku): string {
     .find(([name, labelSku]) => labelSku === sku && name.startsWith('cirujano-baseline-'))?.[0];
   if (label === undefined) throw new FleetRegistryError(`sku ${sku} has no enrolled Cirujano label`);
   return label;
+}
+
+/** Plan phase 1 `fleetCutover`: the migrated selection is `[self-hosted, linux, x64, <label>]`. */
+export function requiredSelfHostedLabels(runnerLabel: string): string[] {
+  return ['self-hosted', 'linux', 'x64', runnerLabel];
+}
+
+/** The live (not reverted) enrollment of one workflow job, if any. */
+export function findActiveEnrollment(registry: Pick<FleetRegistry, 'enrollments'>, repository: string, workflowPath: string, jobKey: string): FleetEnrollment | undefined {
+  return registry.enrollments.find((entry) => entry.status !== 'reverted' && entry.repository === repository && entry.workflowPath === workflowPath && entry.jobKey === jobKey);
 }
 
 /** Exact exclusion, or a frozen product's companion under the registry owner. */
@@ -122,19 +133,15 @@ export function parseFleetRegistry(input: unknown): FleetRegistry {
   }
   const partial = { owner, exclusions };
 
-  const ids = new Set<string>();
-  const targets = new Map<string, string>();
-  const enrollments = array(root['enrollments'], 'enrollments').map((entry, index) => {
-    const name = `enrollments[${index}]`;
-    const enrollment = parseEnrollment(entry, name, partial);
-    if (ids.has(enrollment.id)) throw new FleetRegistryError(`duplicate enrollment id ${enrollment.id}`);
-    ids.add(enrollment.id);
-    const target = `${enrollment.repository}\0${enrollment.workflowPath}\0${enrollment.jobKey}`;
-    const existing = targets.get(target);
-    if (existing !== undefined) throw new FleetRegistryError(`${enrollment.repository} ${enrollment.workflowPath} job ${enrollment.jobKey} is already enrolled as ${existing}`);
-    targets.set(target, enrollment.id);
-    return enrollment;
-  });
+  const enrollments: FleetEnrollment[] = [];
+  for (const [index, entry] of array(root['enrollments'], 'enrollments').entries()) {
+    const enrollment = parseEnrollment(entry, `enrollments[${index}]`, partial);
+    if (enrollments.some(({ id }) => id === enrollment.id)) throw new FleetRegistryError(`duplicate enrollment id ${enrollment.id}`);
+    // A reverted enrollment keeps its history; the same job may be enrolled afresh later.
+    const existing = enrollment.status === 'reverted' ? undefined : findActiveEnrollment({ enrollments }, enrollment.repository, enrollment.workflowPath, enrollment.jobKey);
+    if (existing !== undefined) throw new FleetRegistryError(`${enrollment.repository} ${enrollment.workflowPath} job ${enrollment.jobKey} is already enrolled as ${existing.id}`);
+    enrollments.push(enrollment);
+  }
   return { schemaVersion: 1, owner, measurementWindow: { since, through }, exclusions, enrollments };
 }
 
@@ -147,8 +154,7 @@ function parseEnrollment(input: unknown, name: string, registry: Pick<FleetRegis
   if (!repository.startsWith(`${registry.owner}/`)) throw new FleetRegistryError(`${name}.repository must belong to ${registry.owner}`);
   if (isExcludedRepository(registry, repository)) throw new FleetRegistryError(`${name}.repository ${repository} is excluded from migration`);
   const sku = root['sku'];
-  const skus = Object.keys(TELEMETRY_RATES.skus);
-  if (typeof sku !== 'string' || !skus.includes(sku)) throw new FleetRegistryError(`${name}.sku must be one of ${skus.join(', ')}`);
+  if (typeof sku !== 'string' || !(HOSTED_SKUS as readonly string[]).includes(sku)) throw new FleetRegistryError(`${name}.sku must be one of ${HOSTED_SKUS.join(', ')}`);
   const runnerLabel = text(root['runnerLabel'], `${name}.runnerLabel`);
   const labelSku = (TELEMETRY_RATES.cirujanoLabels as Record<string, HostedSku>)[runnerLabel];
   if (labelSku !== sku || !runnerLabel.startsWith('cirujano-baseline-')) {
@@ -163,8 +169,8 @@ function parseEnrollment(input: unknown, name: string, registry: Pick<FleetRegis
   const after = root['after'] === null ? null : parseWorkflowIdentity(root['after'], `${name}.after`);
   if (status === 'proposed' && after !== null) throw new FleetRegistryError(`proposed enrollment ${id} must not carry an after record`);
   if (status !== 'proposed' && after === null) throw new FleetRegistryError(`${status} enrollment ${id} requires an after record`);
-  if (after !== null && (!after.runsOn.includes('self-hosted') || !after.runsOn.includes(runnerLabel))) {
-    throw new FleetRegistryError(`${name}.after.runsOn must include self-hosted and ${runnerLabel}`);
+  if (after !== null && requiredSelfHostedLabels(runnerLabel).some((label) => !after.runsOn.includes(label))) {
+    throw new FleetRegistryError(`${name}.after.runsOn must include self-hosted, linux, x64 and ${runnerLabel}`);
   }
   let controller: EnrollmentController | null = null;
   if (root['controller'] !== null) {
@@ -256,9 +262,6 @@ function timestamp(value: unknown, name: string): string {
 
 function isoDate(value: unknown, name: string): string {
   const result = text(value, name);
-  const parsed = Date.parse(`${result}T00:00:00Z`);
-  if (!/^\d{4}-\d{2}-\d{2}$/u.test(result) || !Number.isFinite(parsed) || new Date(parsed).toISOString().slice(0, 10) !== result) {
-    throw new FleetRegistryError(`${name} must be a YYYY-MM-DD date`);
-  }
+  if (!validIsoDate(result)) throw new FleetRegistryError(`${name} must be a YYYY-MM-DD date`);
   return result;
 }
