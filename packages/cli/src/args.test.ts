@@ -53,6 +53,29 @@ describe('parseArguments', () => {
     expect(parseArguments(['telemetry', 'report', '--store', '/tmp/data', '--since', '2026-09-13', '--format', 'markdown'])).toEqual({
       command: 'telemetry', action: 'report', storePath: '/tmp/data', since: '2026-09-13', format: 'markdown',
     });
+    expect(parseArguments(['telemetry', 'report', '--store', '/tmp/data', '--since', '2026-09-13', '--registry', '/tmp/fleet.json'])).toEqual({
+      command: 'telemetry', action: 'report', storePath: '/tmp/data', since: '2026-09-13', format: 'markdown', registryPath: '/tmp/fleet.json',
+    });
+  });
+
+  it('parses every fleet registry command contract', () => {
+    expect(parseArguments(['fleet', 'init', '--registry', '/tmp/fleet.json', '--owner', 'juan294'])).toEqual({
+      command: 'fleet', action: 'init', registryPath: '/tmp/fleet.json', owner: 'juan294', since: '2026-09-13', through: '2026-10-28',
+    });
+    expect(parseArguments(['fleet', 'init', '--registry', '/tmp/fleet.json', '--owner', 'juan294', '--since', '2026-09-20', '--through', '2026-10-01'])).toEqual({
+      command: 'fleet', action: 'init', registryPath: '/tmp/fleet.json', owner: 'juan294', since: '2026-09-20', through: '2026-10-01',
+    });
+    expect(parseArguments(['fleet', 'enroll', '--registry', '/tmp/fleet.json', '--repository', 'juan294/app', '--workflow', '.github/workflows/ci.yml', '--job', 'check'])).toEqual({
+      command: 'fleet', action: 'enroll', registryPath: '/tmp/fleet.json', repository: 'juan294/app', workflowPath: '.github/workflows/ci.yml', jobKey: 'check', jobNames: [], sku: 'actions_linux',
+    });
+    expect(parseArguments(['fleet', 'enroll', '--registry', 'r', '--repository', 'juan294/app', '--workflow', 'w.yml', '--job', 'shard', '--job-name', 'Shard 1', '--job-name', 'Shard 2', '--sku', 'actions_linux'])).toEqual({
+      command: 'fleet', action: 'enroll', registryPath: 'r', repository: 'juan294/app', workflowPath: 'w.yml', jobKey: 'shard', jobNames: ['Shard 1', 'Shard 2'], sku: 'actions_linux',
+    });
+    expect(parseArguments(['fleet', 'cutover', '--registry', 'r', '--id', 'P1', '--commit', 'a'.repeat(40)])).toEqual({
+      command: 'fleet', action: 'cutover', registryPath: 'r', id: 'P1', commit: 'a'.repeat(40),
+    });
+    expect(parseArguments(['fleet', 'verify', '--registry', 'r'])).toEqual({ command: 'fleet', action: 'verify', registryPath: 'r' });
+    expect(parseArguments(['fleet', 'show', '--registry', 'r'])).toEqual({ command: 'fleet', action: 'show', registryPath: 'r' });
   });
 
   it.each([
@@ -72,6 +95,21 @@ describe('parseArguments', () => {
     [['telemetry', 'collect', '--owner', 'juan294', '--store', '/tmp/data', '--lookback-hours', '0'], /from 1 through 1080/],
     [['telemetry', 'report', '--store', '/tmp/data', '--since', 'yesterday'], /YYYY-MM-DD/],
     [['telemetry', 'report', '--store', '/tmp/data', '--since', '2026-99-99'], /YYYY-MM-DD/],
+    [['telemetry', 'report', '--store', '/tmp/data', '--since', '2026-09-13', '--registry'], /requires a value/],
+    [['telemetry', 'collect', '--owner', 'juan294', '--store', '/tmp/data', '--registry', 'r'], /report-only option/],
+    [['fleet'], /requires a subcommand/],
+    [['fleet', 'migrate', '--registry', 'r'], /Unknown fleet command/],
+    [['fleet', 'verify'], /requires --registry/],
+    [['fleet', 'init', '--registry', 'r'], /requires --owner/],
+    [['fleet', 'init', '--registry', 'r', '--owner', 'juan294', '--since', 'soon'], /YYYY-MM-DD/],
+    [['fleet', 'enroll', '--registry', 'r', '--repository', 'juan294/app', '--workflow', 'w.yml'], /requires --job/],
+    [['fleet', 'enroll', '--registry', 'r', '--repository', 'app', '--workflow', 'w.yml', '--job', 'j'], /owner\/name/],
+    [['fleet', 'enroll', '--registry', 'r', '--repository', 'juan294/app', '--workflow', 'w.yml', '--job', 'j', '--sku', 'actions_gpu'], /--sku must be one of/],
+    [['fleet', 'cutover', '--registry', 'r', '--id', 'P1'], /requires --commit/],
+    [['fleet', 'cutover', '--registry', 'r', '--id', 'P1', '--commit', 'abc'], /40-character/],
+    [['fleet', 'cutover', '--registry', 'r', '--commit', 'a'.repeat(40)], /requires --id/],
+    [['fleet', 'verify', '--registry', 'r', '--id', 'P1'], /Unknown option "--id" for fleet verify/],
+    [['fleet', 'show', '--registry', 'r', '--wat'], /Unknown option/],
   ])('rejects invalid runner invocation %j', (argv, message) => {
     expect(() => parseArguments(argv)).toThrow(message);
   });

@@ -1,0 +1,68 @@
+{
+  "schemaVersion": 1,
+  "owner": "example-owner",
+  "measurementWindow": { "since": "2026-09-13", "through": "2026-10-28" },
+  "exclusions": [
+    { "repository": "example-owner/chapa", "reason": "code freeze; covers the -cli, -alexa and -upptime companions", "lockedBy": "fleet-telemetry plan 2026-09-13" },
+    { "repository": "example-owner/spoken-letter", "reason": "code freeze; covers the -cli, -alexa and -upptime companions", "lockedBy": "fleet-telemetry plan 2026-09-13" },
+    { "repository": "frivas/contribution-dashboard", "reason": "named exclusion", "lockedBy": "fleet-telemetry plan 2026-09-13" },
+    { "repository": "behboud/opencode-rpi", "reason": "named exclusion", "lockedBy": "fleet-telemetry plan 2026-09-13" },
+    { "repository": "juan294/home-network", "reason": "named exclusion", "lockedBy": "fleet-telemetry plan 2026-09-13" }
+  ],
+  "enrollments": [
+    {
+      "id": "P1",
+      "repository": "example-owner/private-one",
+      "repositoryId": 1001,
+      "workflowPath": ".github/workflows/ci.yml",
+      "workflowId": 501,
+      "workflowName": "CI",
+      "jobKey": "check",
+      "jobNames": ["check"],
+      "sku": "actions_linux",
+      "runnerLabel": "cirujano-baseline-actions_linux",
+      "status": "cut-over",
+      "before": {
+        "commit": "1111111111111111111111111111111111111111",
+        "workflowBlobSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "runsOn": ["ubuntu-latest"],
+        "recordedAt": "2026-09-16T08:00:00.000Z"
+      },
+      "after": {
+        "commit": "2222222222222222222222222222222222222222",
+        "workflowBlobSha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "runsOn": ["self-hosted", "linux", "x64", "cirujano-baseline-actions_linux"],
+        "recordedAt": "2026-09-17T12:00:00.000Z"
+      },
+      "controller": {
+        "stateDirectory": "/Users/example/.local/share/cirujano/runner/P1",
+        "controllerId": "cirujano-P1-20260917",
+        "resourcePrefix": "cirujano-p1",
+        "permitId": "P1-operating-20260917"
+      },
+      "notes": ["single human-triggered check job"]
+    },
+    {
+      "id": "P2",
+      "repository": "example-owner/private-two",
+      "repositoryId": 1002,
+      "workflowPath": ".github/workflows/ci.yml",
+      "workflowId": 502,
+      "workflowName": "CI",
+      "jobKey": "test",
+      "jobNames": ["test"],
+      "sku": "actions_linux",
+      "runnerLabel": "cirujano-baseline-actions_linux",
+      "status": "proposed",
+      "before": {
+        "commit": "3333333333333333333333333333333333333333",
+        "workflowBlobSha": "cccccccccccccccccccccccccccccccccccccccc",
+        "runsOn": ["ubuntu-24.04"],
+        "recordedAt": "2026-09-16T08:05:00.000Z"
+      },
+      "after": null,
+      "controller": null,
+      "notes": []
+    }
+  ]
+}

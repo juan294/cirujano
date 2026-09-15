@@ -52,6 +52,49 @@ migration and all GitHub writes while their code freezes remain active. The
 same exclusion applies to `frivas/contribution-dashboard`,
 `behboud/opencode-rpi` and `juan294/home-network` until the owner changes it.
 
+## Fleet registry and enrollment records
+
+Migration evidence lives in a private, owner-only registry
+(`~/.local/share/cirujano/telemetry/fleet-registry.json`, mode `0600`) that
+names real repositories and therefore never enters this repository. The
+schema, validator and a placeholder fixture
+(`packages/cli/fixtures/fleet-registry.example.json`) are tracked. Every
+`fleet` command is read-only against GitHub: it reads the default branch head,
+the workflow's git blob SHA and the job's literal `runs-on`, and writes only
+the local registry.
+
+```bash
+cirujano fleet init --registry ~/.local/share/cirujano/telemetry/fleet-registry.json --owner "$(gh api user --jq .login)"
+cirujano fleet enroll --registry <registry> --repository <owner/name> --workflow .github/workflows/ci.yml --job <job key>
+cirujano fleet cutover --registry <registry> --id P1 --commit <merged 40-character sha>
+cirujano fleet verify --registry <registry>
+cirujano fleet show --registry <registry>
+cirujano telemetry report --store <store> --since 2026-09-13 --registry <registry>
+```
+
+- `init` writes the locked exclusions from the fleet telemetry plan. The
+  validator refuses a registry that omits any of them or that enrolls an
+  excluded repository or a frozen product's `-cli`, `-alexa` or `-upptime`
+  companion.
+- `enroll` records `before`: the commit, blob SHA and hosted `runs-on` at the
+  default branch head. It refuses public repositories, jobs that already run
+  self-hosted, matrix or expression `runs-on` values, and jobs priced under a
+  SKU other than `--sku` (default `actions_linux`, whose enrolled label is
+  `cirujano-baseline-actions_linux`). Pass `--job-name` once per display name
+  when the YAML job name differs from the key or expands a matrix.
+- `cutover` records `after` only when the merged commit is on the default
+  branch and the job's `runs-on` contains `self-hosted` and the enrolled
+  label. The record's `recordedAt` is the split point the report uses.
+- `verify` re-reads every enrollment. A pre-cutover workflow edit refreshes
+  `before` with a note. After cutover, an unrelated edit that keeps the label
+  exits 1 and leaves the record for review; a workflow that lost the label is
+  recorded as `reverted`, never silently, and also exits 1.
+- `telemetry report --registry` adds `enrollments[]` to the JSON and an
+  "Enrollments" table to the Markdown: hosted jobs, minutes and list cost
+  before the cutover; hosted stragglers, Cirujano jobs, minutes, gross avoided
+  cost and queue latency (job start minus run creation, p50 and p95) after it.
+  Without `--registry` the output is unchanged.
+
 ## Verify freshness
 
 ```bash

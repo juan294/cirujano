@@ -1,11 +1,25 @@
-import { execFile as execFileCallback } from 'node:child_process';
 import { readdir, readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
-import { promisify } from 'node:util';
 
 import type { TelemetryArguments } from './args.js';
 import type { CliIo, TelemetryCommandService } from './cli.js';
+import { absoluteRegistry, readRegistry } from './fleet-service.js';
+import {
+  array,
+  boolean,
+  defaultGitHubPageRunner,
+  githubCliPath,
+  githubPages,
+  nonnegativeInteger,
+  nullableText,
+  nullableTimestamp,
+  positiveInteger,
+  record,
+  text,
+  timestamp,
+  type GitHubPageRunner,
+} from './github-api.js';
 import {
   aggregateTelemetry,
   collectTelemetry,
@@ -19,19 +33,6 @@ import {
   type TelemetryRun,
   type TelemetrySnapshot,
 } from './telemetry.js';
-
-const execFile = promisify(execFileCallback);
-
-type GitHubPageRunner = (
-  command: string,
-  args: string[],
-  options: { encoding: 'utf8'; maxBuffer: number; timeout: number },
-) => Promise<{ stdout: string }>;
-
-const defaultGitHubPageRunner: GitHubPageRunner = async (command, args, options) => {
-  const { stdout } = await execFile(command, args, options);
-  return { stdout: String(stdout) };
-};
 
 export function createTelemetryCommandService(
   environment: NodeJS.ProcessEnv = process.env,
@@ -52,7 +53,7 @@ async function collect(
   pageRunner: GitHubPageRunner,
 ): Promise<0> {
   const storePath = absoluteStore(args.storePath);
-  const source = githubSource(environment['CIRUJANO_GH_PATH'] ?? '/opt/homebrew/bin/gh', pageRunner);
+  const source = githubSource(githubCliPath(environment), pageRunner);
   const priorSnapshot = await readLatestSnapshot(storePath, new Date().toISOString().slice(0, 10));
   const snapshot = await collectTelemetry({
     owner: args.owner,
@@ -89,7 +90,11 @@ async function report(
   if (!snapshots.some((snapshot) => Date.parse(snapshot.windowStart) <= sinceMs && Date.parse(snapshot.collectedAt) >= sinceMs)) {
     throw new Error(`telemetry snapshots do not cover ${args.since}`);
   }
-  const value = aggregateTelemetry(snapshots, sinceMs);
+  const registry = args.registryPath === undefined ? undefined : await readRegistry(absoluteRegistry(args.registryPath));
+  if (registry !== undefined && registry.owner !== snapshots[0]!.owner) {
+    throw new Error(`registry owner ${registry.owner} does not match telemetry owner ${snapshots[0]!.owner}`);
+  }
+  const value = aggregateTelemetry(snapshots, sinceMs, registry);
   io.stdout(args.format === 'json' ? `${JSON.stringify(value)}\n` : renderTelemetryMarkdown(value));
   return 0;
 }
@@ -154,29 +159,6 @@ function deduplicateRuns(runs: readonly TelemetryRun[]): TelemetryRun[] {
     byKey.set(key, run);
   }
   return [...byKey.values()];
-}
-
-async function githubPages(ghPath: string, endpoint: string, pageRunner: GitHubPageRunner): Promise<unknown[]> {
-  for (let attempt = 1; attempt <= 2; attempt += 1) {
-    try {
-      const { stdout } = await pageRunner(ghPath, ['api', '--paginate', '--slurp', endpoint], {
-        encoding: 'utf8',
-        maxBuffer: 64 * 1024 * 1024,
-        timeout: 60_000,
-      });
-      const parsed: unknown = JSON.parse(stdout);
-      return array(parsed, 'GitHub paginated response');
-    } catch (error) {
-      if (attempt === 2 || !isTimeout(error)) throw error;
-    }
-  }
-  throw new Error('unreachable GitHub retry state');
-}
-
-function isTimeout(error: unknown): boolean {
-  if (typeof error !== 'object' || error === null) return false;
-  const value = error as { killed?: unknown; signal?: unknown };
-  return value.killed === true || value.signal === 'SIGTERM';
 }
 
 async function readSnapshots(directory: string): Promise<TelemetrySnapshot[]> {
@@ -312,49 +294,4 @@ function absoluteStore(value: string): string {
   const expanded = value.startsWith('~/') ? join(homedir(), value.slice(2)) : value;
   if (!isAbsolute(expanded)) throw new Error('telemetry store must be an absolute path');
   return expanded;
-}
-
-function record(value: unknown, name: string): Record<string, unknown> {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new Error(`${name} must be an object`);
-  return value as Record<string, unknown>;
-}
-
-function array(value: unknown, name: string): unknown[] {
-  if (!Array.isArray(value)) throw new Error(`${name} must be an array`);
-  return value;
-}
-
-function text(value: unknown, name: string): string {
-  if (typeof value !== 'string' || value.length === 0) throw new Error(`${name} must be a nonempty string`);
-  return value;
-}
-
-function nullableText(value: unknown, name: string): string {
-  if (value === null || value === '') return '';
-  return text(value, name);
-}
-
-function boolean(value: unknown, name: string): boolean {
-  if (typeof value !== 'boolean') throw new Error(`${name} must be a boolean`);
-  return value;
-}
-
-function positiveInteger(value: unknown, name: string): number {
-  if (typeof value !== 'number' || !Number.isInteger(value) || value <= 0) throw new Error(`${name} must be a positive integer`);
-  return value;
-}
-
-function nonnegativeInteger(value: unknown, name: string): number {
-  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) throw new Error(`${name} must be a non-negative integer`);
-  return value;
-}
-
-function timestamp(value: unknown, name: string): string {
-  const result = text(value, name);
-  if (!Number.isFinite(Date.parse(result))) throw new Error(`${name} must be a timestamp`);
-  return result;
-}
-
-function nullableTimestamp(value: unknown, name: string): string | null {
-  return value === null ? null : timestamp(value, name);
 }

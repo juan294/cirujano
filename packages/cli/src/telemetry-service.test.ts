@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -154,6 +154,25 @@ describe('telemetry command service', () => {
     await expect(service.run(
       { command: 'telemetry', action: 'report', storePath, since: '2026-09-13', format: 'json' }, io,
     )).rejects.toThrow(/mixed owners/u);
+  });
+
+  it('joins a fleet registry into the report and rejects a registry for another owner', async () => {
+    const storePath = await mkdtemp(join(tmpdir(), 'cirujano-registry-telemetry-'));
+    await writeFile(join(storePath, '2026-09-13.json'), JSON.stringify(await validSnapshot('juan294', Date.parse('2026-09-13T12:00:00Z'))));
+    const registryPath = join(storePath, 'fleet-registry.json');
+    const example = JSON.parse(await readFile(join(import.meta.dirname, '../fixtures/fleet-registry.example.json'), 'utf8')) as Record<string, unknown>;
+    await writeFile(registryPath, JSON.stringify(example).replaceAll('example-owner', 'juan294').replaceAll('private-one', 'app'));
+    const out: string[] = [];
+    expect(await createTelemetryCommandService().run(
+      { command: 'telemetry', action: 'report', storePath, since: '2026-09-13', format: 'json', registryPath }, { stdout: (text) => { out.push(text); }, stderr: () => undefined },
+    )).toBe(0);
+    const report = JSON.parse(out.join('')) as { enrollments: Array<{ id: string; before: { jobs: number } }> };
+    expect(report.enrollments.map(({ id, before }) => [id, before.jobs])).toEqual([['P1', 0], ['P2', 0]]);
+
+    await writeFile(registryPath, JSON.stringify(example));
+    await expect(createTelemetryCommandService().run(
+      { command: 'telemetry', action: 'report', storePath, since: '2026-09-13', format: 'markdown', registryPath }, io,
+    )).rejects.toThrow(/registry owner example-owner does not match telemetry owner juan294/u);
   });
 
   it('accepts a run conclusion that differs from an individual job conclusion', async () => {

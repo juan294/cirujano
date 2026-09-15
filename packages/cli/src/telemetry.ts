@@ -3,6 +3,8 @@ import { join } from 'node:path';
 
 import { billableMinutesForJob } from '@cirujano/core';
 
+import type { EnrollmentStatus, FleetEnrollment, FleetRegistry } from './fleet-registry.js';
+
 export type HostedSku = 'actions_linux' | 'actions_linux_arm' | 'actions_windows' | 'actions_macos';
 
 export const TELEMETRY_RATES = {
@@ -116,6 +118,37 @@ export interface TelemetryRepositoryReport {
   unpricedJobs: number;
 }
 
+export interface EnrollmentWindowReport {
+  jobs: number;
+  hostedJobs: number;
+  hostedMinutes: number;
+  hostedListCostUsd: number;
+}
+
+export interface EnrollmentAfterReport extends EnrollmentWindowReport {
+  cirujanoJobs: number;
+  cirujanoMinutes: number;
+  grossHostedCostAvoidedUsd: number;
+  queueLatencySamples: number;
+  queueLatencyP50Ms: number | null;
+  queueLatencyP95Ms: number | null;
+}
+
+export interface TelemetryEnrollmentReport {
+  id: string;
+  repository: string;
+  workflowName: string;
+  jobNames: string[];
+  status: EnrollmentStatus;
+  cutoverAt: string | null;
+  before: EnrollmentWindowReport;
+  after: EnrollmentAfterReport;
+  nebiusComputeUsd: number | null;
+  nebiusDiskUsd: number | null;
+  nebiusTotalUsd: number | null;
+  netSavingsUsd: number | null;
+}
+
 export interface TelemetryReport {
   schemaVersion: 1;
   since: string;
@@ -137,6 +170,7 @@ export interface TelemetryReport {
   otherSelfHostedJobs: number;
   unpricedJobs: number;
   byRepository: TelemetryRepositoryReport[];
+  enrollments?: TelemetryEnrollmentReport[];
 }
 
 export async function collectTelemetry(input: {
@@ -263,7 +297,7 @@ export async function writeTelemetrySnapshot(directory: string, snapshot: Teleme
   return path;
 }
 
-export function aggregateTelemetry(snapshots: readonly TelemetrySnapshot[], sinceMs: number): TelemetryReport {
+export function aggregateTelemetry(snapshots: readonly TelemetrySnapshot[], sinceMs: number, registry?: FleetRegistry): TelemetryReport {
   if (!Number.isFinite(sinceMs) || sinceMs < 0) throw new Error('since must be a non-negative timestamp');
   const byKey = new Map<string, TelemetryJob>();
   let latestSnapshot: TelemetrySnapshot | undefined;
@@ -324,7 +358,60 @@ export function aggregateTelemetry(snapshots: readonly TelemetrySnapshot[], sinc
     notRunJobs: jobs.filter(({ measurementStatus }) => measurementStatus === 'not-run').length,
     incompleteJobs: jobs.filter(({ measurementStatus }) => measurementStatus === 'incomplete').length,
     byRepository,
+    ...(registry === undefined ? {} : { enrollments: registry.enrollments.map((enrollment) => enrollmentReport(enrollment, jobs)) }),
   };
+}
+
+function enrollmentReport(enrollment: FleetEnrollment, jobs: readonly TelemetryJob[]): TelemetryEnrollmentReport {
+  const cutoverAt = enrollment.after?.recordedAt ?? null;
+  const cutoverMs = cutoverAt === null ? Number.POSITIVE_INFINITY : Date.parse(cutoverAt);
+  const enrolled = jobs.filter((job) => job.repository === enrollment.repository
+    && job.workflowName === enrollment.workflowName && enrollment.jobNames.includes(job.jobName));
+  const before = enrolled.filter((job) => Date.parse(job.createdAt) < cutoverMs);
+  const after = enrolled.filter((job) => Date.parse(job.createdAt) >= cutoverMs);
+  const cirujano = after.filter(({ runnerKind }) => runnerKind === 'cirujano');
+  const latencies = cirujano
+    .filter((job) => job.startedAt !== null)
+    .map((job) => Math.max(0, Date.parse(job.startedAt!) - Date.parse(job.createdAt)))
+    .sort((left, right) => left - right);
+  return {
+    id: enrollment.id,
+    repository: enrollment.repository,
+    workflowName: enrollment.workflowName,
+    jobNames: [...enrollment.jobNames],
+    status: enrollment.status,
+    cutoverAt,
+    before: windowReport(before),
+    after: {
+      ...windowReport(after),
+      cirujanoJobs: cirujano.length,
+      cirujanoMinutes: sumKnown(cirujano, 'billableMinutes'),
+      grossHostedCostAvoidedUsd: money(sumKnown(cirujano, 'counterfactualHostedCostUsd')),
+      queueLatencySamples: latencies.length,
+      queueLatencyP50Ms: percentile(latencies, 0.5),
+      queueLatencyP95Ms: percentile(latencies, 0.95),
+    },
+    nebiusComputeUsd: null,
+    nebiusDiskUsd: null,
+    nebiusTotalUsd: null,
+    netSavingsUsd: null,
+  };
+}
+
+function windowReport(jobs: readonly TelemetryJob[]): EnrollmentWindowReport {
+  const hosted = jobs.filter(({ runnerKind }) => runnerKind === 'github-hosted');
+  return {
+    jobs: jobs.length,
+    hostedJobs: hosted.length,
+    hostedMinutes: sumKnown(hosted, 'billableMinutes'),
+    hostedListCostUsd: money(sumKnown(hosted, 'actualGithubListCostUsd')),
+  };
+}
+
+/** Nearest-rank percentile over ascending samples; null without samples. */
+function percentile(sorted: readonly number[], fraction: number): number | null {
+  if (sorted.length === 0) return null;
+  return sorted[Math.min(sorted.length, Math.max(1, Math.ceil(fraction * sorted.length))) - 1]!;
 }
 
 export function renderTelemetryMarkdown(report: TelemetryReport): string {
@@ -360,9 +447,37 @@ export function renderTelemetryMarkdown(report: TelemetryReport): string {
     ...report.byRepository.map((repository) =>
       `| \`${repository.repository}\` | ${repository.jobs} | ${repository.githubHostedMinutes} | $${repository.githubHostedListCostUsd.toFixed(2)} | ${repository.cirujanoJobs} | ${repository.cirujanoMinutes} | $${repository.grossHostedCostAvoidedUsd.toFixed(2)} | ${repository.unpricedJobs} |`),
     '',
+    ...(report.enrollments === undefined ? [] : renderEnrollmentsMarkdown(report.enrollments)),
     'Gross avoided cost excludes Nebius cost. Net savings require provider accounting.',
     '',
   ].join('\n');
+}
+
+function renderEnrollmentsMarkdown(enrollments: readonly TelemetryEnrollmentReport[]): string[] {
+  return [
+    '## Enrollments',
+    '',
+    '| Enrollment | Repository | Workflow / job | Status | Before jobs | Before hosted min | Before hosted cost | After jobs | After hosted jobs | After Cirujano jobs | After Cirujano min | Gross avoided | Queue p50 | Queue p95 | Nebius cost | Net savings |',
+    '| --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |',
+    ...enrollments.map((row) => [
+      row.id, `\`${row.repository}\``, `${row.workflowName} / ${row.jobNames.join(', ')}`, row.status,
+      row.before.jobs, row.before.hostedMinutes, usd(row.before.hostedListCostUsd),
+      row.after.jobs, row.after.hostedJobs, row.after.cirujanoJobs, row.after.cirujanoMinutes, usd(row.after.grossHostedCostAvoidedUsd),
+      minutes(row.after.queueLatencyP50Ms), minutes(row.after.queueLatencyP95Ms),
+      row.nebiusTotalUsd === null ? 'n/a' : usd(row.nebiusTotalUsd), row.netSavingsUsd === null ? 'n/a' : usd(row.netSavingsUsd),
+    ].map(String).join(' | ')).map((cells) => `| ${cells} |`),
+    '',
+    'Queue latency is job start minus run creation for Cirujano jobs after the cutover; it includes controller poll, VM start and boot time.',
+    '',
+  ];
+}
+
+function usd(value: number): string {
+  return `$${value.toFixed(3)}`;
+}
+
+function minutes(valueMs: number | null): string {
+  return valueMs === null ? 'n/a' : `${(valueMs / 60_000).toFixed(1)} min`;
 }
 
 export function normalizeTelemetryJob(repository: TelemetryRepository, run: TelemetryRun, job: TelemetryJobInput): TelemetryJob {
@@ -419,6 +534,11 @@ function classifyRunner(job: TelemetryJobInput): RunnerKind {
   if (!job.labels.includes('self-hosted')) return 'github-hosted';
   if (job.runnerName.startsWith('cirujano-')) return 'cirujano';
   return 'self-hosted';
+}
+
+/** The hosted SKU GitHub bills for a hosted runner selection, or null when the labels are unpriced. */
+export function hostedSkuForLabels(labels: readonly string[]): HostedSku | null {
+  return hostedSku(labels, 'github-hosted');
 }
 
 function hostedSku(labels: readonly string[], runnerKind: RunnerKind): HostedSku | null {
