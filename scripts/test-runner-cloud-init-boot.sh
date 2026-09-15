@@ -3,8 +3,8 @@ set -euo pipefail
 
 readonly image_url=https://cloud-images.ubuntu.com/noble/20260911/noble-server-cloudimg-amd64.img
 readonly image_sha256=612b2c0cc1bc413a6cb8c38fd611794caf0f2b436c50013d8b3794db12ad7354
-readonly runner_version=2.328.0
-readonly runner_sha256=01066fad3a2893e63e6ca880ae3a1fad5bf9329d60e77ee15f2b97c148c3cd4e
+readonly runner_version=2.337.0
+readonly runner_sha256=70920811a4f8ad4328818682bca5c6469c1c942fab52448868071d0063816613
 readonly overlay_size=16G
 readonly qemu_cpu_model=qemu64
 readonly qemu_cpus=${CIRUJANO_QEMU_CPUS:-8}

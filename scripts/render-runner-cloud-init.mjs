@@ -38,7 +38,7 @@ try {
     readFileSync(join(guestDirectory, name), 'utf8'),
   ]));
   const rendered = renderCloudInit({
-    runnerVersion: process.env.CIRUJANO_ACTIONS_RUNNER_VERSION ?? '2.328.0',
+    runnerVersion: process.env.CIRUJANO_ACTIONS_RUNNER_VERSION ?? '2.337.0',
     runnerSha256: process.env.CIRUJANO_ACTIONS_RUNNER_SHA256 ?? 'a'.repeat(64),
     sshHostPrivateKey: readFileSync(hostPrivateKeyPath, 'utf8'),
     sshHostPublicKey: readFileSync(hostPublicKeyPath, 'utf8').trim(),
