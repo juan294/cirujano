@@ -22,7 +22,7 @@ describe('production runner command composition (R11/R12)', () => {
     const nowMs = 10_000;
     const observation = {
       nowMs,
-      lifecycle: { state: 'draining', startCount: 2, cumulativeRuntimeMs: 500, cumulativeCostUsd: 0.01, outstandingIntent: null, idleObservations: [] },
+      lifecycle: { state: 'draining', startCount: 2, cumulativeRuntimeMs: 500, cumulativeCostUsd: 0.01, outstandingIntent: null, idleObservations: [], grantDeadlineMs: null },
       providerPresent: true,
       queueComplete: true,
       ownedBusy: false,
@@ -304,6 +304,63 @@ describe('production runner command composition (R11/R12)', () => {
     }));
     const report = await executeFile(process.execPath, [executable, 'runner', 'report', '--state', reportPath, '--format', 'json'], { env: fixture.env });
     expect(JSON.parse(report.stdout)).toMatchObject({ complete: true, assignments: assignmentState.assignments, cleanup: { vmState: 'absent' }, finalProviderState: 'absent' });
+  }, 60_000);
+
+  it('replaces a generation that powered itself off at its immutable deadline and keeps accounting monotonic', async () => {
+    const fixture = await createLifecycleFixture();
+    await builtTick(fixture); // idle
+    await updateScenario(fixture, (state) => { state.jobs[0]!.status = 'queued'; });
+    await builtTick(fixture); // create
+    await builtTick(fixture); // reconcile create
+    await builtTick(fixture); // start
+    await builtTick(fixture); // reconcile start and arm grant
+    await builtTick(fixture); // register
+    await builtTick(fixture); // reconcile registration
+    expect(await builtTick(fixture)).toContain('"state":"busy"');
+    const statePath = join(fixture.directory, 'controller-state.json');
+    const armed = JSON.parse(await readFile(statePath, 'utf8')) as { lifecycle: { grantDeadlineMs: number | null; cumulativeCostUsd: number; cumulativeRuntimeMs: number } };
+    expect(armed.lifecycle.grantDeadlineMs).toBeGreaterThan(Date.now());
+    // The guest watchdog powers the VM off at the deadline while the job is mid-flight; the
+    // journal keeps the deadline, and the elapsed lifetime is simulated by moving it into the past.
+    await updateScenario(fixture, (state) => {
+      state.provider = 'STOPPED'; state.guest = 'booting'; state.runnerBusy = false;
+      state.jobs[0]!.status = 'completed'; state.jobs[0]!.conclusion = 'failure';
+    });
+    await writeFile(statePath, JSON.stringify({ ...armed, lifecycle: { ...armed.lifecycle, grantDeadlineMs: Date.now() - 1 } }));
+    const deleting = await builtTick(fixture);
+    expect(deleting).toContain('"type":"delete-vm"');
+    expect(await builtTick(fixture)).toContain('"status":"reconciled"');
+    const afterDelete = JSON.parse(await readFile(statePath, 'utf8')) as { lifecycle: { state: string; startCount: number; cumulativeCostUsd: number; cumulativeRuntimeMs: number }; pendingEffect: unknown };
+    expect(afterDelete).toMatchObject({ lifecycle: { state: 'absent', startCount: 1 }, pendingEffect: null });
+    expect(afterDelete.lifecycle.cumulativeCostUsd).toBeGreaterThanOrEqual(armed.lifecycle.cumulativeCostUsd);
+    expect(afterDelete.lifecycle.cumulativeRuntimeMs).toBeGreaterThanOrEqual(armed.lifecycle.cumulativeRuntimeMs);
+    await updateScenario(fixture, (state) => { state.jobs[1]!.status = 'queued'; });
+    expect(await builtTick(fixture)).toContain('"type":"create-vm","generation":2');
+    await builtTick(fixture); // reconcile create
+    expect(await builtTick(fixture)).toContain('"type":"start-vm","generation":2');
+    const restarted = JSON.parse(await readFile(statePath, 'utf8')) as { lifecycle: { startCount: number; cumulativeCostUsd: number } };
+    expect(restarted.lifecycle.startCount).toBe(2);
+    expect(restarted.lifecycle.cumulativeCostUsd).toBeGreaterThanOrEqual(afterDelete.lifecycle.cumulativeCostUsd);
+    const log = await readFile(fixture.logPath, 'utf8');
+    const deleteIndex = log.indexOf('instance delete');
+    expect(deleteIndex).toBeGreaterThan(log.indexOf('instance start'));
+    expect(log.lastIndexOf('instance create')).toBeGreaterThan(deleteIndex);
+    // The offline runner registration of the spent generation was removed before the VM.
+    expect(log.slice(0, deleteIndex)).toMatch(/--method DELETE [^\n]*\/actions\/runners\//u);
+  }, 60_000);
+
+  it('still blocks a stopped guest before its journaled deadline instead of deleting it', async () => {
+    const fixture = await createLifecycleFixture();
+    await builtTick(fixture);
+    await updateScenario(fixture, (state) => { state.jobs[0]!.status = 'queued'; });
+    for (let tick = 0; tick < 6; tick += 1) await builtTick(fixture);
+    expect(await builtTick(fixture)).toContain('"state":"busy"');
+    await updateScenario(fixture, (state) => {
+      state.provider = 'STOPPED'; state.guest = 'booting'; state.runnerBusy = false;
+      state.jobs[0]!.status = 'completed'; state.jobs[0]!.conclusion = 'failure';
+    });
+    await expect(builtTick(fixture)).rejects.toThrow(/stopped outside the controller/u);
+    expect(await readFile(fixture.logPath, 'utf8')).not.toContain('instance delete');
   }, 60_000);
 
   it.each([

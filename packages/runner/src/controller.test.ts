@@ -392,7 +392,7 @@ function startInput(): LifecycleInput {
     provider: { complete: true, vmStatus: 'stopped', ownership: 'owned', ownedMatches: 1, outstandingOperation: null },
     queue: { complete: true, eligibleQueuedJobs: 1, ownedBusy: false, observedAtMs: NOW },
     guest: { complete: true, status: 'offline', admissionEnabled: false, runnerActive: false, workerActive: false, grant: null },
-    journal: { state: 'stopped', startCount: 0, cumulativeRuntimeMs: 0, cumulativeCostUsd: 0, outstandingIntent: null, idleObservations: [] },
+    journal: { state: 'stopped', startCount: 0, cumulativeRuntimeMs: 0, cumulativeCostUsd: 0, outstandingIntent: null, idleObservations: [], grantDeadlineMs: null },
     projectedStartCostUsd: 1,
   };
 }

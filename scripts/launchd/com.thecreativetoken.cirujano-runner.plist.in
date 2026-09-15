@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.thecreativetoken.cirujano-runner-__ENROLLMENT_ID__</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__WRAPPER_PATH__</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>CIRUJANO_CLI_PATH</key>
+    <string>__CLI_PATH__</string>
+    <key>CIRUJANO_RUNNER_STATE_DIR</key>
+    <string>__STATE_DIR__</string>
+    <key>CIRUJANO_GUEST_DIR</key>
+    <string>__GUEST_DIR__</string>
+    <key>CIRUJANO_CONTROLLER_KEY_PATH</key>
+    <string>__CONTROLLER_KEY_PATH__</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
+  <key>Umask</key>
+  <integer>63</integer>
+  <key>StandardOutPath</key>
+  <string>__LOG_DIR__/runner-__ENROLLMENT_ID__.log</string>
+  <key>StandardErrorPath</key>
+  <string>__LOG_DIR__/runner-__ENROLLMENT_ID__-error.log</string>
+  <key>ProcessType</key>
+  <string>Background</string>
+</dict>
+</plist>

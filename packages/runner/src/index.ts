@@ -6,6 +6,7 @@ export * from './controller.js';
 export * from './journal.js';
 export * from './report.js';
 export * from './pilot.js';
+export * from './operating.js';
 export * from './adapters/cloud-init.js';
 export * from './adapters/github.js';
 export * from './adapters/nebius.js';

@@ -148,6 +148,8 @@ export interface LifecycleJournal {
   cumulativeCostUsd: number;
   outstandingIntent: MutationIntent | null;
   idleObservations: readonly IdleObservation[];
+  /** Immutable deadline of the current generation's start grant, persisted when the start reconciles. */
+  grantDeadlineMs: number | null;
 }
 
 export interface LifecycleInput {
@@ -170,7 +172,8 @@ export type LifecycleEffect =
   | { type: 'register-runner'; assignmentCutoffMs: number }
   | { type: 'begin-drain'; fallbackDeadlineMs: number }
   | { type: 'resume-admission' }
-  | { type: 'stop-vm'; emergency: boolean };
+  | { type: 'stop-vm'; emergency: boolean }
+  | { type: 'delete-vm'; generation: number };
 
 export interface LifecycleDecision {
   state: LifecycleState;

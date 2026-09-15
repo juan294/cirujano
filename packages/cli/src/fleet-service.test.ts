@@ -1,8 +1,11 @@
+import { createHash } from 'node:crypto';
 import { mkdtemp, readFile, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { describe, expect, it, vi } from 'vitest';
+
+import { parseRunnerConfig, parsePermit, verifySshPublicKeyFingerprint } from '@cirujano/runner';
 
 import { runCli } from './cli.js';
 import { parseFleetRegistry, type FleetRegistry } from './fleet-registry.js';
@@ -258,6 +261,115 @@ describe('fleet command service (phase 1 U2)', () => {
     const fake = fakeGitHub();
     await expect(createFleetCommandService({}, pageRunnerFor(fake)).run(enrollArguments(registryPath), silent())).rejects.toThrow(/locked exclusion/u);
     expect(fake.requests).toEqual([]);
+  });
+});
+
+describe('fleet controller-config and permit-proposal (phase 2 U1)', () => {
+  const template = {
+    schemaVersion: 1,
+    repository: { id: 1, nameWithOwner: 'template/pilot', visibility: 'private' },
+    workflowIds: [1], allowedBranch: 'develop', eligibleJobNames: ['workload'], runnerLabel: 'cirujano-pilot-fixture', slots: 1,
+    nebius: { profile: 'TCT', projectId: 'project-1', subnetId: 'subnet-1', imageId: 'image-1', platform: 'cpu-d3', preset: '4vcpu-16gb', diskType: 'network-ssd', diskSizeGiB: 80 },
+    ssh: { publicKey: 'ssh-ed25519 AAAA template', fingerprint: 'SHA256:template' },
+    ownership: { controllerId: 'template', resourcePrefix: 'template' },
+    timing: { pollIntervalMs: 30_000, idleGraceMs: 300_000, bootTimeoutMs: 600_000, maxJobMs: 3_600_000, lifetimeMs: 5_400_000, shutdownMarginMs: 300_000 },
+    rates: { currency: 'USD', quotedAt: '2026-09-15', source: 'https://docs.nebius.com/compute/resources/pricing', computeUsdPerHour: 0.0992, diskUsdPerGibMonth: 0.071, networkEgressUsdPerGib: 0, hostedUsdPerMinute: 0.006 },
+  };
+
+  async function enrolledFixture() {
+    const registryPath = await freshRegistry();
+    const directory = join(registryPath, '..');
+    const fake = fakeGitHub();
+    const service = createFleetCommandService({}, pageRunnerFor(fake));
+    expect(await service.run(enrollArguments(registryPath), silent())).toBe(0);
+    const templatePath = join(directory, 'template-config.json');
+    await writeFile(templatePath, JSON.stringify(template));
+    return { registryPath, directory, service, templatePath, stateRoot: join(directory, 'runner') };
+  }
+
+  it('writes a D5/D6 controller config and host key for an enrollment and records the controller in the registry', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-09-16T08:00:00Z'));
+    try {
+      const { registryPath, service, templatePath, stateRoot } = await enrolledFixture();
+      const { io, out } = capture();
+      expect(await service.run({ command: 'fleet', action: 'controller-config', registryPath, id: 'P1', stateRoot, templatePath }, io)).toBe(0);
+      const stateDirectory = join(stateRoot, 'P1');
+      expect((await stat(stateDirectory)).mode & 0o777).toBe(0o700);
+      const rawConfig = await readFile(join(stateDirectory, 'config.json'), 'utf8');
+      expect((await stat(join(stateDirectory, 'config.json'))).mode & 0o777).toBe(0o600);
+      expect((await stat(join(stateDirectory, 'ssh_host_ed25519_key'))).mode & 0o777).toBe(0o600);
+      const config = parseRunnerConfig(JSON.parse(rawConfig));
+      expect(config).toMatchObject({
+        repository: { id: 777, nameWithOwner: 'juan294/app', visibility: 'private' },
+        workflowIds: [41], allowedBranch: 'main', eligibleJobNames: ['Check'], runnerLabel: LABEL, slots: 1,
+        nebius: template.nebius,
+        ownership: { controllerId: 'cirujano-p1-20260916', resourcePrefix: 'cirujano-p1' },
+        timing: { pollIntervalMs: 30_000, idleGraceMs: 300_000, bootTimeoutMs: 600_000, maxJobMs: 3_600_000, lifetimeMs: 14_400_000, shutdownMarginMs: 300_000 },
+        rates: { ...template.rates, hostedUsdPerMinute: 0.006 },
+      });
+      expect(config.ssh.publicKey).toMatch(/^ssh-ed25519 /u);
+      expect(config.ssh.fingerprint).toBe(verifySshPublicKeyFingerprint(config.ssh.publicKey));
+      expect((await readFile(join(stateDirectory, 'ssh_host_ed25519_key.pub'), 'utf8')).trim()).toBe(config.ssh.publicKey);
+      const printed = JSON.parse(out.join('')) as { identity: Record<string, unknown>; configPath: string };
+      expect(printed.identity).toEqual({
+        configHash: createHash('sha256').update(JSON.stringify(config)).digest('hex'),
+        repositoryId: 777, projectId: 'project-1', controllerId: 'cirujano-p1-20260916', resourcePrefix: 'cirujano-p1',
+      });
+      expect((await readRegistry(registryPath)).enrollments[0]!.controller).toEqual({
+        stateDirectory, controllerId: 'cirujano-p1-20260916', resourcePrefix: 'cirujano-p1', permitId: null,
+      });
+      // Re-running keeps the host key and identity stable.
+      const again = capture();
+      expect(await service.run({ command: 'fleet', action: 'controller-config', registryPath, id: 'P1', stateRoot, templatePath, allowedBranch: 'main' }, again.io)).toBe(0);
+      expect((JSON.parse(again.out.join('')) as { identity: unknown }).identity).toEqual(printed.identity);
+      expect(rawConfig).not.toContain('PRIVATE KEY');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('refuses a controller config for an unknown, reverted or public-template enrollment', async () => {
+    const { registryPath, service, templatePath, stateRoot, directory } = await enrolledFixture();
+    await expect(service.run({ command: 'fleet', action: 'controller-config', registryPath, id: 'P7', stateRoot, templatePath }, silent())).rejects.toThrow(/P7 does not exist/u);
+    const badTemplate = join(directory, 'bad-template.json');
+    await writeFile(badTemplate, JSON.stringify({ ...template, nebius: { ...template.nebius, preset: '8vcpu-32gb' } }));
+    await expect(service.run({ command: 'fleet', action: 'controller-config', registryPath, id: 'P1', stateRoot, templatePath: badTemplate }, silent())).rejects.toThrow(/preset must be 4vcpu-16gb/u);
+  });
+
+  it('writes an operating permit proposal bound to the controller identity and refuses one without a controller', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-09-16T08:00:00Z'));
+    try {
+      const { registryPath, service, templatePath, stateRoot, directory } = await enrolledFixture();
+      const quotePath = join(directory, 'quote.json');
+      await writeFile(quotePath, JSON.stringify({
+        complete: true, currency: 'USD', quotedAt: '2026-09-15', source: 'https://docs.nebius.com/compute/resources/pricing',
+        computeUsdPerHour: 0.0992, diskUsdPerGibMonth: 0.071, publicIpUsdPerHour: 0, networkUsdPerGib: 0,
+        maxRetainedDiskHours: 1100, maxPublicIpHours: 1100, maxNetworkEgressGiB: 10, includesRetainedDiskAndIp: true,
+      }));
+      const proposalArguments = { command: 'fleet' as const, action: 'permit-proposal' as const, registryPath, id: 'P1', candidateDigest: 'c'.repeat(64), quotePath };
+      await expect(service.run(proposalArguments, silent())).rejects.toThrow(/has no controller; run fleet controller-config first/u);
+      expect(await service.run({ command: 'fleet', action: 'controller-config', registryPath, id: 'P1', stateRoot, templatePath }, silent())).toBe(0);
+      const { io, out } = capture();
+      expect(await service.run(proposalArguments, io)).toBe(0);
+      const proposalPath = join(stateRoot, 'P1', 'permit-proposal.json');
+      const proposal = JSON.parse(await readFile(proposalPath, 'utf8')) as Record<string, unknown>;
+      const config = parseRunnerConfig(JSON.parse(await readFile(join(stateRoot, 'P1', 'config.json'), 'utf8')));
+      expect(proposal).toMatchObject({
+        kind: 'operating', enrollmentId: 'P1', approved: false, candidateDigest: 'c'.repeat(64),
+        configHash: createHash('sha256').update(JSON.stringify(config)).digest('hex'),
+        repositoryId: 777, projectId: 'project-1', controllerId: 'cirujano-p1-20260916', resourcePrefix: 'cirujano-p1',
+        issuedAtMs: Date.parse('2026-09-16T08:00:00Z'), expiresAtMs: Date.parse('2026-10-28T23:59:59Z'),
+        maxStarts: 600, maxRuntimeMs: 540_000_000, maxTotalCostUsd: 40, fleetCommittedUsd: 40,
+      });
+      expect(JSON.parse(out.join(''))).toMatchObject({ status: 'proposed', proposalPath, estimatedMaximumUsd: expect.any(Number) });
+      // The proposal renders a permit that parses; the owner writes it as permit.json after confirming.
+      const permit = JSON.parse(await readFile(join(stateRoot, 'P1', 'permit.draft.json'), 'utf8')) as Record<string, unknown>;
+      expect(parsePermit(permit)).toMatchObject({ permitId: 'P1-operating-20260916', maxTotalCostUsd: 40 });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

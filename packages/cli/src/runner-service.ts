@@ -458,7 +458,7 @@ async function observe(context: RuntimeContext): Promise<LifecycleInput> {
   });
   let journal = state?.lifecycle ?? {
     state: provider.vmStatus === 'absent' ? 'absent' as const : provider.vmStatus === 'stopped' ? 'stopped' as const : 'blocked' as const,
-    startCount: 0, cumulativeRuntimeMs: 0, cumulativeCostUsd: 0, outstandingIntent: null, idleObservations: [],
+    startCount: 0, cumulativeRuntimeMs: 0, cumulativeCostUsd: 0, outstandingIntent: null, idleObservations: [], grantDeadlineMs: null,
   };
   const guest = await observeGuest(context, provider);
   const preservedBusy = await readActiveJobMarker(context) || assignments.some((entry) => entry.conclusion === null);
@@ -566,6 +566,19 @@ async function executeEffect(context: RuntimeContext, effect: Exclude<LifecycleE
   if (effect.type === 'stop-vm') return operation(await context.nebius.stop(instance.id), 'Nebius stop');
   const state = await priorState(context);
   const generation = Math.max(1, state?.lifecycle.startCount ?? 1);
+  if (effect.type === 'delete-vm') {
+    // Expired-generation recovery: the guest already powered itself off, so only its offline
+    // runner registration and the spent VM remain. Never delete a VM that is not stopped.
+    requirePermit(context, 'delete');
+    if (instance.state !== 'stopped') throw new Error(`delete-vm requires a stopped VM, found ${instance.state}`);
+    const runners = await context.github.listRunners(context.owner, context.repository);
+    if (!runners.complete) throw new Error(runners.reason ?? 'GitHub runner observation is incomplete before delete');
+    const ownership = classifyOwnedRunners(runners.items, { expectedName: expectedRunnerName(context, state), ownershipLabel: context.config.runnerLabel });
+    if (ownership.runner?.busy === true) throw new Error('owned runner reports busy; refusing to delete its VM');
+    if (ownership.ownership === 'owned') await context.github.removeOwnedRunner(context.owner, context.repository, ownership);
+    else if (ownership.ownership !== 'absent') throw new Error(`runner ownership is ${ownership.ownership} before delete`);
+    return operation(await context.nebius.delete(instance.id), 'Nebius delete');
+  }
   if (effect.type === 'register-runner') {
     requirePermit(context, 'register');
     const token = await context.github.createRegistrationToken(context.owner, context.repository);
@@ -635,7 +648,8 @@ async function reconcileEffect(context: RuntimeContext, pending: PendingEffect):
   const resolved = pending.effect.type === 'start-vm' ? false
     : pending.effect.type === 'stop-vm' ? provider.vmStatus === 'stopped'
       : pending.effect.type === 'create-vm' ? provider.ownership === 'owned'
-        : true;
+        : pending.effect.type === 'delete-vm' ? provider.complete && provider.vmStatus === 'absent' && provider.ownership === 'absent'
+          : true;
   return { resolved, readback: provider };
 }
 

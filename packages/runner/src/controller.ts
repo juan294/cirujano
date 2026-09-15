@@ -100,9 +100,14 @@ export async function tickController(options: TickOptions): Promise<TickResult> 
     }
     // A reconciled create proves the VM exists in the requested stopped state; only a start moves it on.
     const reconciledState = prior.pendingEffect.effect.type === 'create-vm' ? 'stopped' : prior.lifecycle.state;
+    const reconciledEffect = prior.pendingEffect.effect;
+    // A reconciled start or adoption has armed the guest grant; its deadline outlives the guest
+    // status probe so expired-generation recovery can recognise a self-stop after the fact.
+    const grantDeadlineMs = reconciledEffect.type === 'start-vm' || reconciledEffect.type === 'adopt-vm'
+      ? reconciledEffect.deadlineMs : prior.lifecycle.grantDeadlineMs;
     const reconciled: ControllerState = {
       ...prior,
-      lifecycle: { ...prior.lifecycle, state: reconciledState, outstandingIntent: null },
+      lifecycle: { ...prior.lifecycle, state: reconciledState, outstandingIntent: null, grantDeadlineMs },
       pendingEffect: null,
       readbacks: [...prior.readbacks, reconciliation.readback].slice(-100),
     };
@@ -218,7 +223,8 @@ function parseIdentity(input: unknown): PermitIdentity {
 }
 
 function parseLifecycleJournal(input: unknown): LifecycleJournal {
-  const root = strictObject(input, ['state', 'startCount', 'cumulativeRuntimeMs', 'cumulativeCostUsd', 'outstandingIntent', 'idleObservations'], 'controller state lifecycle');
+  // grantDeadlineMs is optional on read so journals written before it existed still parse.
+  const root = strictObject(input, ['state', 'startCount', 'cumulativeRuntimeMs', 'cumulativeCostUsd', 'outstandingIntent', 'idleObservations'], 'controller state lifecycle', ['grantDeadlineMs']);
   const states: readonly LifecycleState[] = ['absent', 'stopped', 'starting', 'ready', 'busy', 'draining', 'stopping', 'blocked'];
   if (typeof root['state'] !== 'string' || !states.includes(root['state'] as LifecycleState)) throw new Error('controller state lifecycle state is invalid');
   if (!Number.isInteger(root['startCount']) || (root['startCount'] as number) < 0) throw new Error('controller state startCount is invalid');
@@ -226,6 +232,8 @@ function parseLifecycleJournal(input: unknown): LifecycleJournal {
     if (typeof root[key] !== 'number' || !Number.isFinite(root[key]) || root[key] < 0) throw new Error(`controller state ${key} is invalid`);
   }
   if (!Array.isArray(root['idleObservations'])) throw new Error('controller state idleObservations must be an array');
+  const grantDeadlineMs = root['grantDeadlineMs'] ?? null;
+  if (grantDeadlineMs !== null && (typeof grantDeadlineMs !== 'number' || !Number.isFinite(grantDeadlineMs))) throw new Error('controller state grantDeadlineMs is invalid');
   const idleObservations = root['idleObservations'].map((entry) => {
     const observation = strictObject(entry, ['observedAtMs', 'complete', 'generation'], 'idle observation');
     if (typeof observation['observedAtMs'] !== 'number' || !Number.isFinite(observation['observedAtMs'])) throw new Error('idle observation time is invalid');
@@ -245,6 +253,7 @@ function parseLifecycleJournal(input: unknown): LifecycleJournal {
     cumulativeCostUsd: root['cumulativeCostUsd'] as number,
     outstandingIntent,
     idleObservations: idleObservations.slice(-100),
+    grantDeadlineMs: grantDeadlineMs as number | null,
   };
 }
 
@@ -313,6 +322,10 @@ function parseEffect(input: unknown): Exclude<LifecycleEffect, { type: 'none' }>
     case 'stop-vm':
       root = strictObject(input, ['type', 'emergency'], 'stop effect');
       if (typeof root['emergency'] !== 'boolean') throw new Error('stop effect emergency is invalid');
+      return root as unknown as Exclude<LifecycleEffect, { type: 'none' }>;
+    case 'delete-vm':
+      root = strictObject(input, ['type', 'generation'], 'delete effect');
+      positiveInteger(root['generation'], 'delete generation');
       return root as unknown as Exclude<LifecycleEffect, { type: 'none' }>;
     default:
       throw new Error('pending effect type is invalid');
@@ -465,6 +478,8 @@ export function requiredPermitOperation(effect: Exclude<LifecycleEffect, { type:
       return 'register';
     case 'stop-vm':
       return 'stop';
+    case 'delete-vm':
+      return 'delete';
   }
 }
 

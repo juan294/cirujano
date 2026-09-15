@@ -42,7 +42,7 @@ function input(overrides: Partial<LifecycleInput> = {}): LifecycleInput {
       complete: true, status: 'offline', admissionEnabled: false,
       runnerActive: false, workerActive: false, grant: null,
     },
-    journal: { state: 'stopped', startCount: 0, cumulativeRuntimeMs: 0, cumulativeCostUsd: 0, outstandingIntent: null, idleObservations: [] },
+    journal: { state: 'stopped', startCount: 0, cumulativeRuntimeMs: 0, cumulativeCostUsd: 0, outstandingIntent: null, idleObservations: [], grantDeadlineMs: null },
     projectedStartCostUsd: 1,
     ...overrides,
   };
@@ -119,6 +119,43 @@ describe('replay-safe transitions (R02)', () => {
     expect(result.effect).toEqual({ type: 'none' });
     expect(result.state).toBe('blocked');
     expect(result.reason).toMatch(/stopped outside the controller/u);
+  });
+
+  it.each(GUEST_UP_STATES)('deletes a spent generation that stopped itself while %s once its journaled grant deadline has passed', (state) => {
+    // The guest powers itself off at the immutable deadline; the disk cannot boot again, so the
+    // operating controller replaces the generation instead of blocking forever (plan D6).
+    const result = decideLifecycle(input({
+      permit: { ...permit, maxStarts: 2 },
+      journal: { ...input().journal, state, startCount: 1, grantDeadlineMs: NOW - 1 },
+    }));
+    expect(result).toMatchObject({ state: 'absent', effect: { type: 'delete-vm', generation: 1 } });
+    expect(result.reason).toMatch(/immutable lifetime expired/u);
+  });
+
+  it('still blocks a guest that stopped itself before its journaled deadline', () => {
+    const result = decideLifecycle(input({
+      permit: { ...permit, maxStarts: 2 },
+      journal: { ...input().journal, state: 'busy', startCount: 1, grantDeadlineMs: NOW + 1 },
+    }));
+    expect(result.effect).toEqual({ type: 'none' });
+    expect(result.reason).toMatch(/stopped outside the controller/u);
+  });
+
+  it('requires delete authority and a valid permit for expired-generation recovery', () => {
+    const journal = { ...input().journal, state: 'busy' as const, startCount: 1, grantDeadlineMs: NOW - 1 };
+    expect(decideLifecycle(input({ permit: { ...permit, maxStarts: 2, operations: ['create', 'start', 'register', 'stop'] }, journal })))
+      .toMatchObject({ state: 'blocked', effect: { type: 'none' }, reason: 'permit does not authorize delete' });
+    expect(decideLifecycle(input({ permit: { ...permit, maxStarts: 2, expiresAtMs: NOW }, journal })))
+      .toMatchObject({ state: 'blocked', effect: { type: 'none' }, reason: 'permit is expired' });
+  });
+
+  it('creates the next generation under the same permit once the spent VM is gone', () => {
+    const result = decideLifecycle(input({
+      permit: { ...permit, maxStarts: 2 },
+      provider: { complete: true, vmStatus: 'absent', ownership: 'absent', ownedMatches: 0, outstandingOperation: null },
+      journal: { ...input().journal, state: 'absent', startCount: 1, grantDeadlineMs: NOW - 1 },
+    }));
+    expect(result).toMatchObject({ state: 'starting', effect: { type: 'create-vm', generation: 2, reservedStartCount: 2 } });
   });
 
   it('restarts a stopped VM after its own ordinary stop resolved', () => {

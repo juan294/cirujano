@@ -1,6 +1,22 @@
-import { access, readFile } from 'node:fs/promises';
+import { execFile as execFileCallback } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { access, chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
+import { promisify } from 'node:util';
+
+import {
+  OPERATING_PERMIT_BOUNDS,
+  buildOperatingPermitProposal,
+  calculateOperatingQuoteMaximum,
+  parsePermit,
+  parseRunnerConfig,
+  renderOperatingPermit,
+  verifySshPublicKeyFingerprint,
+  type Permit,
+  type PilotQuote,
+  type RunnerConfig,
+} from '@cirujano/runner';
 
 import type { FleetArguments } from './args.js';
 import type { CliIo, FleetCommandService } from './cli.js';
@@ -25,7 +41,19 @@ import {
   text,
   type GitHubPageRunner,
 } from './github-api.js';
-import { hostedSkuForLabels } from './telemetry.js';
+import { TELEMETRY_RATES, hostedSkuForLabels } from './telemetry.js';
+
+const execFile = promisify(execFileCallback);
+
+/** Plan D6: generation lifetime and timing for operating controllers. */
+export const OPERATING_TIMING = {
+  pollIntervalMs: 30_000,
+  idleGraceMs: 300_000,
+  bootTimeoutMs: 600_000,
+  maxJobMs: 3_600_000,
+  lifetimeMs: 14_400_000,
+  shutdownMarginMs: 300_000,
+} as const;
 
 /** Read-only GitHub reads the fleet commands need; every call is a GET through `gh api`. */
 export interface GitHubFleetSource {
@@ -52,6 +80,8 @@ export function createFleetCommandService(
       }
       if (args.action === 'enroll') return enroll(args, registry, registryPath, source, io);
       if (args.action === 'cutover') return cutover(args, registry, registryPath, source, io);
+      if (args.action === 'controller-config') return controllerConfig(args, registry, registryPath, source, environment, io);
+      if (args.action === 'permit-proposal') return permitProposal(args, registry, io);
       return verify(registry, registryPath, source, io);
     },
   };
@@ -192,6 +222,141 @@ async function verify(registry: FleetRegistry, registryPath: string, source: Git
   io.stdout(`${JSON.stringify({ status: problems.length === 0 ? 'verified' : 'mismatch', enrollments: summary })}\n`);
   for (const problem of problems) io.stderr(`${problem}\n`);
   return problems.length === 0 ? 0 : 1;
+}
+
+async function controllerConfig(
+  args: Extract<FleetArguments, { action: 'controller-config' }>,
+  registry: FleetRegistry,
+  registryPath: string,
+  source: GitHubFleetSource,
+  environment: NodeJS.ProcessEnv,
+  io: CliIo,
+): Promise<0> {
+  const enrollment = requireEnrollment(registry, args.id);
+  if (enrollment.status === 'reverted') throw new Error(`enrollment ${args.id} is reverted; enroll it afresh before configuring a controller`);
+  const template = parseRunnerConfig(JSON.parse(await readFile(absoluteRegistry(args.templatePath), 'utf8')));
+  const stateRoot = absoluteRegistry(args.stateRoot);
+  const stateDirectory = join(stateRoot, enrollment.id);
+  await mkdir(stateDirectory, { recursive: true, mode: 0o700 });
+  await chmod(stateDirectory, 0o700);
+  const hostKey = await ensureHostKey(stateDirectory, enrollment.id, environment);
+  const allowedBranch = args.allowedBranch ?? (await source.repository(enrollment.repository)).defaultBranch;
+  const handle = enrollment.id.toLowerCase();
+  const controllerId = enrollment.controller?.controllerId ?? `cirujano-${handle}-${new Date().toISOString().slice(0, 10).replaceAll('-', '')}`;
+  const resourcePrefix = enrollment.controller?.resourcePrefix ?? `cirujano-${handle}`;
+  const config: RunnerConfig = parseRunnerConfig({
+    schemaVersion: 1,
+    repository: { id: enrollment.repositoryId, nameWithOwner: enrollment.repository, visibility: 'private' },
+    workflowIds: [enrollment.workflowId],
+    allowedBranch,
+    eligibleJobNames: enrollment.jobNames,
+    runnerLabel: enrollment.runnerLabel,
+    slots: 1,
+    nebius: template.nebius,
+    ssh: { publicKey: hostKey.publicKey, fingerprint: hostKey.fingerprint },
+    ownership: { controllerId, resourcePrefix },
+    timing: OPERATING_TIMING,
+    rates: { ...template.rates, hostedUsdPerMinute: TELEMETRY_RATES.skus[enrollment.sku] },
+  });
+  const configPath = join(stateDirectory, 'config.json');
+  await writeFile(configPath, `${JSON.stringify(config)}\n`, { mode: 0o600 });
+  await chmod(configPath, 0o600);
+  const controller = { stateDirectory, controllerId, resourcePrefix, permitId: enrollment.controller?.permitId ?? null };
+  await writeFleetRegistry(registryPath, replaceEnrollment(registry, { ...enrollment, controller }));
+  io.stdout(`${JSON.stringify({
+    status: 'configured', id: enrollment.id, configPath, hostKeyPath: hostKey.privateKeyPath,
+    identity: { configHash: configHash(config), repositoryId: config.repository.id, projectId: config.nebius.projectId, controllerId, resourcePrefix },
+    note: 'candidateDigest is the SHA-256 of the installed CLI bundle; runner inspect prints the full permit identity',
+  })}\n`);
+  return 0;
+}
+
+async function permitProposal(
+  args: Extract<FleetArguments, { action: 'permit-proposal' }>,
+  registry: FleetRegistry,
+  io: CliIo,
+): Promise<0 | 1> {
+  const enrollment = requireEnrollment(registry, args.id);
+  if (enrollment.controller === null) throw new Error(`enrollment ${args.id} has no controller; run fleet controller-config first`);
+  const config = parseRunnerConfig(JSON.parse(await readFile(join(enrollment.controller.stateDirectory, 'config.json'), 'utf8')));
+  const rawQuote = JSON.parse(await readFile(absoluteRegistry(args.quotePath), 'utf8')) as Record<string, unknown>;
+  const nowMs = Date.now();
+  const bounds = OPERATING_PERMIT_BOUNDS;
+  const lifetimeMs = bounds.expiresAtMs - nowMs;
+  const quote = completeQuote(rawQuote, bounds.maxRuntimeMs, lifetimeMs);
+  const otherPermits: Array<Pick<Permit, 'permitId' | 'maxTotalCostUsd'>> = [];
+  for (const other of registry.enrollments) {
+    if (other.id === enrollment.id || other.controller === null) continue;
+    const permit = await readOptionalPermit(join(other.controller.stateDirectory, 'permit.json'));
+    if (permit !== null) otherPermits.push({ permitId: permit.permitId, maxTotalCostUsd: permit.maxTotalCostUsd });
+  }
+  const result = buildOperatingPermitProposal({
+    enrollmentId: enrollment.id,
+    nowMs,
+    expiresAtMs: bounds.expiresAtMs,
+    candidateDigest: args.candidateDigest,
+    configHash: configHash(config),
+    repositoryId: config.repository.id,
+    projectId: config.nebius.projectId,
+    controllerId: config.ownership.controllerId,
+    resourcePrefix: config.ownership.resourcePrefix,
+    maxStarts: bounds.maxStarts,
+    maxRuntimeMs: bounds.maxRuntimeMs,
+    maxTotalCostUsd: bounds.maxTotalCostUsd,
+    otherPermits,
+    quote,
+  });
+  if (!result.accepted) {
+    for (const reason of result.reasons) io.stderr(`${reason}\n`);
+    return 1;
+  }
+  const proposalPath = join(enrollment.controller.stateDirectory, 'permit-proposal.json');
+  const draftPath = join(enrollment.controller.stateDirectory, 'permit.draft.json');
+  const permitId = `${enrollment.id}-operating-${new Date(nowMs).toISOString().slice(0, 10).replaceAll('-', '')}`;
+  await writeFile(proposalPath, `${JSON.stringify(result.proposal, null, 2)}\n`, { mode: 0o600 });
+  await writeFile(draftPath, `${JSON.stringify(renderOperatingPermit(result.proposal, permitId), null, 2)}\n`, { mode: 0o600 });
+  await chmod(proposalPath, 0o600);
+  await chmod(draftPath, 0o600);
+  io.stdout(`${JSON.stringify({
+    status: 'proposed', id: enrollment.id, proposalPath, draftPath, permitId,
+    estimatedMaximumUsd: result.proposal.quote.estimatedMaximumUsd, fleetCommittedUsd: result.proposal.fleetCommittedUsd,
+    note: 'unapproved; the owner confirms the proposal and copies permit.draft.json to permit.json (mode 0600)',
+  })}\n`);
+  return 0;
+}
+
+function completeQuote(raw: Record<string, unknown>, maxRuntimeMs: number, lifetimeMs: number): PilotQuote {
+  const quote = raw as unknown as Extract<PilotQuote, { complete: true }>;
+  if (quote.complete !== true) return { complete: false, reason: 'quote file must declare complete: true' };
+  const estimatedMaximumUsd = calculateOperatingQuoteMaximum(quote, maxRuntimeMs, lifetimeMs);
+  return { ...quote, estimatedMaximumUsd };
+}
+
+async function readOptionalPermit(path: string): Promise<Permit | null> {
+  try {
+    return parsePermit(JSON.parse(await readFile(path, 'utf8')));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw error;
+  }
+}
+
+async function ensureHostKey(stateDirectory: string, id: string, environment: NodeJS.ProcessEnv): Promise<{ privateKeyPath: string; publicKey: string; fingerprint: string }> {
+  const privateKeyPath = join(stateDirectory, 'ssh_host_ed25519_key');
+  const publicKeyPath = `${privateKeyPath}.pub`;
+  if (!(await exists(privateKeyPath))) {
+    const keygen = environment['CIRUJANO_SSH_KEYGEN_PATH'] ?? '/usr/bin/ssh-keygen';
+    if (!isAbsolute(keygen)) throw new Error('CIRUJANO_SSH_KEYGEN_PATH must be absolute');
+    await execFile(keygen, ['-q', '-t', 'ed25519', '-N', '', '-C', `cirujano-host-${id}`, '-f', privateKeyPath]);
+  }
+  await chmod(privateKeyPath, 0o600);
+  const publicKey = (await readFile(publicKeyPath, 'utf8')).trim();
+  return { privateKeyPath, publicKey, fingerprint: verifySshPublicKeyFingerprint(publicKey) };
+}
+
+/** Identical to the runner service's permit identity hash: sha256 of the parsed config's JSON. */
+function configHash(config: RunnerConfig): string {
+  return createHash('sha256').update(JSON.stringify(config)).digest('hex');
 }
 
 async function readLiveIdentity(source: GitHubFleetSource, enrollment: FleetEnrollment, commit: string): Promise<WorkflowIdentity> {

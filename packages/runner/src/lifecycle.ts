@@ -159,6 +159,16 @@ export function decideLifecycle(input: LifecycleInput): LifecycleDecision {
   if (input.provider.vmStatus === 'stopped' && GUEST_UP_STATES.includes(input.journal.state)) {
     // Only the guest watchdog stops a VM the controller believes is up: quarantine or an expired
     // grant. Its disk will not re-run cloud-init, so a restart can never become ready again.
+    // Past the journaled grant deadline the stop is the expected end of the immutable lifetime:
+    // delete the spent generation so the next eligible demand creates a fresh one.
+    const deadline = input.journal.grantDeadlineMs;
+    if (deadline !== null && Number.isFinite(deadline) && input.nowMs >= deadline) {
+      return authorized(input, 'delete', {
+        state: 'absent',
+        effect: { type: 'delete-vm', generation: input.journal.startCount },
+        reason: 'immutable lifetime expired while the guest was up; deleting the spent generation',
+      });
+    }
     return blocked('owned VM stopped outside the controller; delete it and create a fresh generation');
   }
 

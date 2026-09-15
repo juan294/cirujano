@@ -15,6 +15,8 @@ export const USAGE = [
   '  cirujano fleet cutover --registry <file> --id <P#> --commit <sha>',
   '  cirujano fleet verify --registry <file>',
   '  cirujano fleet show --registry <file>',
+  '  cirujano fleet controller-config --registry <file> --id <P#> --state-root <dir> --template <config.json> [--allowed-branch <branch>]',
+  '  cirujano fleet permit-proposal --registry <file> --id <P#> --candidate-digest <sha256> --quote <quote.json>',
   '  cirujano --help',
   '  cirujano --version',
   '',
@@ -123,7 +125,27 @@ export interface FleetReadArguments {
   registryPath: string;
 }
 
-export type FleetArguments = FleetInitArguments | FleetEnrollArguments | FleetCutoverArguments | FleetReadArguments;
+export interface FleetControllerConfigArguments {
+  command: 'fleet';
+  action: 'controller-config';
+  registryPath: string;
+  id: string;
+  stateRoot: string;
+  templatePath: string;
+  allowedBranch?: string;
+}
+
+export interface FleetPermitProposalArguments {
+  command: 'fleet';
+  action: 'permit-proposal';
+  registryPath: string;
+  id: string;
+  candidateDigest: string;
+  quotePath: string;
+}
+
+export type FleetArguments = FleetInitArguments | FleetEnrollArguments | FleetCutoverArguments | FleetReadArguments
+  | FleetControllerConfigArguments | FleetPermitProposalArguments;
 
 export type RunnerArguments = RunnerInspectArguments | RunnerWatchArguments | RunnerMutationArguments | RunnerReportArguments;
 export type ParsedArguments = EstimateArguments | HelpArguments | VersionArguments | RunnerArguments | TelemetryArguments | FleetArguments;
@@ -219,13 +241,15 @@ function parseTelemetryArguments(argv: readonly string[]): TelemetryArguments {
     : { command: 'telemetry', action, storePath, since, format, registryPath };
 }
 
-const FLEET_ACTIONS = ['init', 'enroll', 'cutover', 'verify', 'show'] as const;
+const FLEET_ACTIONS = ['init', 'enroll', 'cutover', 'verify', 'show', 'controller-config', 'permit-proposal'] as const;
 const FLEET_OPTIONS: Record<typeof FLEET_ACTIONS[number], readonly string[]> = {
   init: ['--registry', '--owner', '--since', '--through'],
   enroll: ['--registry', '--repository', '--workflow', '--job', '--job-name', '--sku'],
   cutover: ['--registry', '--id', '--commit'],
   verify: ['--registry'],
   show: ['--registry'],
+  'controller-config': ['--registry', '--id', '--state-root', '--template', '--allowed-branch'],
+  'permit-proposal': ['--registry', '--id', '--candidate-digest', '--quote'],
 };
 
 function parseFleetArguments(argv: readonly string[]): FleetArguments {
@@ -254,6 +278,25 @@ function parseFleetArguments(argv: readonly string[]): FleetArguments {
     const through = values.get('--through') ?? '2026-10-28';
     if (!validIsoDate(since) || !validIsoDate(through)) throw new ArgumentError('fleet init --since and --through require YYYY-MM-DD.');
     return { command: 'fleet', action, registryPath, owner, since, through };
+  }
+  if (action === 'controller-config' || action === 'permit-proposal') {
+    const id = values.get('--id');
+    if (id === undefined) throw new ArgumentError(`fleet ${action} requires --id <P#>.`);
+    if (action === 'controller-config') {
+      const stateRoot = values.get('--state-root');
+      const templatePath = values.get('--template');
+      const allowedBranch = values.get('--allowed-branch');
+      if (stateRoot === undefined) throw new ArgumentError('fleet controller-config requires --state-root <dir>.');
+      if (templatePath === undefined) throw new ArgumentError('fleet controller-config requires --template <config.json>.');
+      return allowedBranch === undefined
+        ? { command: 'fleet', action, registryPath, id, stateRoot, templatePath }
+        : { command: 'fleet', action, registryPath, id, stateRoot, templatePath, allowedBranch };
+    }
+    const candidateDigest = values.get('--candidate-digest');
+    const quotePath = values.get('--quote');
+    if (candidateDigest === undefined) throw new ArgumentError('fleet permit-proposal requires --candidate-digest <sha256>.');
+    if (quotePath === undefined) throw new ArgumentError('fleet permit-proposal requires --quote <quote.json>.');
+    return { command: 'fleet', action, registryPath, id, candidateDigest, quotePath };
   }
   if (action === 'cutover') {
     const id = values.get('--id');

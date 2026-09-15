@@ -76,6 +76,15 @@ describe('parseArguments', () => {
     });
     expect(parseArguments(['fleet', 'verify', '--registry', 'r'])).toEqual({ command: 'fleet', action: 'verify', registryPath: 'r' });
     expect(parseArguments(['fleet', 'show', '--registry', 'r'])).toEqual({ command: 'fleet', action: 'show', registryPath: 'r' });
+    expect(parseArguments(['fleet', 'controller-config', '--registry', 'r', '--id', 'P1', '--state-root', '/tmp/runner', '--template', '/tmp/t.json'])).toEqual({
+      command: 'fleet', action: 'controller-config', registryPath: 'r', id: 'P1', stateRoot: '/tmp/runner', templatePath: '/tmp/t.json',
+    });
+    expect(parseArguments(['fleet', 'controller-config', '--registry', 'r', '--id', 'P1', '--state-root', '/tmp/runner', '--template', '/tmp/t.json', '--allowed-branch', 'main'])).toEqual({
+      command: 'fleet', action: 'controller-config', registryPath: 'r', id: 'P1', stateRoot: '/tmp/runner', templatePath: '/tmp/t.json', allowedBranch: 'main',
+    });
+    expect(parseArguments(['fleet', 'permit-proposal', '--registry', 'r', '--id', 'P1', '--candidate-digest', 'd', '--quote', '/tmp/q.json'])).toEqual({
+      command: 'fleet', action: 'permit-proposal', registryPath: 'r', id: 'P1', candidateDigest: 'd', quotePath: '/tmp/q.json',
+    });
   });
 
   it.each([
@@ -110,6 +119,11 @@ describe('parseArguments', () => {
     [['fleet', 'cutover', '--registry', 'r', '--commit', 'a'.repeat(40)], /requires --id/],
     [['fleet', 'verify', '--registry', 'r', '--id', 'P1'], /Unknown option "--id" for fleet verify/],
     [['fleet', 'show', '--registry', 'r', '--wat'], /Unknown option/],
+    [['fleet', 'controller-config', '--registry', 'r', '--id', 'P1', '--state-root', '/tmp/runner'], /requires --template/],
+    [['fleet', 'controller-config', '--registry', 'r', '--id', 'P1', '--template', 't'], /requires --state-root/],
+    [['fleet', 'controller-config', '--registry', 'r', '--state-root', 's', '--template', 't'], /requires --id/],
+    [['fleet', 'permit-proposal', '--registry', 'r', '--id', 'P1', '--quote', 'q'], /requires --candidate-digest/],
+    [['fleet', 'permit-proposal', '--registry', 'r', '--id', 'P1', '--candidate-digest', 'd'], /requires --quote/],
   ])('rejects invalid runner invocation %j', (argv, message) => {
     expect(() => parseArguments(argv)).toThrow(message);
   });
