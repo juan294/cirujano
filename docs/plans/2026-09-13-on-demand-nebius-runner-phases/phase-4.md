@@ -408,3 +408,30 @@ SHA-256 published in its release notes and verified against the downloaded
 linux-x64 archive; the runbook records that the pin must be compared with the
 latest release before every live attempt. Queue-and-execute onward still
 requires a new candidate-bound authorization.
+
+## Tenth live attempt result
+
+The re-pinned candidate (`develop` `79b5a58bc3082e362525cdf89198af1700872cd2`,
+Actions runner v2.337.0) passed exact CI and CodeQL and received a bounded
+authorization for the workloads generation only. Both hosted baselines passed
+in 38 and 39 seconds. The controller created, started and armed the guest, the
+guest reached `ready`, registration completed, the listener came online, and
+GitHub assigned the queued self-hosted job to runner
+`cirujano-archy-r13-g3-g1` on the Nebius VM: the first self-hosted execution
+of the pilot. The job failed in its "Set up runner" step before any fixture
+step ran, because the Actions runner rejects a job-started hook whose path
+does not end in `.sh`, `.ps1` or `.js`, and the bootstrap installed the hook
+as `/opt/cirujano/job-start-hook`. The ephemeral runner deregistered after
+the job as designed.
+
+SIGINT recovery drained the generation, stopped the VM and returned
+`completed: true`; cleanup removed the exact VM and disk. The dispatch had
+already completed, so no cancellation was needed and the fourth dispatch was
+not issued. Final reads showed empty inventories and no runners. One start and
+about twelve minutes of compute were consumed.
+
+The repair installs the hook as `/opt/cirujano/job-start-hook.sh` and points
+`ACTIONS_RUNNER_HOOK_JOB_STARTED` at it, with a static test pinning both. The
+queue-and-execute row remains failed at this candidate; sequential isolation,
+normal idle, restart-and-failure and comparison remain not run. Another live
+attempt requires a new candidate-bound authorization.
