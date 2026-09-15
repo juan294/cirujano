@@ -2,6 +2,7 @@ import { chmod, mkdir, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { billableMinutesForJob } from '@cirujano/core';
+import { estimateRunnerCost, type CostRates } from '@cirujano/runner';
 
 import type { EnrollmentStatus, FleetEnrollment, FleetRegistry } from './fleet-registry.js';
 
@@ -134,19 +135,56 @@ export interface EnrollmentAfterReport extends EnrollmentWindowReport {
   queueLatencyP95Ms: number | null;
 }
 
+/** Controller journals for one enrollment, read from its state directory (fleet-service). */
+export interface ControllerEvidence {
+  controllerId: string;
+  resourcePrefix: string;
+  startCount: number;
+  cumulativeRuntimeMs: number;
+  cumulativeCostUsd: number;
+  diskRetainedMs: number;
+  diskSizeGiB: number;
+  networkEgressBytes: number;
+  rates: CostRates;
+  assignments: ReadonlyArray<{ runId: number; runAttempt: number; jobId: number; runnerId: number; runnerName: string; conclusion: string | null }>;
+}
+
+export interface EnrollmentAssignment {
+  runId: number;
+  jobId: number;
+  runnerId: number;
+  runnerName: string;
+}
+
 export interface TelemetryEnrollmentReport {
   id: string;
   repository: string;
+  visibility: RepositoryVisibility | null;
   workflowName: string;
   jobNames: string[];
   status: EnrollmentStatus;
   cutoverAt: string | null;
   before: EnrollmentWindowReport;
   after: EnrollmentAfterReport;
+  vmStarts: number | null;
+  controllerJournaledCostUsd: number | null;
   nebiusComputeUsd: number | null;
   nebiusDiskUsd: number | null;
+  nebiusNetworkUsd: number | null;
   nebiusTotalUsd: number | null;
   netSavingsUsd: number | null;
+  assignments: EnrollmentAssignment[];
+  unmatchedCirujanoJobs: string[];
+  complete: boolean;
+  incompleteReason: string | null;
+}
+
+export interface FleetSavingsReport {
+  enrollments: number;
+  grossHostedCostAvoidedUsd: number;
+  nebiusTotalUsd: number | null;
+  netSavingsUsd: number | null;
+  complete: boolean;
 }
 
 export interface TelemetryReport {
@@ -171,6 +209,7 @@ export interface TelemetryReport {
   unpricedJobs: number;
   byRepository: TelemetryRepositoryReport[];
   enrollments?: TelemetryEnrollmentReport[];
+  fleet?: FleetSavingsReport;
 }
 
 export async function collectTelemetry(input: {
@@ -297,7 +336,12 @@ export async function writeTelemetrySnapshot(directory: string, snapshot: Teleme
   return path;
 }
 
-export function aggregateTelemetry(snapshots: readonly TelemetrySnapshot[], sinceMs: number, registry?: FleetRegistry): TelemetryReport {
+export function aggregateTelemetry(
+  snapshots: readonly TelemetrySnapshot[],
+  sinceMs: number,
+  registry?: FleetRegistry,
+  evidenceById: ReadonlyMap<string, ControllerEvidence> = new Map(),
+): TelemetryReport {
   if (!Number.isFinite(sinceMs) || sinceMs < 0) throw new Error('since must be a non-negative timestamp');
   const byKey = new Map<string, TelemetryJob>();
   let latestSnapshot: TelemetrySnapshot | undefined;
@@ -337,6 +381,8 @@ export function aggregateTelemetry(snapshots: readonly TelemetrySnapshot[], sinc
       unpricedJobs: repositoryJobs.filter(({ actualGithubListCostUsd, counterfactualHostedCostUsd }) => actualGithubListCostUsd === null || counterfactualHostedCostUsd === null).length,
     };
   });
+  const visibilityByRepository = new Map(latestSnapshot?.repositoryInventory.map(({ fullName, visibility }) => [fullName, visibility]) ?? []);
+  const enrollments = registry?.enrollments.map((enrollment) => enrollmentReport(enrollment, jobs, evidenceById.get(enrollment.id), visibilityByRepository));
   return {
     schemaVersion: 1,
     since: new Date(sinceMs).toISOString(),
@@ -358,11 +404,16 @@ export function aggregateTelemetry(snapshots: readonly TelemetrySnapshot[], sinc
     notRunJobs: jobs.filter(({ measurementStatus }) => measurementStatus === 'not-run').length,
     incompleteJobs: jobs.filter(({ measurementStatus }) => measurementStatus === 'incomplete').length,
     byRepository,
-    ...(registry === undefined ? {} : { enrollments: registry.enrollments.map((enrollment) => enrollmentReport(enrollment, jobs)) }),
+    ...(enrollments === undefined ? {} : { enrollments, fleet: fleetSavings(enrollments) }),
   };
 }
 
-function enrollmentReport(enrollment: FleetEnrollment, jobs: readonly TelemetryJob[]): TelemetryEnrollmentReport {
+function enrollmentReport(
+  enrollment: FleetEnrollment,
+  jobs: readonly TelemetryJob[],
+  evidence: ControllerEvidence | undefined,
+  visibilityByRepository: ReadonlyMap<string, RepositoryVisibility>,
+): TelemetryEnrollmentReport {
   const cutoverAt = enrollment.after?.recordedAt ?? null;
   const cutoverMs = cutoverAt === null ? Number.POSITIVE_INFINITY : Date.parse(cutoverAt);
   const enrolled = jobs.filter((job) => job.repository === enrollment.repository
@@ -374,9 +425,11 @@ function enrollmentReport(enrollment: FleetEnrollment, jobs: readonly TelemetryJ
     .filter((job) => job.startedAt !== null)
     .map((job) => Math.max(0, Date.parse(job.startedAt!) - Date.parse(job.createdAt)))
     .sort((left, right) => left - right);
-  return {
+  const grossHostedCostAvoidedUsd = money(sumKnown(cirujano, 'counterfactualHostedCostUsd'));
+  const base = {
     id: enrollment.id,
     repository: enrollment.repository,
+    visibility: visibilityByRepository.get(enrollment.repository) ?? enrolled[0]?.visibility ?? null,
     workflowName: enrollment.workflowName,
     jobNames: [...enrollment.jobNames],
     status: enrollment.status,
@@ -386,15 +439,65 @@ function enrollmentReport(enrollment: FleetEnrollment, jobs: readonly TelemetryJ
       ...windowReport(after),
       cirujanoJobs: cirujano.length,
       cirujanoMinutes: sumKnown(cirujano, 'billableMinutes'),
-      grossHostedCostAvoidedUsd: money(sumKnown(cirujano, 'counterfactualHostedCostUsd')),
+      grossHostedCostAvoidedUsd,
       queueLatencySamples: latencies.length,
       queueLatencyP50Ms: percentile(latencies, 0.5),
       queueLatencyP95Ms: percentile(latencies, 0.95),
     },
-    nebiusComputeUsd: null,
-    nebiusDiskUsd: null,
-    nebiusTotalUsd: null,
-    netSavingsUsd: null,
+  };
+  const noCost = {
+    vmStarts: null, controllerJournaledCostUsd: null,
+    nebiusComputeUsd: null, nebiusDiskUsd: null, nebiusNetworkUsd: null, nebiusTotalUsd: null, netSavingsUsd: null,
+    assignments: [], unmatchedCirujanoJobs: [],
+  };
+  if (enrollment.status === 'proposed') return { ...base, ...noCost, complete: false, incompleteReason: 'not cut over' };
+  if (evidence === undefined) return { ...base, ...noCost, complete: false, incompleteReason: 'controller evidence is absent' };
+  const cost = estimateRunnerCost({
+    rates: evidence.rates,
+    computeIntervals: [{ startMs: 0, endMs: evidence.cumulativeRuntimeMs }],
+    disk: { sizeGiB: evidence.diskSizeGiB, retainedMs: evidence.diskRetainedMs },
+    networkEgressGiB: evidence.networkEgressBytes / 1_073_741_824,
+    hostedBillableMinutes: base.after.cirujanoMinutes,
+  });
+  if (!cost.complete) return { ...base, ...noCost, complete: false, incompleteReason: `controller cost is incomplete: ${cost.reason}` };
+  const assignmentByKey = new Map(evidence.assignments.map((entry) => [`${entry.runId}:${entry.runAttempt}:${entry.jobId}`, entry]));
+  const assignments: EnrollmentAssignment[] = [];
+  const unmatchedCirujanoJobs: string[] = [];
+  for (const job of cirujano) {
+    const assignment = assignmentByKey.get(`${job.runId}:${job.runAttempt}:${job.jobId}`);
+    if (assignment === undefined) unmatchedCirujanoJobs.push(job.key);
+    else assignments.push({ runId: assignment.runId, jobId: assignment.jobId, runnerId: assignment.runnerId, runnerName: assignment.runnerName });
+  }
+  const incompleteReason = unmatchedCirujanoJobs.length === 0
+    ? null
+    : `${unmatchedCirujanoJobs.length} Cirujano job${unmatchedCirujanoJobs.length === 1 ? '' : 's'} credited by telemetry ${unmatchedCirujanoJobs.length === 1 ? 'has' : 'have'} no controller assignment`;
+  return {
+    ...base,
+    vmStarts: evidence.startCount,
+    controllerJournaledCostUsd: evidence.cumulativeCostUsd,
+    nebiusComputeUsd: cost.computeUsd,
+    nebiusDiskUsd: cost.diskUsd,
+    nebiusNetworkUsd: cost.networkUsd,
+    nebiusTotalUsd: cost.runnerTotalUsd,
+    netSavingsUsd: money(grossHostedCostAvoidedUsd - cost.runnerTotalUsd),
+    assignments,
+    unmatchedCirujanoJobs,
+    complete: incompleteReason === null,
+    incompleteReason,
+  };
+}
+
+function fleetSavings(enrollments: readonly TelemetryEnrollmentReport[]): FleetSavingsReport {
+  const cutOver = enrollments.filter(({ status }) => status !== 'proposed');
+  const grossHostedCostAvoidedUsd = money(cutOver.reduce((total, row) => total + row.after.grossHostedCostAvoidedUsd, 0));
+  const costed = cutOver.every((row) => row.nebiusTotalUsd !== null);
+  const nebiusTotalUsd = costed ? money(cutOver.reduce((total, row) => total + (row.nebiusTotalUsd ?? 0), 0)) : null;
+  return {
+    enrollments: cutOver.length,
+    grossHostedCostAvoidedUsd,
+    nebiusTotalUsd,
+    netSavingsUsd: nebiusTotalUsd === null ? null : money(grossHostedCostAvoidedUsd - nebiusTotalUsd),
+    complete: cutOver.every((row) => row.complete),
   };
 }
 
@@ -447,13 +550,13 @@ export function renderTelemetryMarkdown(report: TelemetryReport): string {
     ...report.byRepository.map((repository) =>
       `| \`${repository.repository}\` | ${repository.jobs} | ${repository.githubHostedMinutes} | $${repository.githubHostedListCostUsd.toFixed(2)} | ${repository.cirujanoJobs} | ${repository.cirujanoMinutes} | $${repository.grossHostedCostAvoidedUsd.toFixed(2)} | ${repository.unpricedJobs} |`),
     '',
-    ...(report.enrollments === undefined ? [] : renderEnrollmentsMarkdown(report.enrollments)),
+    ...(report.enrollments === undefined ? [] : renderEnrollmentsMarkdown(report.enrollments, report.fleet)),
     'Gross avoided cost excludes Nebius cost. Net savings require provider accounting.',
     '',
   ].join('\n');
 }
 
-function renderEnrollmentsMarkdown(enrollments: readonly TelemetryEnrollmentReport[]): string[] {
+function renderEnrollmentsMarkdown(enrollments: readonly TelemetryEnrollmentReport[], fleet: FleetSavingsReport | undefined): string[] {
   return [
     '## Enrollments',
     '',
@@ -467,13 +570,84 @@ function renderEnrollmentsMarkdown(enrollments: readonly TelemetryEnrollmentRepo
       row.nebiusTotalUsd === null ? 'n/a' : usd(row.nebiusTotalUsd), row.netSavingsUsd === null ? 'n/a' : usd(row.netSavingsUsd),
     ].map(String).join(' | ')).map((cells) => `| ${cells} |`),
     '',
+    ...enrollments.filter((row) => row.visibility === 'public').map((row) => `- ${row.id} is a public repository: hosted minutes are free, so migration only adds provider cost.`),
+    ...enrollments.filter((row) => !row.complete && row.status !== 'proposed').map((row) => `- ${row.id} is incomplete: ${row.incompleteReason ?? 'unknown reason'}.`),
+    ...(enrollments.some((row) => row.visibility === 'public' || (!row.complete && row.status !== 'proposed')) ? [''] : []),
+    ...(fleet === undefined ? [] : [fleetLine(fleet), '']),
     'Queue latency is job start minus run creation for Cirujano jobs after the cutover; it includes controller poll, VM start and boot time.',
+    '',
+    ...LIMITS_PARAGRAPH,
     '',
   ];
 }
 
+const LIMITS_PARAGRAPH = [
+  'Limits: gross avoided cost uses GitHub list prices and per-job rounded minutes; the',
+  'private-account allowance is not subtracted. Nebius cost is the controller journal at the',
+  'dated config rates (compute runtime, retained boot disk over a 30-day month, observed egress).',
+  'One VM per enrollment runs jobs one at a time (single-slot), so parallel matrices serialize,',
+  'and the controller runs on a Mac that sleeps: queued jobs wait until it wakes. Net savings',
+  'are gross avoided cost minus Nebius cost and are negative until enough hosted minutes move.',
+];
+
+function fleetLine(fleet: FleetSavingsReport): string {
+  const nebius = fleet.nebiusTotalUsd === null ? 'n/a' : usd(fleet.nebiusTotalUsd);
+  const net = fleet.netSavingsUsd === null ? 'n/a' : usd(fleet.netSavingsUsd);
+  const noun = fleet.enrollments === 1 ? 'enrollment' : 'enrollments';
+  return `Fleet: gross avoided ${usd(fleet.grossHostedCostAvoidedUsd)} / Nebius cost ${nebius} / net savings ${net} (${fleet.enrollments} cut-over ${noun}, ${fleet.complete ? 'complete' : 'incomplete'})`;
+}
+
+/**
+ * The publishable 45-day report: P-handles only, no repository names, no resource identities,
+ * fleet-wide usage, per-enrollment savings and the limits paragraph.
+ */
+export function renderFleetSavingsMarkdown(report: TelemetryReport): string {
+  if (report.enrollments === undefined || report.fleet === undefined) throw new Error('fleet savings report requires a registry');
+  const success = report.successRate === null ? 'n/a' : `${(report.successRate * 100).toFixed(1)}%`;
+  return [
+    '# Cirujano fleet migration: net savings',
+    '',
+    `Window: ${report.since} through ${report.through}`,
+    '',
+    '| Fleet metric | Value |',
+    '| --- | ---: |',
+    `| Repositories | ${report.repositories} |`,
+    `| Jobs | ${report.jobs} |`,
+    `| Success rate | ${success} |`,
+    `| GitHub-hosted minutes | ${report.githubHostedMinutes} |`,
+    `| GitHub-hosted list cost | ${usd(report.githubHostedListCostUsd)} |`,
+    `| Cirujano jobs | ${report.cirujanoJobs} |`,
+    `| Cirujano job minutes | ${report.cirujanoMinutes} |`,
+    `| Gross hosted cost avoided | ${usd(report.grossHostedCostAvoidedUsd)} |`,
+    '',
+    '## Enrollments',
+    '',
+    '| Enrollment | Status | Before jobs | Before hosted min | Before hosted cost | After jobs | After hosted jobs | After Cirujano jobs | After Cirujano min | Gross avoided | Queue p50 | Queue p95 | VM starts | Nebius cost | Net savings | Complete |',
+    '| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |',
+    ...report.enrollments.map((row) => [
+      row.id, row.status,
+      row.before.jobs, row.before.hostedMinutes, usd(row.before.hostedListCostUsd),
+      row.after.jobs, row.after.hostedJobs, row.after.cirujanoJobs, row.after.cirujanoMinutes, usd(row.after.grossHostedCostAvoidedUsd),
+      minutes(row.after.queueLatencyP50Ms), minutes(row.after.queueLatencyP95Ms),
+      row.vmStarts === null ? 'n/a' : row.vmStarts,
+      row.nebiusTotalUsd === null ? 'n/a' : usd(row.nebiusTotalUsd), row.netSavingsUsd === null ? 'n/a' : usd(row.netSavingsUsd),
+      row.complete ? 'yes' : 'no',
+    ].map(String).join(' | ')).map((cells) => `| ${cells} |`),
+    '',
+    ...report.enrollments.filter((row) => row.visibility === 'public').map((row) => `- ${row.id} is a public repository: hosted minutes are free, so migration only adds provider cost.`),
+    ...report.enrollments.filter((row) => !row.complete && row.status !== 'proposed').map((row) => `- ${row.id} is incomplete: ${row.incompleteReason ?? 'unknown reason'}.`),
+    ...(report.enrollments.some((row) => row.visibility === 'public' || (!row.complete && row.status !== 'proposed')) ? [''] : []),
+    fleetLine(report.fleet),
+    '',
+    'Queue latency is job start minus run creation for Cirujano jobs after the cutover; it includes controller poll, VM start and boot time.',
+    '',
+    ...LIMITS_PARAGRAPH,
+    '',
+  ].join('\n');
+}
+
 function usd(value: number): string {
-  return `$${value.toFixed(3)}`;
+  return `${value < 0 ? '-' : ''}$${Math.abs(value).toFixed(3)}`;
 }
 
 function minutes(valueMs: number | null): string {

@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdtemp, readFile, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -9,7 +9,7 @@ import { parseRunnerConfig, parsePermit, verifySshPublicKeyFingerprint } from '@
 
 import { runCli } from './cli.js';
 import { parseFleetRegistry, type FleetRegistry } from './fleet-registry.js';
-import { createFleetCommandService, extractJobRunsOn } from './fleet-service.js';
+import { assertPublishable, createFleetCommandService, extractJobRunsOn, readControllerEvidence } from './fleet-service.js';
 
 const OWNER = 'juan294';
 const HEAD = 'a'.repeat(40);
@@ -370,6 +370,93 @@ describe('fleet controller-config and permit-proposal (phase 2 U1)', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe('controller evidence and the sanitized publication (phase 4)', () => {
+  const identity = { configHash: 'h'.repeat(64), candidateDigest: 'c'.repeat(64), repositoryId: 777, projectId: 'project-1', controllerId: 'cirujano-p1-20260916', resourcePrefix: 'cirujano-p1' };
+  const rates = { currency: 'USD', quotedAt: '2026-09-15', source: 'quote', computeUsdPerHour: 0.0992, diskUsdPerGibMonth: 0.071, networkEgressUsdPerGib: 0, hostedUsdPerMinute: 0.006 };
+
+  async function journals(overrides: { assignmentsIdentity?: typeof identity; omitState?: boolean } = {}) {
+    const stateDirectory = await mkdtemp(join(tmpdir(), 'cirujano-evidence-'));
+    const config = {
+      schemaVersion: 1, repository: { id: 777, nameWithOwner: 'juan294/app', visibility: 'private' }, workflowIds: [41], allowedBranch: 'main',
+      eligibleJobNames: ['Check'], runnerLabel: LABEL, slots: 1,
+      nebius: { profile: 'TCT', projectId: 'project-1', subnetId: 'subnet-1', imageId: 'image-1', platform: 'cpu-d3', preset: '4vcpu-16gb', diskType: 'network-ssd', diskSizeGiB: 80 },
+      ssh: { publicKey: 'ssh-ed25519 AAAA x', fingerprint: 'SHA256:x' }, ownership: { controllerId: identity.controllerId, resourcePrefix: identity.resourcePrefix },
+      timing: { pollIntervalMs: 30_000, idleGraceMs: 300_000, bootTimeoutMs: 600_000, maxJobMs: 3_600_000, lifetimeMs: 14_400_000, shutdownMarginMs: 300_000 }, rates,
+    };
+    await writeFile(join(stateDirectory, 'config.json'), JSON.stringify(config));
+    if (overrides.omitState !== true) {
+      await writeFile(join(stateDirectory, 'controller-state.json'), JSON.stringify({
+        schemaVersion: 1, identity, pendingEffect: null, readbacks: [],
+        lifecycle: { state: 'absent', startCount: 3, cumulativeRuntimeMs: 7_200_000, cumulativeCostUsd: 0.25, outstandingIntent: null, idleObservations: [], grantDeadlineMs: null },
+      }));
+    }
+    await writeFile(join(stateDirectory, 'accounting-state.json'), JSON.stringify({
+      schemaVersion: 1, identity, diskStartedAtMs: null, diskRetainedMs: 43_200_000, runtimeBaselineMs: 0, generation: 3, networkEgressBytes: 2048,
+    }));
+    await writeFile(join(stateDirectory, 'assignments.json'), JSON.stringify({
+      schemaVersion: 1, identity: overrides.assignmentsIdentity ?? identity,
+      assignments: [{ runId: 5, runAttempt: 1, jobId: 50, runnerId: 900, runnerName: 'cirujano-p1-g1', conclusion: 'success' }],
+    }));
+    return stateDirectory;
+  }
+
+  it('reads the controller journals of an enrollment with a consistent identity', async () => {
+    const stateDirectory = await journals();
+    await expect(readControllerEvidence(stateDirectory, { controllerId: identity.controllerId, resourcePrefix: identity.resourcePrefix })).resolves.toEqual({
+      controllerId: identity.controllerId, resourcePrefix: identity.resourcePrefix, startCount: 3, cumulativeRuntimeMs: 7_200_000, cumulativeCostUsd: 0.25,
+      diskRetainedMs: 43_200_000, diskSizeGiB: 80, networkEgressBytes: 2048, rates,
+      assignments: [{ runId: 5, runAttempt: 1, jobId: 50, runnerId: 900, runnerName: 'cirujano-p1-g1', conclusion: 'success' }],
+    });
+  });
+
+  it('refuses journals whose identity differs from the enrollment or from each other, and reports a missing journal', async () => {
+    const mismatch = await journals({ assignmentsIdentity: { ...identity, controllerId: 'someone-else' } });
+    await expect(readControllerEvidence(mismatch, { controllerId: identity.controllerId, resourcePrefix: identity.resourcePrefix })).rejects.toThrow(/assignments\.json identity does not match/u);
+    const foreign = await journals();
+    await expect(readControllerEvidence(foreign, { controllerId: 'cirujano-p9-20260916', resourcePrefix: 'cirujano-p9' })).rejects.toThrow(/controllerId cirujano-p1-20260916 does not match enrollment controller cirujano-p9-20260916/u);
+    const missing = await journals({ omitState: true });
+    await expect(readControllerEvidence(missing, { controllerId: identity.controllerId, resourcePrefix: identity.resourcePrefix })).rejects.toThrow(/controller-state\.json/u);
+  });
+
+  it('publishes the sanitized report and refuses output that names a private repository or resource', async () => {
+    const registryPath = await freshRegistry();
+    const directory = join(registryPath, '..');
+    const storePath = join(directory, 'store');
+    await mkdir(storePath, { recursive: true });
+    const snapshot = JSON.parse(await readFile(join(import.meta.dirname, '../fixtures/telemetry-snapshot.fixture.json'), 'utf8')) as { collectedAt: string };
+    await writeFile(join(storePath, `${snapshot.collectedAt.slice(0, 10)}.json`), JSON.stringify(snapshot));
+    const registry = await readRegistry(registryPath);
+    const stateDirectory = await journals();
+    const enrollment = {
+      id: 'P1', repository: 'juan294/private-one', repositoryId: 1001, workflowPath: '.github/workflows/ci.yml', workflowId: 501, workflowName: 'CI',
+      jobKey: 'check', jobNames: ['check'], sku: 'actions_linux' as const, runnerLabel: LABEL, status: 'cut-over' as const,
+      before: { commit: '1'.repeat(40), workflowBlobSha: 'a'.repeat(40), runsOn: ['ubuntu-latest'], recordedAt: '2026-09-16T08:00:00.000Z' },
+      after: { commit: '2'.repeat(40), workflowBlobSha: 'b'.repeat(40), runsOn: ['self-hosted', 'linux', 'x64', LABEL], recordedAt: '2026-09-17T12:00:00.000Z' },
+      controller: { stateDirectory, controllerId: identity.controllerId, resourcePrefix: identity.resourcePrefix, permitId: null }, notes: [],
+    };
+    await writeFile(registryPath, JSON.stringify({ ...registry, enrollments: [enrollment] }));
+    const service = createFleetCommandService({}, pageRunnerFor(fakeGitHub()));
+    const outputPath = join(directory, 'report.md');
+    const { io, out } = capture();
+    expect(await service.run({ command: 'fleet', action: 'publish', registryPath, storePath, since: '2026-09-13', outputPath }, io)).toBe(0);
+    const published = await readFile(outputPath, 'utf8');
+    expect(published).toContain('# Cirujano fleet migration: net savings');
+    expect(published).toContain('| P1 | cut-over |');
+    expect(published).not.toMatch(/juan294|private-one|cirujano-p1|project-1|subnet-1/u);
+    expect(JSON.parse(out.join(''))).toMatchObject({ status: 'published', outputPath, complete: false });
+
+    // The guard behind publish refuses every private identity class, so a future renderer change cannot leak silently.
+    const guarded = { ...registry, enrollments: [enrollment] };
+    expect(() => assertPublishable(published, guarded)).not.toThrow();
+    expect(() => assertPublishable(`${published}\nsee juan294/private-one`, guarded)).toThrow(/refusing to publish: output contains private repository juan294\/private-one/u);
+    expect(() => assertPublishable(`${published}\nsee juan294/home-network`, guarded)).toThrow(/private repository juan294\/home-network/u);
+    expect(() => assertPublishable(`${published}\nsee juan294/other`, guarded)).toThrow(/owner prefix juan294\//u);
+    expect(() => assertPublishable(`${published}\nvm cirujano-p1-vm`, guarded)).toThrow(/controller identity cirujano-p1/u);
+    expect(() => assertPublishable(`${published}\nid computeinstance-e01abc`, guarded)).toThrow(/resource identity computeinstance-e01abc/u);
+    expect(() => assertPublishable(`${published}\nproject project-e01v3ms9pa004rtecbkdjt`, guarded)).toThrow(/resource identity project-e01v3ms9pa004rtecbkdjt/u);
   });
 });
 

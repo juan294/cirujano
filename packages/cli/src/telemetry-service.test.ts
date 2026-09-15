@@ -166,8 +166,11 @@ describe('telemetry command service', () => {
     expect(await createTelemetryCommandService().run(
       { command: 'telemetry', action: 'report', storePath, since: '2026-09-13', format: 'json', registryPath }, { stdout: (text) => { out.push(text); }, stderr: () => undefined },
     )).toBe(0);
-    const report = JSON.parse(out.join('')) as { enrollments: Array<{ id: string; before: { jobs: number } }> };
-    expect(report.enrollments.map(({ id, before }) => [id, before.jobs])).toEqual([['P1', 0], ['P2', 0]]);
+    const report = JSON.parse(out.join('')) as { enrollments: Array<{ id: string; before: { jobs: number }; incompleteReason: string | null }>; fleet: { complete: boolean } };
+    expect(report.enrollments.map(({ id, before, incompleteReason }) => [id, before.jobs, incompleteReason])).toEqual([
+      ['P1', 0, 'controller evidence is absent'], ['P2', 0, 'not cut over'],
+    ]);
+    expect(report.fleet).toMatchObject({ enrollments: 1, complete: false });
 
     await writeFile(registryPath, JSON.stringify(example));
     await expect(createTelemetryCommandService().run(

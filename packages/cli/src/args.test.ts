@@ -85,6 +85,9 @@ describe('parseArguments', () => {
     expect(parseArguments(['fleet', 'permit-proposal', '--registry', 'r', '--id', 'P1', '--candidate-digest', 'd', '--quote', '/tmp/q.json'])).toEqual({
       command: 'fleet', action: 'permit-proposal', registryPath: 'r', id: 'P1', candidateDigest: 'd', quotePath: '/tmp/q.json',
     });
+    expect(parseArguments(['fleet', 'publish', '--registry', 'r', '--store', '/tmp/store', '--since', '2026-09-13', '--output', '/tmp/out.md'])).toEqual({
+      command: 'fleet', action: 'publish', registryPath: 'r', storePath: '/tmp/store', since: '2026-09-13', outputPath: '/tmp/out.md',
+    });
   });
 
   it.each([
@@ -124,6 +127,10 @@ describe('parseArguments', () => {
     [['fleet', 'controller-config', '--registry', 'r', '--state-root', 's', '--template', 't'], /requires --id/],
     [['fleet', 'permit-proposal', '--registry', 'r', '--id', 'P1', '--quote', 'q'], /requires --candidate-digest/],
     [['fleet', 'permit-proposal', '--registry', 'r', '--id', 'P1', '--candidate-digest', 'd'], /requires --quote/],
+    [['fleet', 'publish', '--registry', 'r', '--store', 's', '--since', '2026-09-13'], /requires --output/],
+    [['fleet', 'publish', '--registry', 'r', '--store', 's', '--output', 'o'], /requires --since/],
+    [['fleet', 'publish', '--registry', 'r', '--since', '2026-09-13', '--output', 'o'], /requires --store/],
+    [['fleet', 'publish', '--registry', 'r', '--store', 's', '--since', 'soon', '--output', 'o'], /YYYY-MM-DD/],
   ])('rejects invalid runner invocation %j', (argv, message) => {
     expect(() => parseArguments(argv)).toThrow(message);
   });

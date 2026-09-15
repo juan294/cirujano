@@ -9,6 +9,7 @@ import {
   OPERATING_PERMIT_BOUNDS,
   buildOperatingPermitProposal,
   calculateOperatingQuoteMaximum,
+  parseControllerState,
   parsePermit,
   parseRunnerConfig,
   renderOperatingPermit,
@@ -41,7 +42,8 @@ import {
   text,
   type GitHubPageRunner,
 } from './github-api.js';
-import { TELEMETRY_RATES, hostedSkuForLabels } from './telemetry.js';
+import { buildStoreReport } from './telemetry-store.js';
+import { TELEMETRY_RATES, hostedSkuForLabels, renderFleetSavingsMarkdown, type ControllerEvidence } from './telemetry.js';
 
 const execFile = promisify(execFileCallback);
 
@@ -82,6 +84,7 @@ export function createFleetCommandService(
       if (args.action === 'cutover') return cutover(args, registry, registryPath, source, io);
       if (args.action === 'controller-config') return controllerConfig(args, registry, registryPath, source, environment, io);
       if (args.action === 'permit-proposal') return permitProposal(args, registry, io);
+      if (args.action === 'publish') return publish(args, registry, io);
       return verify(registry, registryPath, source, io);
     },
   };
@@ -357,6 +360,114 @@ async function ensureHostKey(stateDirectory: string, id: string, environment: No
 /** Identical to the runner service's permit identity hash: sha256 of the parsed config's JSON. */
 function configHash(config: RunnerConfig): string {
   return createHash('sha256').update(JSON.stringify(config)).digest('hex');
+}
+
+/**
+ * Reads one enrollment's controller journals. Every file must carry the same identity and that
+ * identity must name the enrollment's controller; a missing journal throws with its path.
+ */
+export async function readControllerEvidence(
+  stateDirectory: string,
+  controller: { controllerId: string; resourcePrefix: string },
+): Promise<ControllerEvidence> {
+  const config = parseRunnerConfig(JSON.parse(await readFile(join(stateDirectory, 'config.json'), 'utf8')));
+  const state = parseControllerState(JSON.parse(await readJournalFile(join(stateDirectory, 'controller-state.json'))));
+  if (state.identity.controllerId !== controller.controllerId) throw new Error(`controller-state.json controllerId ${state.identity.controllerId} does not match enrollment controller ${controller.controllerId}`);
+  if (state.identity.resourcePrefix !== controller.resourcePrefix) throw new Error(`controller-state.json resourcePrefix ${state.identity.resourcePrefix} does not match enrollment controller ${controller.resourcePrefix}`);
+  if (config.ownership.controllerId !== controller.controllerId || config.ownership.resourcePrefix !== controller.resourcePrefix) throw new Error('config.json ownership does not match the enrollment controller');
+  const identity = JSON.stringify(state.identity);
+  const accounting = record(JSON.parse(await readJournalFile(join(stateDirectory, 'accounting-state.json'))), 'accounting-state.json');
+  if (accounting['schemaVersion'] !== 1 || JSON.stringify(accounting['identity']) !== identity) throw new Error('accounting-state.json identity does not match controller-state.json');
+  const assignmentsFile = record(JSON.parse(await readJournalFile(join(stateDirectory, 'assignments.json'))), 'assignments.json');
+  if (assignmentsFile['schemaVersion'] !== 1 || JSON.stringify(assignmentsFile['identity']) !== identity) throw new Error('assignments.json identity does not match controller-state.json');
+  const assignments = array(assignmentsFile['assignments'], 'assignments').map((entry, index) => {
+    const item = record(entry, `assignments[${index}]`);
+    const conclusion = item['conclusion'];
+    if (conclusion !== null && typeof conclusion !== 'string') throw new Error(`assignments[${index}].conclusion is invalid`);
+    return {
+      runId: positiveInteger(item['runId'], `assignments[${index}].runId`),
+      runAttempt: positiveInteger(item['runAttempt'], `assignments[${index}].runAttempt`),
+      jobId: positiveInteger(item['jobId'], `assignments[${index}].jobId`),
+      runnerId: positiveInteger(item['runnerId'], `assignments[${index}].runnerId`),
+      runnerName: text(item['runnerName'], `assignments[${index}].runnerName`),
+      conclusion: conclusion as string | null,
+    };
+  });
+  return {
+    controllerId: state.identity.controllerId,
+    resourcePrefix: state.identity.resourcePrefix,
+    startCount: state.lifecycle.startCount,
+    cumulativeRuntimeMs: state.lifecycle.cumulativeRuntimeMs,
+    cumulativeCostUsd: state.lifecycle.cumulativeCostUsd,
+    diskRetainedMs: nonnegativeNumber(accounting['diskRetainedMs'], 'accounting diskRetainedMs'),
+    diskSizeGiB: config.nebius.diskSizeGiB,
+    networkEgressBytes: nonnegativeNumber(accounting['networkEgressBytes'], 'accounting networkEgressBytes'),
+    rates: config.rates,
+    assignments,
+  };
+}
+
+/** Evidence for every enrollment with a controller; an enrollment whose journals do not exist yet is simply absent. */
+export async function loadControllerEvidence(registry: FleetRegistry): Promise<Map<string, ControllerEvidence>> {
+  const evidence = new Map<string, ControllerEvidence>();
+  for (const enrollment of registry.enrollments) {
+    if (enrollment.controller === null) continue;
+    try {
+      evidence.set(enrollment.id, await readControllerEvidence(enrollment.controller.stateDirectory, enrollment.controller));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
+      throw new Error(`${enrollment.id} controller evidence is unreadable: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  return evidence;
+}
+
+const RESOURCE_ID_PATTERN = /\b(?:computeinstance|computedisk|computeimage|vpcsubnet|vpcnetwork|project|serviceaccount)-e0[0-9a-z]+/u;
+
+/** Renders the sanitized 45-day report and refuses to write it if any private name or resource id survives. */
+async function publish(args: Extract<FleetArguments, { action: 'publish' }>, registry: FleetRegistry, io: CliIo): Promise<0> {
+  const evidenceById = await loadControllerEvidence(registry);
+  const report = await buildStoreReport({ storePath: args.storePath, since: args.since, registry, evidenceById });
+  const markdown = renderFleetSavingsMarkdown(report);
+  assertPublishable(markdown, registry);
+  const outputPath = absoluteRegistry(args.outputPath);
+  await writeFile(outputPath, markdown, { mode: 0o644 });
+  io.stdout(`${JSON.stringify({ status: 'published', outputPath, enrollments: report.fleet?.enrollments ?? 0, complete: report.fleet?.complete ?? false, netSavingsUsd: report.fleet?.netSavingsUsd ?? null })}\n`);
+  return 0;
+}
+
+/** The publication guard: no private repository, owner prefix, controller identity or provider resource id may survive. */
+export function assertPublishable(markdown: string, registry: FleetRegistry): void {
+  const privateNames = [
+    ...registry.enrollments.map(({ repository }) => repository),
+    ...registry.exclusions.map(({ repository }) => repository),
+  ];
+  for (const name of privateNames) {
+    if (markdown.includes(name)) throw new Error(`refusing to publish: output contains private repository ${name}`);
+  }
+  for (const enrollment of registry.enrollments) {
+    if (enrollment.controller === null) continue;
+    for (const value of [enrollment.controller.controllerId, enrollment.controller.resourcePrefix, enrollment.controller.stateDirectory]) {
+      if (markdown.includes(value)) throw new Error(`refusing to publish: output contains controller identity ${value}`);
+    }
+  }
+  if (markdown.includes(`${registry.owner}/`)) throw new Error(`refusing to publish: output contains the owner prefix ${registry.owner}/`);
+  const resourceId = RESOURCE_ID_PATTERN.exec(markdown);
+  if (resourceId !== null) throw new Error(`refusing to publish: output contains resource identity ${resourceId[0]}`);
+}
+
+async function readJournalFile(path: string): Promise<string> {
+  try {
+    return await readFile(path, 'utf8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') throw Object.assign(new Error(`${path} does not exist`), { code: 'ENOENT' });
+    throw error;
+  }
+}
+
+function nonnegativeNumber(value: unknown, name: string): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) throw new Error(`${name} must be a non-negative finite number`);
+  return value;
 }
 
 async function readLiveIdentity(source: GitHubFleetSource, enrollment: FleetEnrollment, commit: string): Promise<WorkflowIdentity> {

@@ -17,6 +17,7 @@ export const USAGE = [
   '  cirujano fleet show --registry <file>',
   '  cirujano fleet controller-config --registry <file> --id <P#> --state-root <dir> --template <config.json> [--allowed-branch <branch>]',
   '  cirujano fleet permit-proposal --registry <file> --id <P#> --candidate-digest <sha256> --quote <quote.json>',
+  '  cirujano fleet publish --registry <file> --store <directory> --since <YYYY-MM-DD> --output <report.md>',
   '  cirujano --help',
   '  cirujano --version',
   '',
@@ -144,8 +145,17 @@ export interface FleetPermitProposalArguments {
   quotePath: string;
 }
 
+export interface FleetPublishArguments {
+  command: 'fleet';
+  action: 'publish';
+  registryPath: string;
+  storePath: string;
+  since: string;
+  outputPath: string;
+}
+
 export type FleetArguments = FleetInitArguments | FleetEnrollArguments | FleetCutoverArguments | FleetReadArguments
-  | FleetControllerConfigArguments | FleetPermitProposalArguments;
+  | FleetControllerConfigArguments | FleetPermitProposalArguments | FleetPublishArguments;
 
 export type RunnerArguments = RunnerInspectArguments | RunnerWatchArguments | RunnerMutationArguments | RunnerReportArguments;
 export type ParsedArguments = EstimateArguments | HelpArguments | VersionArguments | RunnerArguments | TelemetryArguments | FleetArguments;
@@ -241,7 +251,7 @@ function parseTelemetryArguments(argv: readonly string[]): TelemetryArguments {
     : { command: 'telemetry', action, storePath, since, format, registryPath };
 }
 
-const FLEET_ACTIONS = ['init', 'enroll', 'cutover', 'verify', 'show', 'controller-config', 'permit-proposal'] as const;
+const FLEET_ACTIONS = ['init', 'enroll', 'cutover', 'verify', 'show', 'controller-config', 'permit-proposal', 'publish'] as const;
 const FLEET_OPTIONS: Record<typeof FLEET_ACTIONS[number], readonly string[]> = {
   init: ['--registry', '--owner', '--since', '--through'],
   enroll: ['--registry', '--repository', '--workflow', '--job', '--job-name', '--sku'],
@@ -250,6 +260,7 @@ const FLEET_OPTIONS: Record<typeof FLEET_ACTIONS[number], readonly string[]> = {
   show: ['--registry'],
   'controller-config': ['--registry', '--id', '--state-root', '--template', '--allowed-branch'],
   'permit-proposal': ['--registry', '--id', '--candidate-digest', '--quote'],
+  publish: ['--registry', '--store', '--since', '--output'],
 };
 
 function parseFleetArguments(argv: readonly string[]): FleetArguments {
@@ -278,6 +289,15 @@ function parseFleetArguments(argv: readonly string[]): FleetArguments {
     const through = values.get('--through') ?? '2026-10-28';
     if (!validIsoDate(since) || !validIsoDate(through)) throw new ArgumentError('fleet init --since and --through require YYYY-MM-DD.');
     return { command: 'fleet', action, registryPath, owner, since, through };
+  }
+  if (action === 'publish') {
+    const storePath = values.get('--store');
+    const since = values.get('--since');
+    const outputPath = values.get('--output');
+    if (storePath === undefined) throw new ArgumentError('fleet publish requires --store <directory>.');
+    if (since === undefined || !validIsoDate(since)) throw new ArgumentError('fleet publish requires --since YYYY-MM-DD.');
+    if (outputPath === undefined) throw new ArgumentError('fleet publish requires --output <report.md>.');
+    return { command: 'fleet', action, registryPath, storePath, since, outputPath };
   }
   if (action === 'controller-config' || action === 'permit-proposal') {
     const id = values.get('--id');

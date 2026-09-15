@@ -95,6 +95,42 @@ cirujano telemetry report --store <store> --since 2026-09-13 --registry <registr
   cost and queue latency (job start minus run creation, p50 and p95) after it.
   Without `--registry` the output is unchanged.
 
+## Net savings and the 45-day report
+
+With `--registry`, the report joins each cut-over enrollment to its controller
+journals (`config.json`, `controller-state.json`, `accounting-state.json`,
+`assignments.json` under the enrollment's state directory). Every journal must
+carry the enrollment's controller identity. Per enrollment the JSON gains
+`nebiusComputeUsd`, `nebiusDiskUsd`, `nebiusNetworkUsd`, `nebiusTotalUsd`
+(controller runtime, retained boot disk and observed egress at the dated
+config rates, on the same 30-day-month basis the permit accounting uses),
+`netSavingsUsd = grossHostedCostAvoidedUsd - nebiusTotalUsd`, `vmStarts`,
+`assignments` (runner id and name per Cirujano job, matched against
+`assignments.json`) and `unmatchedCirujanoJobs`. A credited job that no
+controller journal assigned marks the enrollment `complete: false` with the
+reason; so does a cut-over enrollment whose journals are absent. `fleet`
+totals sum the cut-over enrollments and are `complete` only when every one is.
+
+Produce the 45-day report on 2026-10-28 (or on demand for the submission):
+
+```bash
+STORE=~/.local/share/cirujano/telemetry
+cirujano telemetry report --store "$STORE" --since 2026-09-13 --registry "$STORE/fleet-registry.json" --format markdown > "$STORE/fleet-latest.md"
+cirujano fleet publish --registry "$STORE/fleet-registry.json" --store "$STORE" --since 2026-09-13 \
+  --output docs/research/2026-10-28-fleet-migration-net-savings.md
+```
+
+The private Markdown keeps repository names and belongs in the store. `fleet
+publish` renders the publishable version: fleet-wide usage, one row per
+enrollment keyed by its P-handle (status, before/after windows, queue latency,
+VM starts, Nebius cost, net savings, completeness), the fleet totals line and
+the limits paragraph. It refuses to write if the output contains any
+enrollment or exclusion repository name, the owner prefix, a controller id,
+resource prefix or state path, or a Nebius resource id, so a renderer change
+cannot leak a private name. Read the first real net-savings figure and the
+limits paragraph before quoting either; a public-repository enrollment shows
+zero gross avoided cost and negative net savings by construction.
+
 ## Verify freshness
 
 ```bash
