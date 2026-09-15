@@ -310,3 +310,30 @@ new traversal proof satisfied, unarmed poweroff 609 s after readiness and
 clean ephemeral cleanup; cloud-init 26.1 schema validation passed. No GitHub
 or Nebius mutation occurred. Queue-and-execute and the later R14 rows still
 require a new candidate-bound authorization.
+
+## Seventh live attempt result
+
+The state-directory repair candidate (`develop`
+`8d128b55699928d1e494b5d22bd5340b7a9116ff`) passed exact CI and CodeQL and
+received a bounded authorization for the workloads generation only. Both
+hosted baselines passed in 38 and 48 seconds. The controller created, started
+and armed the guest, reached `ready`, and emitted the first live
+`register-runner`, which failed again. The newly persisted helper diagnostics
+recorded the Actions runner's own message: read permission is required for
+the generation directory and every directory up the hierarchy, and
+`/var/lib/cirujano` denied it. A traverse-only 0711 state directory is
+therefore insufficient; the runner enumerates its ancestors.
+
+Recovery drained and stopped the guest, deleted the exact VM and disk, and
+cancelled the queued self-hosted dispatch with zero steps executed. The
+fourth dispatch was not issued; final reads showed empty inventories and no
+runners. One start and roughly five minutes of compute were consumed.
+
+The local repair makes the state directory 0755 in the bootstrap, arm-grant
+and watchdog helpers, tightens the static guest test to reject any
+non-enumerable mode, asserts 0755 after both helpers run, and changes the boot
+oracle proof to require that the runner account can both enter and read the
+directory. The complete local policy and the pinned Noble boot oracle passed
+at that candidate (SSH ready after 55 s, unarmed poweroff 612 s after
+readiness). Queue-and-execute onward still requires a new candidate-bound
+authorization.
