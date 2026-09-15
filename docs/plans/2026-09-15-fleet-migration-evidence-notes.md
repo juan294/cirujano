@@ -117,7 +117,7 @@ review-fix commit that follows `042736f`.
 | # | Finding | Disposition |
 | --- | --- | --- |
 | 1 | stale `grantDeadlineMs` survived delete/create reconcile | resolved: cleared on create-vm and delete-vm reconcile; recovery test asserts `null` after both |
-| 2 | fleet ceiling ignored other enrollments' unissued proposals | resolved: `permit.json`, else `permit.draft.json`, else `permit-proposal.json` count; service test refuses the fourth USD 40 proposal |
+| 2 | fleet ceiling ignored other enrollments' unissued proposals | resolved: `permit.json`, else `permit-proposal.json` count (the draft carries the same ceiling); service test refuses the fourth USD 40 proposal |
 | 3 | installer smoke used a mock CLI | resolved: `run-cirujano-controller.sh` is exercised against the built bundle with the fixture endpoints (`runner-service.test.ts`); the installer test keeps the mock for launchctl orchestration |
 | 4 | template rate equal to the SKU rate | resolved: template uses 0.062 |
 | 5 | `startCount` 0 could emit `delete-vm` generation 0 | resolved: guard |
@@ -168,3 +168,11 @@ runner; moving `readRegistry` and the evidence readers out of the fleet
 command module; a shared validator module parameterised by error class; the
 two launchd installers sharing a sourced library; parallel GitHub reads in
 `verify` once enrollments exceed a handful.
+
+### Fix commit (`b4e50a1`): APPROVED
+
+Every disposition above was confirmed against the code. Low notes accepted as
+is: an apostrophe inside an unquoted job `name:` keeps a trailing comment in
+the captured display name (`--job-name` overrides it); the bare-segment guard
+refuses a publish whose private repository name coincides with a word of the
+report template (fail closed and loud).
