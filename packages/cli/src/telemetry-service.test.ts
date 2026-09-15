@@ -36,31 +36,37 @@ describe('telemetry command service', () => {
   });
 
   it('deduplicates an identical run repeated across changing GitHub pages', async () => {
-    const storePath = await mkdtemp(join(tmpdir(), 'cirujano-run-page-telemetry-'));
-    let jobAttempts = 0;
-    const run = { id: 1, run_attempt: 1, name: 'CI', event: 'push', created_at: '2026-09-13T10:00:00Z', conclusion: 'success' };
-    const pageRunner = async (_command: string, args: readonly string[]) => {
-      const endpoint = args.at(-1)!;
-      if (endpoint.startsWith('/user/repos')) return { stdout: JSON.stringify([[
-        { full_name: 'juan294/app', visibility: 'private', archived: false },
-      ]]) };
-      if (endpoint.includes('/actions/runs?')) return { stdout: JSON.stringify([
-        { workflow_runs: [run] }, { workflow_runs: [run] },
-      ]) };
-      jobAttempts += 1;
-      return { stdout: JSON.stringify([{ jobs: [{
-        id: 2, name: 'test', started_at: '2026-09-13T10:01:00Z', completed_at: '2026-09-13T10:02:00Z',
-        conclusion: 'success', labels: ['ubuntu-24.04'], runner_name: 'GitHub Actions 1', runner_group_name: 'GitHub Actions',
-      }] }]) };
-    };
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-09-14T12:00:00Z'));
+    try {
+      const storePath = await mkdtemp(join(tmpdir(), 'cirujano-run-page-telemetry-'));
+      let jobAttempts = 0;
+      const run = { id: 1, run_attempt: 1, name: 'CI', event: 'push', created_at: '2026-09-13T10:00:00Z', conclusion: 'success' };
+      const pageRunner = async (_command: string, args: readonly string[]) => {
+        const endpoint = args.at(-1)!;
+        if (endpoint.startsWith('/user/repos')) return { stdout: JSON.stringify([[
+          { full_name: 'juan294/app', visibility: 'private', archived: false },
+        ]]) };
+        if (endpoint.includes('/actions/runs?')) return { stdout: JSON.stringify([
+          { workflow_runs: [run] }, { workflow_runs: [run] },
+        ]) };
+        jobAttempts += 1;
+        return { stdout: JSON.stringify([{ jobs: [{
+          id: 2, name: 'test', started_at: '2026-09-13T10:01:00Z', completed_at: '2026-09-13T10:02:00Z',
+          conclusion: 'success', labels: ['ubuntu-24.04'], runner_name: 'GitHub Actions 1', runner_group_name: 'GitHub Actions',
+        }] }]) };
+      };
 
-    await expect(createTelemetryCommandService({}, pageRunner).run(
-      { command: 'telemetry', action: 'collect', owner: 'juan294', storePath, lookbackHours: 48 }, io,
-    )).resolves.toBe(0);
-    await expect(createTelemetryCommandService().run(
-      { command: 'telemetry', action: 'report', storePath, since: '2026-09-13', format: 'json' }, io,
-    )).resolves.toBe(0);
-    expect(jobAttempts).toBe(1);
+      await expect(createTelemetryCommandService({}, pageRunner).run(
+        { command: 'telemetry', action: 'collect', owner: 'juan294', storePath, lookbackHours: 48 }, io,
+      )).resolves.toBe(0);
+      await expect(createTelemetryCommandService().run(
+        { command: 'telemetry', action: 'report', storePath, since: '2026-09-13', format: 'json' }, io,
+      )).resolves.toBe(0);
+      expect(jobAttempts).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('reuses the latest prior-day snapshot across the overlap window', async () => {

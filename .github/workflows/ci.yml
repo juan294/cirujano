@@ -32,7 +32,7 @@ jobs:
       - run: pnpm run lint
       - run: pnpm run build
       - run: node scripts/verify-bundle.mjs
-      - run: pnpm run test
+      - run: pnpm run test:coverage
 
   ubuntu_24_04:
     runs-on: ubuntu-24.04

@@ -20,6 +20,7 @@
     "lint": "pnpm -r lint",
     "build": "pnpm -r build",
     "verify:bundle": "pnpm run build && node scripts/verify-bundle.mjs",
+    "test:coverage": "pnpm -r --workspace-concurrency=1 test:coverage",
     "ci:fast": "pnpm run typecheck && pnpm run lint && pnpm run verify:bundle && pnpm run test",
     "ci:local": "pnpm run ci:fast",
     "verify:cloud-init-schema": "bash scripts/verify-runner-cloud-init-schema.sh",
@@ -28,6 +29,7 @@
   },
   "devDependencies": {
     "@types/node": "^26.4.0",
+    "@vitest/coverage-v8": "4.1.11",
     "eslint": "^10.9.1",
     "husky": "^9.1.7",
     "typescript": "^6.0.3",
