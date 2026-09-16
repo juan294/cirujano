@@ -135,7 +135,11 @@ Per-enrollment layout under `~/.local/share/cirujano/runner/` (mode `0700`):
   `admission: same-repository`: unlike the pilot's default-branch-push rule,
   an enrolled controller also serves `pull_request` runs and pushes on any
   branch, provided the head repository is the enrolled private repository
-  itself. Fork heads are never admitted. Regenerating a config changes its
+  itself. Fork heads are never admitted. The trust boundary is therefore
+  "anyone who can push a branch to the enrolled private repository": such a
+  push can rewrite the enrolled job's steps and they run on the VM, whose
+  only credential is the job's own `GITHUB_TOKEN` (ephemeral runner,
+  cloud-init refuses credential material). Regenerating a config changes its
   hash; the controller then refuses the old journals, so archive a dry-run
   state directory before restarting and never regenerate under a live permit.
 - `<P#>/ssh_host_ed25519_key[.pub]`: the per-enrollment VM host key.

@@ -56,11 +56,11 @@ Worktree `/Users/juan/code/cirujano-fleet-migration`, branch
   registry validator, and `assertPublishable` is unit-tested directly because
   the sanitized renderer has no path that could carry a private name.
 
-### D-6 Controller eligibility excludes pull_request runs (decision required)
+### D-6 Controller eligibility excludes pull_request runs (resolved 2026-09-16)
 
 - Plan said: change only the enrolled job's `runs-on`; the controller picks up
   every queued job that carries the label.
-- Found: `packages/runner/src/adapters/github.ts:421-428` admits only `push`
+- Found: `packages/runner/src/adapters/github.ts` `buildQueueSnapshot` (now `runAdmitted`) admitted only `push`
   and `workflow_dispatch` runs on `allowedBranch` with zero associated pull
   requests (a pilot safety rule). P1's `check` job runs almost only on
   `pull_request` (PR-validated develop merges skip it, `ci.yml:100-105`), P2
@@ -95,8 +95,14 @@ its default-branch commit and blob SHA; `fleet verify` is green;
 USD 1.656 in the before window; `fleet controller-config` wrote
 `~/.local/share/cirujano/runner/P1/{config.json,ssh_host_ed25519_key}` with
 identity `controllerId cirujano-p1-20260915`, `resourcePrefix cirujano-p1`.
-Not done, each needs the owner: D-6 decision, launchd installation (dry-run
-smoke), workflow edit merge, operating permit, first real jobs.
+Done 2026-09-16: D-6 decided and implemented (`f5ddeea`, reviewed APPROVED);
+launchd dry-run agent installed and ticking `absent`; Nebius service account
+`cirujano-controller` and its auth key created (the group membership and
+project permit need the owner because the auto-mode classifier denies
+permission grants); P1 workflow edit committed on `cirujano/p1-check-runner`
+in a portfolio worktree. Owner-executed steps still pending: push `develop`,
+the IAM group/membership/permit commands, push the P1 branch and open its PR,
+issue the operating permit, merge, first real jobs.
 
 ## Independent reviews and dispositions
 

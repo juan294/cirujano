@@ -159,13 +159,14 @@ describe('GitHub response parsers (R06)', () => {
   });
 
   it('admits same-repository pull requests on any branch under the same-repository policy, never forks', () => {
-    const runs = collectRunPages([{ page: 1, response: { status: 200, headers: {}, body: { total_count: 4, workflow_runs: [
+    const runs = collectRunPages([{ page: 1, response: { status: 200, headers: {}, body: { total_count: 5, workflow_runs: [
       run({ id: 1002, event: 'pull_request', head_branch: 'feature/x', pull_requests: [{ id: 9 }] }),
       run({ id: 1003, event: 'pull_request', head_branch: 'feature/y', head_repository: { id: 999 }, pull_requests: [{ id: 10 }] }),
       run({ id: 1004, event: 'push', head_branch: 'feature/z' }),
       run({ id: 1005, event: 'schedule' }),
+      run({ id: 1006, event: 'push', pull_requests: [{ id: 11 }] }),
     ] } } }]);
-    const jobs = collectJobPages([1002, 1003, 1004, 1005].map((runId, index) => (
+    const jobs = collectJobPages([1002, 1003, 1004, 1005, 1006].map((runId, index) => (
       { runId, runAttempt: 2, page: 1, response: { status: 200, headers: {}, body: { total_count: 1, jobs: [job({ id: 4000 + index, run_id: runId })] } } }
     )));
     const base = {
@@ -174,8 +175,10 @@ describe('GitHub response parsers (R06)', () => {
       runs, jobs, runners: { complete: true, items: [] }, workflowIds: [41],
       allowedBranch: 'develop', eligibleJobNames: ['e2e'], runnerLabel: 'cirujano-pilot-a', expectedRunnerName: 'cirujano-a-g1', observedAtMs: NOW,
     };
-    // Same-repository PR (1002) and same-repository push on another branch (1004) are admitted; the fork PR and the schedule are not.
-    expect(buildQueueSnapshot({ ...base, admission: 'same-repository' })).toMatchObject({ complete: true, eligibleQueuedJobs: 2 });
+    // Same-repository PR (1002), the push on another branch (1004) and the default-branch push with an open PR (1006)
+    // are admitted; the fork PR and the schedule are not. The default policy refuses all of them: 1006 only because
+    // of its pull request, which pins that term on its own.
+    expect(buildQueueSnapshot({ ...base, admission: 'same-repository' })).toMatchObject({ complete: true, eligibleQueuedJobs: 3 });
     expect(buildQueueSnapshot({ ...base, admission: 'default-branch-pushes' })).toMatchObject({ complete: true, eligibleQueuedJobs: 0 });
     expect(buildQueueSnapshot(base)).toMatchObject({ complete: true, eligibleQueuedJobs: 0 });
   });

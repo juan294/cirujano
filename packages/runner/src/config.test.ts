@@ -33,6 +33,7 @@ describe('runner admission policy', () => {
     expect(parseRunnerConfig({ ...validConfig, admission: 'same-repository' }).admission).toBe('same-repository');
     expect(() => parseRunnerConfig({ ...validConfig, admission: 'any-fork' })).toThrow(ConfigError);
     expect(() => parseRunnerConfig({ ...validConfig, admission: 'any-fork' })).toThrow(/admission must be default-branch-pushes or same-repository/u);
+    expect(() => parseRunnerConfig({ ...validConfig, admission: null })).toThrow(/admission must be/u);
   });
 });
 

@@ -18,7 +18,7 @@ export const USAGE = [
   '  cirujano fleet cutover --registry <file> --id <P#> --commit <sha>',
   '  cirujano fleet verify --registry <file>',
   '  cirujano fleet show --registry <file>',
-  '  cirujano fleet controller-config --registry <file> --id <P#> --state-root <dir> --template <config.json> [--allowed-branch <branch>]',
+  '  cirujano fleet controller-config --registry <file> --id <P#> --state-root <dir> --template <config.json> [--allowed-branch <branch>] (admission is same-repository; the branch only matters for default-branch-pushes)',
   '  cirujano fleet permit-proposal --registry <file> --id <P#> --candidate-digest <sha256> --quote <quote.json>',
   '  cirujano fleet publish --registry <file> --store <directory> --since <YYYY-MM-DD> --output <report.md>',
   '  cirujano --help',

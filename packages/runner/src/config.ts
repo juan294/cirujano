@@ -46,7 +46,7 @@ export function parseRunnerConfig(input: unknown): RunnerConfig {
   const workflowIds = positiveIntegerArray(root['workflowIds'], 'workflowIds');
   const eligibleJobNames = stringArray(root['eligibleJobNames'], 'eligibleJobNames');
   if (root['slots'] !== 1) throw new ConfigError('slots must equal 1 for the pilot');
-  const admission = root['admission'] ?? 'default-branch-pushes';
+  const admission = Object.hasOwn(root, 'admission') ? root['admission'] : 'default-branch-pushes';
   if (typeof admission !== 'string' || !ADMISSION_POLICIES.includes(admission as AdmissionPolicy)) {
     throw new ConfigError('admission must be default-branch-pushes or same-repository');
   }
