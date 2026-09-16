@@ -60,6 +60,9 @@ import type { CliIo, RunnerCommandService } from './cli.js';
 
 const DEFAULT_GH_PATH = '/opt/homebrew/bin/gh';
 const DEFAULT_POLL_LIMIT = 10_000;
+// GitHub and Nebius reads through their CLIs take 10-15 s each under launchd on macOS (keyring and
+// token access), so the per-call read timeout never drops below two minutes.
+const CLI_READ_TIMEOUT_FLOOR_MS = 120_000;
 const THIRTY_DAY_MONTH_MS = 30 * 24 * 3_600_000;
 
 export interface ObservedAccounting {
@@ -173,10 +176,11 @@ async function createContext(configPath: string, permitPath: string | undefined,
       const result = await runProcess({ command, args, timeoutMs: options.timeoutMs, env: environment });
       return { exitCode: result.exitCode ?? 1, stdout: result.stdout, stderr: result.stderr };
     },
-  }, { ghPath, timeoutMs: config.timing.pollIntervalMs });
+  }, { ghPath, timeoutMs: Math.max(config.timing.pollIntervalMs, CLI_READ_TIMEOUT_FLOOR_MS) });
   const nebius = new NebiusCli({
     binaryPath: nebiusPath,
     profile: config.nebius.profile,
+    readTimeoutMs: CLI_READ_TIMEOUT_FLOOR_MS,
     projectId: config.nebius.projectId,
     execute: async (command) => {
       const result = await runProcess({

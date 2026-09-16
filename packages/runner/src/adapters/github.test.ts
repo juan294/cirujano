@@ -286,6 +286,14 @@ describe('runner ownership and sensitive responses (R06)', () => {
     expect(rateLimitBackoffMs(500, {}, NOW)).toBeNull();
   });
 
+  it('names the redacted stderr tail when gh exits without a response', async () => {
+    const process: ExternalProcess = { run: async () => ({ exitCode: 1, stdout: '', stderr: 'gh: keyring unavailable token=ghp_' + 'a'.repeat(36) + '\n' }) };
+    const adapter = new GitHubAdapter(process, { ghPath: '/opt/homebrew/bin/gh', timeoutMs: 5_000 });
+    await expect(adapter.repository('trusted', 'private')).rejects.toThrow(/gh exited 1 without a parseable response: gh: keyring unavailable token=\[REDACTED\]/u);
+    const silent: ExternalProcess = { run: async () => ({ exitCode: 1, stdout: '', stderr: '' }) };
+    await expect(new GitHubAdapter(silent, { ghPath: '/opt/homebrew/bin/gh', timeoutMs: 5_000 }).repository('trusted', 'private')).rejects.toThrow(/without a parseable response \(no stderr\)/u);
+  });
+
   it('rejects a relative gh path before any command can execute', () => {
     const process: ExternalProcess = { run: async () => ({ exitCode: 0, stdout: '', stderr: '' }) };
     expect(() => new GitHubAdapter(process, { ghPath: 'gh', timeoutMs: 5_000 })).toThrow('absolute');

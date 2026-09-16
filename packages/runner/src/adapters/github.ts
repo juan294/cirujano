@@ -1,4 +1,5 @@
 import type { OwnershipStatus, QueueSnapshot, AdmissionPolicy } from '../contracts.js';
+import { redactCredentialShapes } from '../journal.js';
 
 const API_VERSION = '2026-03-10';
 const ACTIVE_RUN_STATUS_LIST = ['queued', 'in_progress', 'waiting', 'requested', 'pending'] as const;
@@ -536,7 +537,11 @@ export class GitHubAdapter {
     const args = ['api', '--include', '--method', method, '-H', `X-GitHub-Api-Version: ${API_VERSION}`, endpoint];
     for (const [name, value] of Object.entries(fields)) args.push('-f', `${name}=${value}`);
     const result = await this.#process.run(this.#ghPath, args, { timeoutMs: this.#timeoutMs });
-    if (result.stdout.length === 0) throw new GitHubResponseError(`gh exited ${result.exitCode} without a parseable response`);
+    if (result.stdout.length === 0) {
+      // The tail is bounded and credential-scrubbed so a launchd log can show why gh failed.
+      const tail = redactCredentialShapes(result.stderr.trim()).slice(-300);
+      throw new GitHubResponseError(`gh exited ${result.exitCode} without a parseable response${tail.length === 0 ? ' (no stderr)' : `: ${tail}`}`);
+    }
     return parseIncludedResponse(result.stdout);
   }
 }
