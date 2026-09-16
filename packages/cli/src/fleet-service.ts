@@ -265,6 +265,8 @@ async function controllerConfig(
     eligibleJobNames: enrollment.jobNames,
     runnerLabel: enrollment.runnerLabel,
     slots: 1,
+    // Fleet enrollments serve the repository's own pull requests too; forks are still refused.
+    admission: 'same-repository',
     nebius: template.nebius,
     ssh: { publicKey: hostKey.publicKey, fingerprint: hostKey.fingerprint },
     ownership: { controllerId, resourcePrefix },

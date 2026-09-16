@@ -130,8 +130,14 @@ Per-enrollment layout under `~/.local/share/cirujano/runner/` (mode `0700`):
 - `<P#>/config.json`: written by `cirujano fleet controller-config`. Plan D5
   and D6: `cpu-d3` `4vcpu-16gb`, 80 GiB `network-ssd`, label
   `cirujano-baseline-actions_linux`, `lifetimeMs` 4 h, `maxJobMs` 60 min,
-  `shutdownMarginMs` 5 min, `idleGraceMs` 5 min, `pollIntervalMs` 30 s, and the
-  enrollment's repository id, workflow id and job names.
+  `shutdownMarginMs` 5 min, `idleGraceMs` 5 min, `pollIntervalMs` 30 s, the
+  enrollment's repository id, workflow id and job names, and
+  `admission: same-repository`: unlike the pilot's default-branch-push rule,
+  an enrolled controller also serves `pull_request` runs and pushes on any
+  branch, provided the head repository is the enrolled private repository
+  itself. Fork heads are never admitted. Regenerating a config changes its
+  hash; the controller then refuses the old journals, so archive a dry-run
+  state directory before restarting and never regenerate under a live permit.
 - `<P#>/ssh_host_ed25519_key[.pub]`: the per-enrollment VM host key.
 - `<P#>/actions-runner.env`: the pinned Actions runner version and SHA-256.
 - `<P#>/permit-proposal.json` and `permit.draft.json`: unapproved output of

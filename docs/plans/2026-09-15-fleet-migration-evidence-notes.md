@@ -72,7 +72,17 @@ Worktree `/Users/juan/code/cirujano-fleet-migration`, branch
   package change with its own tests and a config field); (B) a conditional
   `runs-on` expression that moves only default-branch pushes (tiny volume,
   and `extractJobRunsOn` refuses expressions by design). Owner decision
-  pending; no cutover happens before it.
+  2026-09-16: option A. Implemented as the runner config field
+  `admission: 'default-branch-pushes' | 'same-repository'` (default the pilot
+  rule; optional on input so pilot configs parse). `same-repository` admits
+  `push`, `workflow_dispatch` and `pull_request` runs on any branch whose head
+  repository is the enrolled private repository itself; forks were and remain
+  refused by the head-repository identity check. `fleet controller-config`
+  writes `same-repository`. Tests: `adapters/github.test.ts`,
+  `config.test.ts`, `fleet-service.test.ts`. The P1 config was regenerated
+  (new `configHash` `48ae01b6…`) and its dry-run journals archived under
+  `P1/dry-run-reset-20260916/` because the controller refuses journals of
+  another identity.
 
 ## Phase 3 state
 

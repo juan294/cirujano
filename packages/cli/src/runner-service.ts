@@ -453,7 +453,7 @@ async function observe(context: RuntimeContext): Promise<LifecycleInput> {
   let queue = buildQueueSnapshot({
     repository, expectedRepository: context.config.repository, runs,
     jobs: collection(jobsComplete, deduplicatedJobs, jobsReason, retryAfterMs), runners,
-    workflowIds: context.config.workflowIds, allowedBranch: context.config.allowedBranch,
+    workflowIds: context.config.workflowIds, allowedBranch: context.config.allowedBranch, admission: context.config.admission,
     eligibleJobNames: context.config.eligibleJobNames, runnerLabel: context.config.runnerLabel,
     expectedRunnerName: expectedRunnerName(context, state), observedAtMs: nowMs,
   });

@@ -313,7 +313,7 @@ describe('fleet controller-config and permit-proposal (phase 2 U1)', () => {
       const config = parseRunnerConfig(JSON.parse(rawConfig));
       expect(config).toMatchObject({
         repository: { id: 777, nameWithOwner: 'juan294/app', visibility: 'private' },
-        workflowIds: [41], allowedBranch: 'main', eligibleJobNames: ['Check'], runnerLabel: LABEL, slots: 1,
+        workflowIds: [41], allowedBranch: 'main', eligibleJobNames: ['Check'], runnerLabel: LABEL, slots: 1, admission: 'same-repository',
         nebius: template.nebius,
         ownership: { controllerId: 'cirujano-p1-20260916', resourcePrefix: 'cirujano-p1' },
         timing: { pollIntervalMs: 30_000, idleGraceMs: 300_000, bootTimeoutMs: 600_000, maxJobMs: 3_600_000, lifetimeMs: 14_400_000, shutdownMarginMs: 300_000 },

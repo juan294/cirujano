@@ -27,6 +27,15 @@ const validConfig = {
   },
 } as const;
 
+describe('runner admission policy', () => {
+  it('defaults to default-branch pushes, accepts same-repository, and refuses anything else', () => {
+    expect(parseRunnerConfig(validConfig).admission).toBe('default-branch-pushes');
+    expect(parseRunnerConfig({ ...validConfig, admission: 'same-repository' }).admission).toBe('same-repository');
+    expect(() => parseRunnerConfig({ ...validConfig, admission: 'any-fork' })).toThrow(ConfigError);
+    expect(() => parseRunnerConfig({ ...validConfig, admission: 'any-fork' })).toThrow(/admission must be default-branch-pushes or same-repository/u);
+  });
+});
+
 describe('parseRunnerConfig (R01)', () => {
   it.each([
     ['schema version', { ...validConfig, schemaVersion: 2 }],

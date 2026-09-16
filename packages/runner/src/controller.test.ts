@@ -380,7 +380,7 @@ function startInput(): LifecycleInput {
     nowMs: NOW,
     config: {
       schemaVersion: 1, repository: { id: 1, nameWithOwner: 'trusted/private', visibility: 'private' },
-      workflowIds: [1], allowedBranch: 'develop', eligibleJobNames: ['e2e'], runnerLabel: 'pilot', slots: 1,
+      workflowIds: [1], allowedBranch: 'develop', eligibleJobNames: ['e2e'], runnerLabel: 'pilot', slots: 1, admission: 'default-branch-pushes',
       nebius: { profile: 'p', projectId: 'project', subnetId: 'subnet', imageId: 'image', platform: 'cpu-d3', preset: '4vcpu-16gb', diskType: 'network-ssd', diskSizeGiB: 80 },
       ssh: { publicKey: 'ssh-ed25519 key', fingerprint: 'SHA256:key' },
       ownership: { controllerId: 'controller', resourcePrefix: 'runner' },

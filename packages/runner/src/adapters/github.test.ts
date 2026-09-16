@@ -158,6 +158,28 @@ describe('GitHub response parsers (R06)', () => {
     expect(snapshot).toMatchObject({ complete: true, eligibleQueuedJobs: 1, ownedBusy: false });
   });
 
+  it('admits same-repository pull requests on any branch under the same-repository policy, never forks', () => {
+    const runs = collectRunPages([{ page: 1, response: { status: 200, headers: {}, body: { total_count: 4, workflow_runs: [
+      run({ id: 1002, event: 'pull_request', head_branch: 'feature/x', pull_requests: [{ id: 9 }] }),
+      run({ id: 1003, event: 'pull_request', head_branch: 'feature/y', head_repository: { id: 999 }, pull_requests: [{ id: 10 }] }),
+      run({ id: 1004, event: 'push', head_branch: 'feature/z' }),
+      run({ id: 1005, event: 'schedule' }),
+    ] } } }]);
+    const jobs = collectJobPages([1002, 1003, 1004, 1005].map((runId, index) => (
+      { runId, runAttempt: 2, page: 1, response: { status: 200, headers: {}, body: { total_count: 1, jobs: [job({ id: 4000 + index, run_id: runId })] } } }
+    )));
+    const base = {
+      repository: { id: 123, nameWithOwner: 'trusted/private' as const, visibility: 'private' as const, fork: false as const },
+      expectedRepository: { id: 123, nameWithOwner: 'trusted/private' },
+      runs, jobs, runners: { complete: true, items: [] }, workflowIds: [41],
+      allowedBranch: 'develop', eligibleJobNames: ['e2e'], runnerLabel: 'cirujano-pilot-a', expectedRunnerName: 'cirujano-a-g1', observedAtMs: NOW,
+    };
+    // Same-repository PR (1002) and same-repository push on another branch (1004) are admitted; the fork PR and the schedule are not.
+    expect(buildQueueSnapshot({ ...base, admission: 'same-repository' })).toMatchObject({ complete: true, eligibleQueuedJobs: 2 });
+    expect(buildQueueSnapshot({ ...base, admission: 'default-branch-pushes' })).toMatchObject({ complete: true, eligibleQueuedJobs: 0 });
+    expect(buildQueueSnapshot(base)).toMatchObject({ complete: true, eligibleQueuedJobs: 0 });
+  });
+
   it('ignores a stale attempt when an exact newer attempt for the run is present', () => {
     const runs = collectRunPages([{ page: 1, response: { status: 200, headers: {}, body: {
       total_count: 2, workflow_runs: [run({ run_attempt: 1 }), run()],

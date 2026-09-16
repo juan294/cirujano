@@ -4,8 +4,8 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { createHash, generateKeyPairSync } from 'node:crypto';
-import { verifySshPublicKeyFingerprint } from '@cirujano/runner';
+import { generateKeyPairSync } from 'node:crypto';
+import { parseRunnerConfig, runnerConfigHash, verifySshPublicKeyFingerprint } from '@cirujano/runner';
 
 import { runCli, type CliIo } from './cli.js';
 import { advanceObservedLifecycle, createRunnerCommandService } from './runner-service.js';
@@ -624,7 +624,7 @@ else{const ready=s.guest!=='booting';process.stdout.write(JSON.stringify({comple
   const configPath = join(directory, 'config.json');
   const configText = JSON.stringify(config);
   await writeFile(configPath, configText);
-  const configHash = createHash('sha256').update(configText).digest('hex');
+  const configHash = runnerConfigHash(parseRunnerConfig(config));
   const permitPath = join(directory, 'permit.json');
   const now = Date.now();
   await writeFile(permitPath, JSON.stringify({ schemaVersion: 1, permitId: 'r11-permit', operations: ['create', 'start', 'register', 'stop', 'delete'], issuedAtMs: now - 1_000, expiresAtMs: now + 10_800_000, maxStarts: 3, maxRuntimeMs: 20_000_000, maxTotalCostUsd: 10, recoveryAllowed: true, configHash, candidateDigest: 'fixture-candidate', repositoryId: 123, projectId: 'project-1', controllerId: 'controller-a', resourcePrefix: 'cirujano-a' }));
@@ -711,7 +711,7 @@ process.stdout.write(JSON.stringify({complete:true,status:state,admissionEnabled
   const config = running ? { ...validRunnerConfig, ssh: { publicKey: testSshPublicKey, fingerprint: verifySshPublicKeyFingerprint(testSshPublicKey) } } : validRunnerConfig;
   const configText = JSON.stringify(config);
   await writeFile(configPath, configText);
-  const configHash = createHash('sha256').update(configText).digest('hex');
+  const configHash = runnerConfigHash(parseRunnerConfig(config));
   const permitPath = join(directory, 'permit.json');
   if (demand) {
     const now = Date.now();

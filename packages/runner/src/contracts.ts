@@ -48,6 +48,14 @@ export interface TimingConfig {
   shutdownMarginMs: number;
 }
 
+/**
+ * Which runs may be assigned to the owned runner.
+ * - `default-branch-pushes` (pilot): push and workflow_dispatch runs on `allowedBranch` with no pull request.
+ * - `same-repository` (fleet enrollments): additionally pull_request runs and pushes on any branch, as
+ *   long as the head repository is the enrolled private repository itself (never a fork).
+ */
+export type AdmissionPolicy = 'default-branch-pushes' | 'same-repository';
+
 export interface RunnerConfig {
   schemaVersion: typeof RUNNER_SCHEMA_VERSION;
   repository: RepositoryConfig;
@@ -56,6 +64,7 @@ export interface RunnerConfig {
   eligibleJobNames: readonly string[];
   runnerLabel: string;
   slots: 1;
+  admission: AdmissionPolicy;
   nebius: NebiusConfig;
   ssh: SshConfig;
   ownership: OwnershipConfig;

@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 
-import { RUNNER_SCHEMA_VERSION, type RunnerConfig } from './contracts.js';
+import { RUNNER_SCHEMA_VERSION, type AdmissionPolicy, type RunnerConfig } from './contracts.js';
 
 export class ConfigError extends Error {
   override readonly name = 'ConfigError';
@@ -10,6 +10,9 @@ const ROOT_KEYS = [
   'schemaVersion', 'repository', 'workflowIds', 'allowedBranch', 'eligibleJobNames',
   'runnerLabel', 'slots', 'nebius', 'ssh', 'ownership', 'timing', 'rates',
 ] as const;
+// Optional on input so pilot configs keep parsing; the parsed config always carries it.
+const OPTIONAL_ROOT_KEYS = ['admission'] as const;
+const ADMISSION_POLICIES: readonly AdmissionPolicy[] = ['default-branch-pushes', 'same-repository'];
 const REPOSITORY_KEYS = ['id', 'nameWithOwner', 'visibility'] as const;
 const NEBIUS_KEYS = ['profile', 'projectId', 'subnetId', 'imageId', 'platform', 'preset', 'diskType', 'diskSizeGiB'] as const;
 const SSH_KEYS = ['publicKey', 'fingerprint'] as const;
@@ -19,7 +22,7 @@ const RATE_KEYS = ['currency', 'quotedAt', 'source', 'computeUsdPerHour', 'diskU
 
 export function parseRunnerConfig(input: unknown): RunnerConfig {
   const root = objectAt(input, 'config');
-  exactKeys(root, ROOT_KEYS, 'config');
+  exactKeys(root, ROOT_KEYS, 'config', OPTIONAL_ROOT_KEYS);
   if (root['schemaVersion'] !== RUNNER_SCHEMA_VERSION) throw new ConfigError('schemaVersion must be 1');
 
   const repository = objectAt(root['repository'], 'repository');
@@ -43,6 +46,10 @@ export function parseRunnerConfig(input: unknown): RunnerConfig {
   const workflowIds = positiveIntegerArray(root['workflowIds'], 'workflowIds');
   const eligibleJobNames = stringArray(root['eligibleJobNames'], 'eligibleJobNames');
   if (root['slots'] !== 1) throw new ConfigError('slots must equal 1 for the pilot');
+  const admission = root['admission'] ?? 'default-branch-pushes';
+  if (typeof admission !== 'string' || !ADMISSION_POLICIES.includes(admission as AdmissionPolicy)) {
+    throw new ConfigError('admission must be default-branch-pushes or same-repository');
+  }
 
   const parsed: RunnerConfig = {
     schemaVersion: RUNNER_SCHEMA_VERSION,
@@ -52,6 +59,7 @@ export function parseRunnerConfig(input: unknown): RunnerConfig {
     eligibleJobNames,
     runnerLabel: nonemptyString(root['runnerLabel'], 'runnerLabel'),
     slots: 1,
+    admission: admission as AdmissionPolicy,
     nebius: {
       profile: nonemptyString(nebius['profile'], 'nebius.profile'),
       projectId: nonemptyString(nebius['projectId'], 'nebius.projectId'),
@@ -111,8 +119,8 @@ function objectAt(value: unknown, path: string): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
-function exactKeys(object: Record<string, unknown>, allowed: readonly string[], path: string): void {
-  const allowedSet = new Set(allowed);
+function exactKeys(object: Record<string, unknown>, allowed: readonly string[], path: string, optional: readonly string[] = []): void {
+  const allowedSet = new Set([...allowed, ...optional]);
   const unknown = Object.keys(object).find((key) => !allowedSet.has(key));
   if (unknown !== undefined) throw new ConfigError(`${path} contains unknown key ${unknown}`);
   const missing = allowed.find((key) => !Object.hasOwn(object, key));

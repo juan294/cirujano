@@ -1,4 +1,4 @@
-import type { OwnershipStatus, QueueSnapshot } from '../contracts.js';
+import type { OwnershipStatus, QueueSnapshot, AdmissionPolicy } from '../contracts.js';
 
 const API_VERSION = '2026-03-10';
 const ACTIVE_RUN_STATUS_LIST = ['queued', 'in_progress', 'waiting', 'requested', 'pending'] as const;
@@ -93,6 +93,8 @@ export interface QueueCollectionInput {
   runners: Collection<RepositoryRunner>;
   workflowIds: readonly number[];
   allowedBranch: string;
+  /** Defaults to the pilot policy: default-branch pushes only. */
+  admission?: AdmissionPolicy;
   eligibleJobNames: readonly string[];
   runnerLabel: string;
   expectedRunnerName: string;
@@ -402,6 +404,12 @@ export function classifyOwnedRunners(runners: readonly RepositoryRunner[], expec
   return { ownership: 'owned', matches, runner: matches[0]! };
 }
 
+/** The head repository is already required to be the enrolled repository itself, so forks never reach here. */
+function runAdmitted(run: WorkflowRun, admission: AdmissionPolicy, allowedBranch: string): boolean {
+  if (admission === 'same-repository') return ['push', 'workflow_dispatch', 'pull_request'].includes(run.event);
+  return run.pullRequestCount === 0 && (run.event === 'push' || run.event === 'workflow_dispatch') && run.headBranch === allowedBranch;
+}
+
 export function buildQueueSnapshot(input: QueueCollectionInput): GitHubQueueSnapshot {
   const incompleteSource = [input.runs, input.jobs, input.runners].find((source) => !source.complete);
   const identityMatches = input.repository.id === input.expectedRepository.id
@@ -423,8 +431,8 @@ export function buildQueueSnapshot(input: QueueCollectionInput): GitHubQueueSnap
     const run = runByAttempt.get(`${job.runId}:${job.runAttempt}`);
     return run !== undefined
       && run.repositoryId === input.repository.id && run.headRepositoryId === input.repository.id
-      && run.pullRequestCount === 0 && (run.event === 'push' || run.event === 'workflow_dispatch')
-      && input.workflowIds.includes(run.workflowId) && run.headBranch === input.allowedBranch
+      && runAdmitted(run, input.admission ?? 'default-branch-pushes', input.allowedBranch)
+      && input.workflowIds.includes(run.workflowId)
       && run.headSha === job.headSha && input.eligibleJobNames.includes(job.name)
       && input.runnerLabel.length > 0 && job.labels.includes(input.runnerLabel);
   });
