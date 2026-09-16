@@ -143,7 +143,13 @@ Per-enrollment layout under `~/.local/share/cirujano/runner/` (mode `0700`):
   Ubuntu image where enrolled workloads need it: `postgresql-client`, `zstd`
   and passwordless `sudo` for the `runner` user (Playwright `--with-deps`,
   `apt-get` steps), decided 2026-09-16 after the first P1 runs failed on a
-  missing `psql`. Regenerating a config changes its
+  missing `psql`. Sudo adds no privilege the job did not already have: the
+  runner user is root-equivalent through its `docker` group membership. Known
+  gap (pre-existing, tracked in the fleet migration notes): the controller's
+  emergency stop trusts the guest-reported grant deadline, so a root job can
+  outlive `lifetimeMs`; the permit expiry still blocks new starts and the
+  owner's own project bears the cost until the VM is stopped by hand.
+  Regenerating a config changes its
   hash; the controller then refuses the old journals, so archive a dry-run
   state directory before restarting and never regenerate under a live permit.
 - `<P#>/ssh_host_ed25519_key[.pub]`: the per-enrollment VM host key.

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-# Runs as the unprivileged runner account inside the job's environment before
+# Runs as the runner account (root-equivalent through docker and sudo) inside the job's environment before
 # every job, so it takes no environment overrides: the grant path and clocks are
 # fixed. It reads the exact grant the guest persisted and refuses work that
 # cannot finish before the immutable shutdown. Like the watchdog it measures

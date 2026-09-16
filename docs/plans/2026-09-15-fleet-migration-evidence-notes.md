@@ -192,3 +192,20 @@ is: an apostrophe inside an unquoted job `name:` keeps a trailing comment in
 the captured display name (`--job-name` overrides it); the bare-segment guard
 refuses a publish whose private repository name coincides with a word of the
 report template (fail closed and loud).
+
+### Guest parity (`da6983d`): APPROVED, one deferred finding
+
+Review of the hosted-parity change (postgresql-client, zstd, passwordless sudo
+for `runner`): the sudo grant adds no privilege because the runner user was
+already root-equivalent through the `docker` group, and the old helper-only
+sudoers rule already let a job re-arm the grant through `arm-grant`'s stdin.
+
+Deferred, architectural (owner-visible, not resolved here): the controller's
+emergency stop (`lifecycle.ts` immutable-deadline branch) compares `nowMs`
+against the guest-reported `grant.deadlineMs`, and runtime accrual uses the
+guest-reported `startedAtMs`, so a root job that forges `/opt/cirujano/status`
+can keep a VM running past `lifetimeMs` and past the permit's runtime and cost
+ceilings until the owner stops it; the permit expiry still blocks every new
+start. Proposed fix: emergency-stop once `nowMs >= journal.grantDeadlineMs`
+regardless of the guest, and accrue runtime from the journaled start. Bounded
+today by the owner's own project cost and the report's controller evidence.
