@@ -209,3 +209,31 @@ ceilings until the owner stops it; the permit expiry still blocks every new
 start. Proposed fix: emergency-stop once `nowMs >= journal.grantDeadlineMs`
 regardless of the guest, and accrue runtime from the journaled start. Bounded
 today by the owner's own project cost and the report's controller evidence.
+
+## Phase 3, P1: cut over 2026-09-16
+
+- Owner-executed: `develop` pushed (CI #34 and CodeQL green at `f04e02a`), P1
+  branch pushed, PR opened and squash-merged at 18:41Z; permit v1 then v2
+  confirmed in session; Nebius IAM group and permit created after the owner
+  allowed the classifier-denied grant.
+- Automated: `fleet cutover --id P1 --commit <merge>` recorded `after`
+  (`verify` green); `telemetry collect` + `report --registry` run over the real
+  store with `complete: true` (phase 4 live acceptance).
+- Live findings, each fixed before the next run: (1) `supabase/setup-cli`
+  restores a hosted-runner bun cache that is unusable on the VM (workflow-side
+  fix in the target repository: pinned CLI from npm when self-hosted);
+  (2) `psql` absent on the guest, then Playwright `--with-deps` needs sudo
+  (guest parity change `da6983d`, reviewed APPROVED); (3) under launchd every
+  gh and nebius CLI read takes 10-15 s so the 30 s timeout tied to
+  `pollIntervalMs` failed every `watch` tick (`780307a`: 120 s floor and gh
+  stderr surfaced); (4) the Nebius federation token lives ~12 h, so the
+  controller runs on a dedicated service-account profile.
+- Evidence: three Cirujano jobs on P1 (two failures on the old image, one
+  16-minute success on the parity image), assignments journaled with runner
+  ids 21, 22, 23; generation costs USD 0.087 (archived, old bundle) and
+  USD 0.060 (live).
+- Follow-ups recorded: sum archived generations into the report; a controller
+  restart after a >120 s read hang paused ticks for minutes (KeepAlive
+  recovered); the deferred controller-side deadline backstop.
+- Next: P2 and P3 are separate acceptance gates; the after-window evidence for
+  P1 accrues from the next post-merge `check` run.
