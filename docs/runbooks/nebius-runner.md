@@ -139,7 +139,11 @@ Per-enrollment layout under `~/.local/share/cirujano/runner/` (mode `0700`):
   "anyone who can push a branch to the enrolled private repository": such a
   push can rewrite the enrolled job's steps and they run on the VM, whose
   only credential is the job's own `GITHUB_TOKEN` (ephemeral runner,
-  cloud-init refuses credential material). Regenerating a config changes its
+  cloud-init refuses credential material). The guest mirrors GitHub's hosted
+  Ubuntu image where enrolled workloads need it: `postgresql-client`, `zstd`
+  and passwordless `sudo` for the `runner` user (Playwright `--with-deps`,
+  `apt-get` steps), decided 2026-09-16 after the first P1 runs failed on a
+  missing `psql`. Regenerating a config changes its
   hash; the controller then refuses the old journals, so archive a dry-run
   state directory before restarting and never regenerate under a live permit.
 - `<P#>/ssh_host_ed25519_key[.pub]`: the per-enrollment VM host key.

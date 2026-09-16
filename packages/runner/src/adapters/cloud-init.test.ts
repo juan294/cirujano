@@ -114,6 +114,18 @@ describe('renderCloudInit (R08)', () => {
     expect(packageInstall).toBeLessThan(fullBootstrap);
   });
 
+  it('gives the runner hosted-runner parity: postgres client, zstd and passwordless sudo', () => {
+    // GitHub-hosted Ubuntu ships psql and zstd and lets jobs sudo (Playwright --with-deps, apt
+    // installs). Enrolled private-repository jobs already run arbitrary steps on the VM, so
+    // parity adds no trust; the runner stays ephemeral and the disk holds no credentials.
+    const rendered = renderCloudInit(validInput);
+    const packageLine = rendered.split('\n').find((line) => line.includes('apt-get, install, --yes, build-essential'));
+    expect(packageLine).toContain('postgresql-client');
+    expect(packageLine).toContain('zstd');
+    expect(rendered).toContain('content: "runner ALL=(ALL) NOPASSWD:ALL"');
+    expect(rendered).not.toContain('NOPASSWD: /opt/cirujano');
+  });
+
   it('uses one native host-key owner and suppresses serial key disclosure', () => {
     const rendered = renderCloudInit(validInput);
     for (const name of guestFileNames) {

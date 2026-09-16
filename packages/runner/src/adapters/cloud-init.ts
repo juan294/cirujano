@@ -64,7 +64,10 @@ export function renderCloudInit(input: CloudInitInput): string {
     '  - path: /etc/sudoers.d/cirujano-runner',
     '    owner: root:root',
     "    permissions: '0440'",
-    `    content: ${yamlString('runner ALL=(root) NOPASSWD: /opt/cirujano/arm-grant, /opt/cirujano/register-runner, /opt/cirujano/drain, /opt/cirujano/status, /opt/cirujano/resume-admission')}`,
+    // Hosted-runner parity: jobs on GitHub's Ubuntu image can sudo (Playwright --with-deps, apt
+    // installs). The runner is ephemeral, the generation lives four hours at most and the disk
+    // carries no credentials, so parity does not widen the trust boundary of same-repository jobs.
+    `    content: ${yamlString('runner ALL=(ALL) NOPASSWD:ALL')}`,
   ];
 
   for (const name of GUEST_FILE_NAMES) {
@@ -83,7 +86,7 @@ export function renderCloudInit(input: CloudInitInput): string {
     '  - [bash, /opt/cirujano/diagnose-ssh]',
     '  - [sed, -i, "s|http://archive.ubuntu.com|https://archive.ubuntu.com|g; s|http://security.ubuntu.com|https://security.ubuntu.com|g", /etc/apt/sources.list.d/ubuntu.sources]',
     '  - [apt-get, update]',
-    '  - [apt-get, install, --yes, build-essential, ca-certificates, curl, docker.io, git, gnupg, jq, libicu-dev, unzip, xz-utils]',
+    '  - [apt-get, install, --yes, build-essential, ca-certificates, curl, docker.io, git, gnupg, jq, libicu-dev, postgresql-client, unzip, xz-utils, zstd]',
     '  - [install, -d, -m, "0755", /etc/apt/keyrings]',
     '  - [bash, -c, "curl --fail --silent --show-error --location https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor --yes --output /etc/apt/keyrings/nodesource.gpg"]',
     '  - [bash, -c, "echo deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_22.x nodistro main > /etc/apt/sources.list.d/nodesource.list"]',
