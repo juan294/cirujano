@@ -223,7 +223,7 @@ describe('guest helpers (R08-R09)', () => {
     writeFileSync(flock, '#!/usr/bin/python3\nimport fcntl, sys\nfd=int(sys.argv[-1])\nop=fcntl.LOCK_UN if "-u" in sys.argv else fcntl.LOCK_EX | fcntl.LOCK_NB\ntry: fcntl.flock(fd, op)\nexcept BlockingIOError: sys.exit(1)\n');
     chmodSync(flock, 0o700);
     const registration = spawn('/bin/bash', [resolve(guestDir, 'register-runner.sh')], {
-      env: { ...process.env, RUNNER_REPOSITORY: 'trusted/private', RUNNER_NAME: 'runner-9', RUNNER_LABEL: 'pilot', RUNNER_GENERATION: '9', CIRUJANO_STATE_DIR: state, CIRUJANO_RUNNER_ROOT: state, CIRUJANO_RUNNER_TEMPLATE: template, CIRUJANO_SUDO_BIN: sudo, CIRUJANO_FLOCK_BIN: flock, CIRUJANO_TEST_MODE: '1' },
+      env: { ...process.env, RUNNER_REPOSITORY: 'trusted/private', RUNNER_NAME: 'runner-9', RUNNER_LABEL: 'pilot', RUNNER_GENERATION: '9', CIRUJANO_STATE_DIR: state, CIRUJANO_RUNNER_ROOT: state, CIRUJANO_RUNNER_TEMPLATE: template, CIRUJANO_RUNNER_WORK: resolve(state, 'work'), CIRUJANO_SUDO_BIN: sudo, CIRUJANO_FLOCK_BIN: flock, CIRUJANO_TEST_MODE: '1' },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     registration.stdin.end('trusted/private\nrunner-9\npilot\n9\nregistration-token\n');
@@ -235,6 +235,34 @@ describe('guest helpers (R08-R09)', () => {
     });
     expect(existsSync(resolve(state, 'runner-9', 'run.sh'))).toBe(false);
     registration.kill('SIGKILL');
+  });
+
+  it('registers the runner with the hosted-parity work directory', () => {
+    // Live 2026-09-17 (P2): the work tree sat under /var/lib/cirujano/runner-1/_work, and a
+    // repository's coverage include glob `lib/**/*.ts` matched every file in it because vitest
+    // matches include globs against the absolute path. GitHub-hosted runners check out under
+    // /home/runner/work/<repo>/<repo>; the guest registers with the same root.
+    const state = mkdtempSync(resolve(tmpdir(), 'cirujano-workdir-'));
+    const template = resolve(state, 'template');
+    mkdirSync(template);
+    const argvPath = resolve(state, 'config-argv');
+    writeFileSync(resolve(template, 'config.sh'), `#!/usr/bin/env bash\nprintf '%s\\n' "$@" > "${argvPath}"\nexit 0\n`);
+    writeFileSync(resolve(template, 'run.sh'), '#!/usr/bin/env bash\nexit 0\n');
+    chmodSync(resolve(template, 'config.sh'), 0o700);
+    chmodSync(resolve(template, 'run.sh'), 0o700);
+    const sudo = resolve(state, 'sudo.sh');
+    writeFileSync(sudo, '#!/usr/bin/env bash\nwhile [[ $# -gt 0 ]]; do case "$1" in -u) shift 2;; --preserve-env=*) shift;; *) exec "$@";; esac; done\n');
+    chmodSync(sudo, 0o700);
+    const workRoot = resolve(state, 'home-runner-work');
+    execFileSync('/bin/bash', [resolve(guestDir, 'register-runner.sh')], {
+      env: { ...process.env, CIRUJANO_STATE_DIR: state, CIRUJANO_RUNNER_ROOT: state, CIRUJANO_RUNNER_TEMPLATE: template, CIRUJANO_SUDO_BIN: sudo, CIRUJANO_FLOCK_BIN: '/usr/bin/true', CIRUJANO_RUNNER_WORK: workRoot, CIRUJANO_TEST_MODE: '1' },
+      input: 'trusted/private\nrunner-10\npilot\n10\nregistration-token\n',
+    });
+    const argv = readFileSync(argvPath, 'utf8').split('\n');
+    expect(argv[argv.indexOf('--work') + 1]).toBe(workRoot);
+    expect(existsSync(workRoot)).toBe(true);
+    // The default is the hosted path; the test override only exists because the suite has no runner user.
+    expect(readFileSync(resolve(guestDir, 'register-runner.sh'), 'utf8')).toContain('CIRUJANO_RUNNER_WORK:-/home/runner/work');
   });
 
   it('reports a machine-readable fail-closed guest snapshot', () => {

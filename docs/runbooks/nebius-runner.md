@@ -144,7 +144,10 @@ Per-enrollment layout under `~/.local/share/cirujano/runner/` (mode `0700`):
   cloud-init refuses credential material). The guest mirrors GitHub's hosted
   Ubuntu image where enrolled workloads need it: `postgresql-client`, `zstd`
   and passwordless `sudo` for the `runner` user (Playwright `--with-deps`,
-  `apt-get` steps), decided 2026-09-16 after the first P1 runs failed on a
+  `apt-get` steps), and checks out under `/home/runner/work/<repo>/<repo>`
+  like GitHub's runners (a root such as `/var/lib/cirujano/...` leaked the
+  `lib` segment into a workload's absolute-path coverage globs, P2
+  2026-09-17), decided 2026-09-16 after the first P1 runs failed on a
   missing `psql`. Sudo adds no privilege the job did not already have: the
   runner user is root-equivalent through its `docker` group membership. Known
   gap (pre-existing, tracked in the fleet migration notes): the controller's

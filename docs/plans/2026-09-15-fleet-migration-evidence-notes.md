@@ -140,6 +140,27 @@ Worktree `/Users/juan/code/cirujano-fleet-migration`, branch
   `CIRUJANO_CANDIDATE_DIGEST` set to the old digest to satisfy the old
   permits' binding; the wrapper still never sets it.
 
+### D-10 Guest work directory gets hosted path parity (found live 2026-09-17, P2)
+
+- Found: P2's first run passed the contract job on the runner but failed
+  `@archy/web` coverage thresholds (98.87 % lines) with all 2254 tests
+  green; hosted measures 100 % for the same commit and turbo task hash.
+  vitest matches `coverage.include` globs against the absolute path with
+  `contains: true`; the workload's `lib/**/*.ts` matched every file under
+  `/var/lib/cirujano/runner-1/_work/...`, so files hosted never measures
+  (its `app/(dashboard)/**` globs match nothing because of the parentheses)
+  entered the report with real gaps. Verified with the installed picomatch
+  against both roots; a clean Linux x64 / Node 24.21.0 container run of the
+  same commit measured 100 %.
+- Chose: `register-runner.sh` registers with `--work /home/runner/work`
+  (`CIRUJANO_RUNNER_WORK`), so `GITHUB_WORKSPACE` is
+  `/home/runner/work/<repo>/<repo>` exactly as on GitHub-hosted runners;
+  test in `guest.test.ts`. The workload's latent coverage bug is the
+  workload owner's to decide; the runner must not be the thing that
+  changes a measurement.
+- Cost: bundle change (guest files are embedded in cloud-init), so both
+  controllers were re-identified a third time on 2026-09-17.
+
 ## Phase 3 state
 
 Local, read-only preparation done on 2026-09-15 with the phase 4 bundle:
