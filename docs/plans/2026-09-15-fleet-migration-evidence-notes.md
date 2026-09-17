@@ -314,3 +314,30 @@ today by the owner's own project cost and the report's controller evidence.
   recovered); the deferred controller-side deadline backstop.
 - Next: P2 and P3 are separate acceptance gates; the after-window evidence for
   P1 accrues from the next post-merge `check` run.
+
+## Phase 3, P2 and P3: cut over 2026-09-17
+
+- P1 after-window: the first post-cutover nightly `schedule` run succeeded on
+  the runner after D-7 (8 min on the runner, 56 min queued while the
+  admission fix shipped).
+- P2 (two single-run jobs, one enrollment per D-8): the PR run passed the
+  Docker-backed contract job on the guest first time (6.8 min); the test job
+  failed its 100 % coverage thresholds until D-10 (path parity), then passed
+  (2.4 min). Merged and cut over; the post-merge run serialized both jobs on
+  one generation and was green.
+- P3 (four coverage shards, matrix enrollment): the PR run serialized the
+  shards on one slot, about 2.5 min each on the 4-vCPU guest plus about
+  1 min of ephemeral re-registration between them; stage 17.5 min including
+  a 4 min cold boot against about 6 min hosted in parallel. The hosted
+  coverage-merge accepted the guest blobs. The owner accepted the added
+  PR latency for the hosted minutes saved; merged and cut over.
+- Three live defects found and fixed the same day (D-7, D-9, D-10), each
+  paid for with a controller swap; guest-only changes keep the CLI digest
+  and the permits (D-10).
+- Owner decision 2026-09-17: the cc-rpi bash guard is removed from this
+  repository (`e7488e9`); remote steps run from the session with the
+  committed ask rules.
+- Next: after-window evidence accrues for all three; `telemetry report
+  --registry` and `fleet publish` once the windows carry enough runs. Open
+  follow-ups: archived generations in the report, the controller-side
+  deadline backstop, a second runner slot or larger preset for P3.
