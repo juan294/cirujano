@@ -58,6 +58,17 @@ describe('production runner command composition (R11/R12)', () => {
     });
   });
 
+  it('still observes the provider when the project listing exceeds 64 KiB', async () => {
+    // Live 2026-09-17: a second enrolled VM pushed `nebius compute instance list` past the process
+    // runner's 64 KiB default, the truncated JSON failed to parse, and every controller sharing the
+    // project went blind (`resource ownership is unknown`).
+    const fixture = await createFixture();
+    const io = captureIo();
+    const service = createRunnerCommandService({ ...fixture.env, CIRUJANO_FIXTURE_UNRELATED_INSTANCES: '300' });
+    expect(await service.run({ command: 'runner', action: 'inspect', configPath: fixture.configPath, format: 'json' }, io)).toBe(0);
+    expect(JSON.parse(io.out.join(''))).toMatchObject({ provider: { ownedMatches: 0, state: 'absent' } });
+  });
+
   it('runs one lock-scoped dry-run tick and performs zero provider writes without a permit', async () => {
     const fixture = await createFixture();
     const io = captureIo();
@@ -687,6 +698,7 @@ if (args.includes('list-operations-by-parent')) process.stdout.write(process.env
 else if (args.includes('stop')) { state = 'STOPPED'; fs.writeFileSync(process.env.CIRUJANO_PROVIDER_STATE_PATH, state); process.stdout.write(JSON.stringify({metadata:{id:'operation-stop'}})); }
 else if (args.includes('delete')) { state = 'ABSENT'; fs.writeFileSync(process.env.CIRUJANO_PROVIDER_STATE_PATH, state); process.stdout.write(JSON.stringify({metadata:{id:'operation-delete'}})); }
 else if (state !== 'ABSENT') process.stdout.write(JSON.stringify({items:[{metadata:{id:'instance-1',parent_id:'project-1',name:'cirujano-a-vm',labels:{'cirujano-controller':'controller-a','cirujano-config':process.env.CIRUJANO_CONFIG_HASH}},spec:{stopped:state==='STOPPED',recovery_policy:'FAIL',resources:{platform:'cpu-d3',preset:'4vcpu-16gb'},network_interfaces:[{name:'primary',subnet_id:'subnet-1',ip_address:{},public_ip_address:{}}],boot_disk:{attach_mode:'READ_WRITE',managed_disk:{name:'cirujano-a-boot',spec:{type:'NETWORK_SSD',size_gibibytes:80,source_image_id:'image-1'}}}},status:{state,network_interfaces:[{name:'primary',ip_address:{address:'10.0.0.4'},public_ip_address:{address:'203.0.113.4'}}],disk_attachments:[{name:'cirujano-a-boot',id:'disk-1'}]}}]}));
+else if (process.env.CIRUJANO_FIXTURE_UNRELATED_INSTANCES) process.stdout.write(JSON.stringify({items:Array.from({length:Number(process.env.CIRUJANO_FIXTURE_UNRELATED_INSTANCES)},(_,i)=>({metadata:{id:'other-'+i,parent_id:'project-1',name:'other-vm-'+i,labels:{team:'unrelated-'+i}},spec:{stopped:true,recovery_policy:'FAIL',resources:{platform:'cpu-d3',preset:'4vcpu-16gb'},network_interfaces:[{name:'primary',subnet_id:'subnet-1',ip_address:{},public_ip_address:{}}],boot_disk:{attach_mode:'READ_WRITE',managed_disk:{name:'other-boot-'+i,spec:{type:'NETWORK_SSD',size_gibibytes:80,source_image_id:'image-1'}}}},status:{state:'STOPPED',network_interfaces:[{name:'primary',ip_address:{address:'10.0.1.'+(i%250)},public_ip_address:{}}]}}))}));
 else process.stdout.write('{}');
 `);
   await writeFile(sshPath, `#!/usr/bin/env node

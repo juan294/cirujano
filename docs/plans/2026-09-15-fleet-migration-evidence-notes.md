@@ -101,6 +101,40 @@ Worktree `/Users/juan/code/cirujano-fleet-migration`, branch
   queued job is picked up by the fixed controller if the swap lands inside
   the 24-hour window.
 
+### D-8 P2 enrolls two jobs under one enrollment via `--job-name` (2026-09-17)
+
+- Plan said (D2): P2's two single-run jobs are "both enrolled so a run
+  serializes them on one VM".
+- Found: an enrollment carries one `jobKey`, and `controller-config` writes
+  `eligibleJobNames` from that enrollment alone; a second enrollment would be
+  a second controller and VM. Extending `--job` to repeat is a bundle change,
+  which re-identifies every live controller (P1 permit v4).
+- Chose: `fleet enroll --job test --job-name test --job-name "<contract
+  display name>"`; `--job-name` is free-form for a non-matrix job. `cutover`
+  and `verify` track the `test` job's `runs-on` and the whole-file blob SHA;
+  the contract job's `runs-on` is part of the same commit and is checked by
+  hand at cutover. The telemetry join and the report attribute both jobs to
+  P2 as intended. The workflow edit also carries the P1 Supabase CLI split
+  (`runner.environment`), a known guest-parity need, rather than a second
+  round trip.
+- Recorded for later: a repeatable `--job` with per-job `runsOn` capture.
+
+### D-9 Two VMs in one project blinded both controllers (found live 2026-09-17)
+
+- Found: 13 min after P2's `create-vm`, P2 ticked `pending` with every
+  provider readback `complete: false`, and P1 flipped to
+  `blocked: resource ownership is unknown` at the same moment. The parser
+  accepted the live listing; the cause was `runProcess`'s 64 KiB default
+  output cap (`adapters/process.ts`): the project listing is ~33 KiB per VM,
+  the second VM pushed it to 65,863 bytes, the truncated JSON failed to parse
+  and `observeProvider` swallowed the error into an incomplete readback.
+- Chose: the runtime context passes `maxOutputBytes` 64 MiB to both CLI
+  process runners (`CLI_OUTPUT_LIMIT_BYTES`, `runner-service.ts`); test
+  `runner-service.test.ts` "exceeds 64 KiB" pads the fake listing with 300
+  unrelated instances and asserts `inspect` still observes the provider.
+- Cost: bundle change, so both live controllers were re-identified (P1
+  permit v4, P2 permit v2) after `runner cleanup` of their stopped VMs.
+
 ## Phase 3 state
 
 Local, read-only preparation done on 2026-09-15 with the phase 4 bundle:

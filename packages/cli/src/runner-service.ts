@@ -63,6 +63,10 @@ const DEFAULT_POLL_LIMIT = 10_000;
 // GitHub and Nebius reads through their CLIs take 10-15 s each under launchd on macOS (keyring and
 // token access), so the per-call read timeout never drops below two minutes.
 const CLI_READ_TIMEOUT_FLOOR_MS = 120_000;
+// A project's instance listing is ~33 KiB per VM, so the process runner's 64 KiB default truncated
+// the JSON as soon as a second enrolled VM existed and every controller sharing the project went
+// blind. Paginated run and job listings can be larger still.
+const CLI_OUTPUT_LIMIT_BYTES = 64 * 1024 * 1024;
 const THIRTY_DAY_MONTH_MS = 30 * 24 * 3_600_000;
 
 export interface ObservedAccounting {
@@ -173,7 +177,7 @@ async function createContext(configPath: string, permitPath: string | undefined,
   const nebiusPath = absolutePath(environment['CIRUJANO_NEBIUS_PATH'] ?? join(homedir(), '.nebius/bin/nebius'), 'Nebius CLI');
   const github = new GitHubAdapter({
     async run(command, args, options) {
-      const result = await runProcess({ command, args, timeoutMs: options.timeoutMs, env: environment });
+      const result = await runProcess({ command, args, timeoutMs: options.timeoutMs, maxOutputBytes: CLI_OUTPUT_LIMIT_BYTES, env: environment });
       return { exitCode: result.exitCode ?? 1, stdout: result.stdout, stderr: result.stderr };
     },
   }, { ghPath, timeoutMs: Math.max(config.timing.pollIntervalMs, CLI_READ_TIMEOUT_FLOOR_MS) });
@@ -184,7 +188,7 @@ async function createContext(configPath: string, permitPath: string | undefined,
     projectId: config.nebius.projectId,
     execute: async (command) => {
       const result = await runProcess({
-        command: command.file, args: command.args, timeoutMs: command.timeoutMs,
+        command: command.file, args: command.args, timeoutMs: command.timeoutMs, maxOutputBytes: CLI_OUTPUT_LIMIT_BYTES,
         ...(command.stdin === undefined ? {} : { stdin: command.stdin }), env: environment,
       });
       return { exitCode: result.exitCode ?? 1, stdout: result.stdout, stderr: result.stderr, timedOut: result.timedOut };
