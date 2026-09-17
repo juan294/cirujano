@@ -407,7 +407,7 @@ export function classifyOwnedRunners(runners: readonly RepositoryRunner[], expec
 
 /** The head repository is already required to be the enrolled repository itself, so forks never reach here. */
 function runAdmitted(run: WorkflowRun, admission: AdmissionPolicy, allowedBranch: string): boolean {
-  if (admission === 'same-repository') return ['push', 'workflow_dispatch', 'pull_request'].includes(run.event);
+  if (admission === 'same-repository') return ['push', 'workflow_dispatch', 'pull_request', 'schedule'].includes(run.event);
   return run.pullRequestCount === 0 && (run.event === 'push' || run.event === 'workflow_dispatch') && run.headBranch === allowedBranch;
 }
 

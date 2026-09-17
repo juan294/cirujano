@@ -84,6 +84,23 @@ Worktree `/Users/juan/code/cirujano-fleet-migration`, branch
   `P1/dry-run-reset-20260916/` because the controller refuses journals of
   another identity.
 
+### D-7 `same-repository` also admits `schedule` runs (found live 2026-09-17)
+
+- Found: P1's nightly `schedule` run (35178537656, 03:32Z) queued its `check`
+  job on the self-hosted label while the controller ticked idle: D-6 listed
+  `push`, `workflow_dispatch` and `pull_request` only, and the adapter test
+  pinned the schedule exclusion. The targets table had recorded
+  `schedule 2` events for P1; a cut-over cron would fail after GitHub's
+  24-hour wait.
+- Chose: `schedule` joins the `same-repository` list (`adapters/github.ts`
+  `runAdmitted`); the head-repository identity check still applies and a
+  schedule run is the enrolled repository's own default branch. The pilot
+  rule is unchanged. Tests: `adapters/github.test.ts`.
+- Cost: a bundle change re-identifies the live P1 controller (candidate
+  digest), so the swap needs `runner cleanup` and a re-issued permit; the
+  queued job is picked up by the fixed controller if the swap lands inside
+  the 24-hour window.
+
 ## Phase 3 state
 
 Local, read-only preparation done on 2026-09-15 with the phase 4 bundle:

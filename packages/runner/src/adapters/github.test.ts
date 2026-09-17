@@ -158,7 +158,7 @@ describe('GitHub response parsers (R06)', () => {
     expect(snapshot).toMatchObject({ complete: true, eligibleQueuedJobs: 1, ownedBusy: false });
   });
 
-  it('admits same-repository pull requests on any branch under the same-repository policy, never forks', () => {
+  it('admits same-repository pull requests, pushes on any branch and schedules under the same-repository policy, never forks', () => {
     const runs = collectRunPages([{ page: 1, response: { status: 200, headers: {}, body: { total_count: 5, workflow_runs: [
       run({ id: 1002, event: 'pull_request', head_branch: 'feature/x', pull_requests: [{ id: 9 }] }),
       run({ id: 1003, event: 'pull_request', head_branch: 'feature/y', head_repository: { id: 999 }, pull_requests: [{ id: 10 }] }),
@@ -175,10 +175,11 @@ describe('GitHub response parsers (R06)', () => {
       runs, jobs, runners: { complete: true, items: [] }, workflowIds: [41],
       allowedBranch: 'develop', eligibleJobNames: ['e2e'], runnerLabel: 'cirujano-pilot-a', expectedRunnerName: 'cirujano-a-g1', observedAtMs: NOW,
     };
-    // Same-repository PR (1002), the push on another branch (1004) and the default-branch push with an open PR (1006)
-    // are admitted; the fork PR and the schedule are not. The default policy refuses all of them: 1006 only because
-    // of its pull request, which pins that term on its own.
-    expect(buildQueueSnapshot({ ...base, admission: 'same-repository' })).toMatchObject({ complete: true, eligibleQueuedJobs: 3 });
+    // Same-repository PR (1002), the push on another branch (1004), the schedule (1005: the enrolled repository's own
+    // default branch, so the nightly check keeps a runner after cutover) and the default-branch push with an open PR
+    // (1006) are admitted; the fork PR is not. The default policy refuses all of them: 1006 only because of its pull
+    // request, which pins that term on its own.
+    expect(buildQueueSnapshot({ ...base, admission: 'same-repository' })).toMatchObject({ complete: true, eligibleQueuedJobs: 4 });
     expect(buildQueueSnapshot({ ...base, admission: 'default-branch-pushes' })).toMatchObject({ complete: true, eligibleQueuedJobs: 0 });
     expect(buildQueueSnapshot(base)).toMatchObject({ complete: true, eligibleQueuedJobs: 0 });
   });

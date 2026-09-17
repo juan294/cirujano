@@ -51,8 +51,9 @@ export interface TimingConfig {
 /**
  * Which runs may be assigned to the owned runner.
  * - `default-branch-pushes` (pilot): push and workflow_dispatch runs on `allowedBranch` with no pull request.
- * - `same-repository` (fleet enrollments): additionally pull_request runs and pushes on any branch, as
- *   long as the head repository is the enrolled private repository itself (never a fork).
+ * - `same-repository` (fleet enrollments): additionally pull_request runs, pushes on any branch and
+ *   schedule runs (the repository's own default branch), as long as the head repository is the
+ *   enrolled private repository itself (never a fork).
  */
 export type AdmissionPolicy = 'default-branch-pushes' | 'same-repository';
 

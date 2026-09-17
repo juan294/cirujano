@@ -133,9 +133,11 @@ Per-enrollment layout under `~/.local/share/cirujano/runner/` (mode `0700`):
   `shutdownMarginMs` 5 min, `idleGraceMs` 5 min, `pollIntervalMs` 30 s, the
   enrollment's repository id, workflow id and job names, and
   `admission: same-repository`: unlike the pilot's default-branch-push rule,
-  an enrolled controller also serves `pull_request` runs and pushes on any
-  branch, provided the head repository is the enrolled private repository
-  itself. Fork heads are never admitted. The trust boundary is therefore
+  an enrolled controller also serves `pull_request` runs, pushes on any
+  branch and `schedule` runs (the enrolled repository's own default branch;
+  a cut-over nightly check would otherwise queue until GitHub fails it),
+  provided the head repository is the enrolled private repository itself.
+  Fork heads are never admitted. The trust boundary is therefore
   "anyone who can push a branch to the enrolled private repository": such a
   push can rewrite the enrolled job's steps and they run on the VM, whose
   only credential is the job's own `GITHUB_TOKEN` (ephemeral runner,
