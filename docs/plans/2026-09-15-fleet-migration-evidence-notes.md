@@ -133,7 +133,12 @@ Worktree `/Users/juan/code/cirujano-fleet-migration`, branch
   `runner-service.test.ts` "exceeds 64 KiB" pads the fake listing with 300
   unrelated instances and asserts `inspect` still observes the provider.
 - Cost: bundle change, so both live controllers were re-identified (P1
-  permit v4, P2 permit v2) after `runner cleanup` of their stopped VMs.
+  permit v4, P2 permit v2) after `runner cleanup` of their stopped VMs. The
+  installed bundle could not run that cleanup ("direct action requires
+  complete provider and queue observations" is the same defect), so the
+  owner-authorized cleanups ran the fixed bundle with
+  `CIRUJANO_CANDIDATE_DIGEST` set to the old digest to satisfy the old
+  permits' binding; the wrapper still never sets it.
 
 ## Phase 3 state
 
