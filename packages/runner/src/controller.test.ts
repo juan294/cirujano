@@ -482,3 +482,67 @@ function waitForChildText(child: ReturnType<typeof spawn>, expected: string): Pr
     child.once('exit', (code) => { clearTimeout(timer); reject(new Error(`child exited ${String(code)} before ${expected}`)); });
   });
 }
+
+describe('stale pending effect recovery (D-11)', () => {
+  it('abandons a pending effect whose deadline passed so the lifecycle can still stop the VM', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'cirujano-controller-stale-'));
+    const journalPath = join(directory, 'state.json');
+    const eventPath = join(directory, 'events.jsonl');
+
+    // Seed a register-runner effect stranded at `emitting`, exactly as P1 was on 2026-09-18.
+    const seedLock = await acquireControllerLock(directory);
+    await expect(tickController({
+      lock: seedLock, journalPath, eventPath, input: registrationInput(),
+      executeEffect: async () => { throw new Error('ambiguous provider'); },
+      reconcileEffect: async () => ({ resolved: false }),
+    })).rejects.toThrow('ambiguous provider');
+    await seedLock.release();
+    const seeded = await readJournal<{ pendingEffect: { effect: { type: string }; stage: string } }>(journalPath);
+    expect(seeded.pendingEffect.effect.type).toBe('register-runner');
+    expect(seeded.pendingEffect.stage).toBe('emitting');
+
+    // The assignment cutoff has passed, but the permit is valid for another ~86 minutes.
+    const stale = registrationInput();
+    stale.nowMs = NOW + 2_000_000;
+    stale.queue.observedAtMs = stale.nowMs;
+    const staleLock = await acquireControllerLock(directory);
+    const result = await tickController({
+      lock: staleLock, journalPath, eventPath, input: stale,
+      executeEffect: async () => { throw new Error('must not re-emit a stale effect'); },
+      reconcileEffect: async () => ({ resolved: false }),
+    });
+    await staleLock.release();
+
+    expect(result.status).not.toBe('blocked');
+    const cleared = await readJournal<{ pendingEffect: unknown; lifecycle: { outstandingIntent: unknown } }>(journalPath);
+    expect(cleared.pendingEffect).toBeNull();
+    expect(cleared.lifecycle.outstandingIntent).toBeNull();
+    expect(await readFile(eventPath, 'utf8')).toContain('effect-abandoned');
+  });
+
+  it('still fails closed when the permit itself expired rather than abandoning the effect', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'cirujano-controller-permit-expiry-'));
+    const journalPath = join(directory, 'state.json');
+    const eventPath = join(directory, 'events.jsonl');
+    const seedLock = await acquireControllerLock(directory);
+    await expect(tickController({
+      lock: seedLock, journalPath, eventPath, input: registrationInput(),
+      executeEffect: async () => { throw new Error('ambiguous provider'); },
+      reconcileEffect: async () => ({ resolved: false }),
+    })).rejects.toThrow('ambiguous provider');
+    await seedLock.release();
+
+    const expired = registrationInput();
+    expired.nowMs = NOW + 7_200_001;
+    expired.queue.observedAtMs = expired.nowMs;
+    const expiredLock = await acquireControllerLock(directory);
+    const result = await tickController({
+      lock: expiredLock, journalPath, eventPath, input: expired,
+      executeEffect: async () => { throw new Error('must not emit under an expired permit'); },
+      reconcileEffect: async () => ({ resolved: false }),
+    });
+    await expiredLock.release();
+    expect(result.status).toBe('blocked');
+    expect((await readJournal<{ pendingEffect: unknown }>(journalPath)).pendingEffect).not.toBeNull();
+  });
+});

@@ -50,7 +50,7 @@ export type ControllerBoundary =
   | 'after-final-event';
 
 export interface TickResult {
-  status: 'blocked' | 'idle' | 'dry-run' | 'mutated' | 'reconciled' | 'pending';
+  status: 'blocked' | 'idle' | 'dry-run' | 'mutated' | 'reconciled' | 'pending' | 'abandoned';
   decision?: LifecycleDecision;
 }
 
@@ -68,7 +68,8 @@ export async function tickController(options: TickOptions): Promise<TickResult> 
       type: 'dry-run-pending',
       effect: prior.pendingEffect.effect.type,
       stage: prior.pendingEffect.stage,
-      authorization: authorizationProblem ?? 'valid',
+      authorization: authorizationProblem
+        ?? (pendingEffectIsStale(prior.pendingEffect, options.input) ? 'stale' : 'valid'),
     }, { secrets: options.secrets ?? [] });
     return { status: 'dry-run' };
   }
@@ -76,6 +77,9 @@ export async function tickController(options: TickOptions): Promise<TickResult> 
     assertStateInvariants(prior);
     const authorizationProblem = pendingAuthorizationProblem(prior.pendingEffect, options.input);
     if (authorizationProblem !== null) return blockPendingAuthorization(options, prior, authorizationProblem);
+    if (pendingEffectIsStale(prior.pendingEffect, options.input)) {
+      return abandonPendingEffect(options, prior);
+    }
     if (prior.pendingEffect.stage === 'intent') {
       return executePendingEffect(options, prior);
     }
@@ -379,6 +383,7 @@ async function executePendingEffect(options: TickOptions, state: ControllerState
   if (pending === null) throw new Error('controller state invariant: pending execution has no effect');
   const authorizationProblem = pendingAuthorizationProblem(pending, options.input);
   if (authorizationProblem !== null) return blockPendingAuthorization(options, state, authorizationProblem);
+  if (pendingEffectIsStale(pending, options.input)) return abandonPendingEffect(options, state);
   await atBoundary(options, 'before-provider-io');
   const emitting: PendingEffect = { ...pending, stage: 'emitting' };
   await writeJournalAtomic(options.journalPath, { ...state, pendingEffect: emitting });
@@ -526,10 +531,37 @@ function pendingAuthorizationProblem(pending: PendingEffect, input: LifecycleInp
   if (input.nowMs >= saved.permitExpiresAtMs && !(recoveryOperation && saved.recoveryAllowed && permit.recoveryAllowed)) {
     return 'pending authorization is expired';
   }
-  if (!recoveryOperation && saved.effectDeadlineMs !== null && input.nowMs > saved.effectDeadlineMs) {
-    return 'pending effect deadline has expired';
-  }
   return null;
+}
+
+// A pending effect whose own deadline has passed is stale, not unauthorized: the permit still
+// authorizes this controller, so the controller must stay free to act. Blocking here strands the
+// effect forever, because nothing else clears it — the failure that left P1's VM running and idle
+// from 2026-09-18T06:42Z until it was deleted by hand, with portfolio's CI queueing behind a runner
+// that never registered. Recovery operations are exempt: stop and delete must still run late.
+function pendingEffectIsStale(pending: PendingEffect, input: LifecycleInput): boolean {
+  const saved = pending.authorization;
+  const recoveryOperation = saved.operation === 'stop' || saved.operation === 'delete';
+  return !recoveryOperation && saved.effectDeadlineMs !== null && input.nowMs > saved.effectDeadlineMs;
+}
+
+// Clearing the effect is safe because decideLifecycle rebuilds its decision from the observed
+// provider, guest and queue readings on the next tick rather than from the journal, so an effect
+// that did land is seen in those readings instead of being replayed.
+async function abandonPendingEffect(options: TickOptions, state: ControllerState): Promise<TickResult> {
+  const pending = state.pendingEffect;
+  if (pending === null) throw new Error('controller state invariant: abandonment has no pending effect');
+  const abandoned: ControllerState = {
+    ...state,
+    lifecycle: { ...state.lifecycle, outstandingIntent: null },
+    pendingEffect: null,
+  };
+  await writeJournalAtomic(options.journalPath, abandoned);
+  await appendRedactedEvent(options.eventPath, {
+    schemaVersion: 1, type: 'effect-abandoned', effect: pending.effect.type,
+    operation: pending.authorization.operation, reason: 'pending effect deadline has expired',
+  }, { secrets: options.secrets ?? [] });
+  return { status: 'abandoned' };
 }
 
 async function blockPendingAuthorization(options: TickOptions, state: ControllerState, reason: string): Promise<TickResult> {
