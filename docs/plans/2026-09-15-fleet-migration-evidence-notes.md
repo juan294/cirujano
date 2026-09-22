@@ -161,6 +161,54 @@ Worktree `/Users/juan/code/cirujano-fleet-migration`, branch
 - Cost: bundle change (guest files are embedded in cloud-init), so both
   controllers were re-identified a third time on 2026-09-17.
 
+### D-11 A stale pending effect deadlocked the controller (found live 2026-09-22, P1)
+
+`pendingAuthorizationProblem` treated a pending effect whose own deadline had
+passed as an authorization failure. Every tick therefore re-entered
+`blockPendingAuthorization`, wrote `status: 'blocked'` and returned, and
+nothing ever cleared `pendingEffect`, so the controller could never reach
+`decideLifecycle` again -- not even to drain, stop or delete. The deadlock was
+terminal, and it is the "controller-side deadline backstop" follow-up recorded
+after D-10.
+
+P1 entered it at 2026-09-18T06:42:08Z on a `register-runner` effect
+(`cirujano-p1-20260915:1789703469772:register-runner`, stage `emitting`).
+Consequences over the next 108.5 hours, all verified on 2026-09-22:
+
+- Instance `computeinstance-e01mak1fprhndzffqy` stayed `vmStatus: running`
+  with `runnerActive: false` and `runnerOwnership: absent` -- idle and
+  billing. The guest watchdog's grant deadline (2026-09-18T07:47:08Z) passed
+  without the poweroff firing, because the controller never issued the stop.
+- Accounting froze: `cumulativeCostUsd` read `0.00147` and
+  `runtimeBaselineMs` `0` while roughly 108.5 h of compute accrued. The
+  permit's `maxTotalCostUsd: 40` could not catch it, because the budget check
+  runs at start and this VM was already started. `cleanup` deleted the
+  instance but did not reconcile the journal, so the runtime was never
+  journalled and the report still cannot see it.
+- `juan294/portfolio` `check` jobs queued against a runner that never
+  registered: the 09-19, 09-20 and 09-21 nightly `schedule` runs and three
+  Dependabot PRs on 09-21 were all cancelled at GitHub's 24-hour self-hosted
+  timeout, and the 09-22 run was still queued when this was found.
+
+Fix `86ea6e6`: staleness moves out of `pendingAuthorizationProblem` into
+`pendingEffectIsStale`, and a stale effect is abandoned -- `pendingEffect` and
+`outstandingIntent` cleared, an `effect-abandoned` event journalled, and the
+next tick decides from the observed provider, guest and queue readings.
+Clearing is safe because `decideLifecycle` reads observed state rather than
+replaying the journal. Genuine authorization failures (identity mismatch,
+revoked or mismatched permit, unauthorized operation, expired permit) still
+fail closed and still block; `stop` and `delete` stay exempt from the
+staleness check so recovery can run late.
+
+Remediation: the P1 VM was deleted, P1's launchd agent was booted out, and
+`juan294/portfolio` PR #1122 returns the `check` job to `ubuntu-latest`. P2
+and P3 still run the bundle that carries this defect.
+
+Lesson: a permit bounds what the controller may do, not what it will do when
+it stops deciding. Every state that returns without clearing `pendingEffect`
+needs an exit, and the budget ceiling cannot bound a VM that is already
+running while accounting is frozen.
+
 ## Phase 3 state
 
 Local, read-only preparation done on 2026-09-15 with the phase 4 bundle:
@@ -337,7 +385,19 @@ today by the owner's own project cost and the report's controller evidence.
 - Owner decision 2026-09-17: the cc-rpi bash guard is removed from this
   repository (`e7488e9`); remote steps run from the session with the
   committed ask rules.
-- Next: after-window evidence accrues for all three; `telemetry report
+- 2026-09-22: P1 found deadlocked since 2026-09-18 (D-11); VM deleted, agent
+  booted out, portfolio reverted to hosted by PR #1122. P2 and P3 verified
+  healthy the same day -- `cirujano-p2-vm` RUNNING and serving a real job,
+  `cirujano-p3-vm` STOPPED.
+- Measured 2026-09-13 to 2026-09-22: gross hosted cost avoided USD 0.73 (31
+  jobs, 122 min) against P2 + P3 `cumulativeCostUsd` of USD 2.23, plus P1's
+  unjournalled leak. The fleet is net negative so far. Retained disk is the
+  driver: 80 GiB at USD 0.071/GiB-month is USD 5.68 per controller per month
+  whether or not the VM runs, and measured retention was 107.8 h (P1),
+  129.4 h (P2) and 126.5 h (P3) against about 75 min of VM runtime.
+- Next: after-window evidence accrues for P2 and P3; `telemetry report
   --registry` and `fleet publish` once the windows carry enough runs. Open
-  follow-ups: archived generations in the report, the controller-side
-  deadline backstop, a second runner slot or larger preset for P3.
+  follow-ups: archived generations in the report, reconciling the journal
+  after `cleanup` so an abandoned generation's runtime is still counted,
+  right-sizing or releasing retained disk between runs, a second runner slot
+  or larger preset for P3, and re-cutting P1 once the D-11 fix is deployed.
