@@ -270,11 +270,18 @@ async function watch(context: RuntimeContext, dryRun: boolean, io: CliIo): Promi
 async function mutateOwned(context: RuntimeContext, action: 'stop' | 'cleanup', io: CliIo): Promise<0 | 1> {
   const lock = await acquireControllerLock(context.stateDirectory);
   try {
-    const priorDirect = await readDirectAction(context);
+    let priorDirect = await readDirectAction(context);
     if (priorDirect !== null && priorDirect.action === action && priorDirect.stage === 'resolved') {
       requireRecoveryPermit(context, action === 'stop' ? 'stop' : 'delete');
-      io.stdout(`${JSON.stringify({ schemaVersion: 1, command: `runner ${action}`, status: 'done', providerState: priorDirect.providerState })}\n`);
-      return 0;
+      // A resolved record is only an answer while the provider still agrees with it; a later
+      // generation may have started the VM again since.
+      const current = exactOwnedInstance(await listInstances(context), expectedResource(context));
+      const stillResolved = current === null || (action === 'stop' && current.id === priorDirect.instanceId && current.state === 'stopped');
+      if (stillResolved) {
+        io.stdout(`${JSON.stringify({ schemaVersion: 1, command: `runner ${action}`, status: 'done', providerState: current?.state ?? 'absent' })}\n`);
+        return 0;
+      }
+      priorDirect = null;
     }
     if (priorDirect !== null && priorDirect.action === action && priorDirect.stage === 'emitting') {
       requireRecoveryPermit(context, action === 'stop' ? 'stop' : 'delete');
@@ -360,10 +367,14 @@ async function recoverDirectEmission(
     const related = operationId === null
       ? operations.filter((item) => item.resourceId === prior.instanceId)
       : operations.filter((item) => item.id === operationId && (item.resourceId === null || item.resourceId === prior.instanceId));
-    if (related.length > 0) {
-      return block(`provider operation ${related.map((item) => `${item.id}:${item.state}`).join(',')} has not produced terminal resource state`, instance.state);
+    // Only unfinished operations can still move the VM; finished ones on the same instance are
+    // history (earlier starts and stops), not the ambiguous emission.
+    const inFlight = related.filter((item) => item.state === 'PENDING' || item.state === 'RUNNING');
+    if (inFlight.length > 0) {
+      return block(`provider operation ${inFlight.map((item) => `${item.id}:${item.state}`).join(',')} is still pending and has not produced terminal resource state`, instance.state);
     }
-    if (operationId !== null) return block(`journaled provider operation ${operationId} is absent from the complete operation snapshot`, instance.state);
+    if (instance.state === 'stopping') return block('provider is still stopping the instance; retry after it reaches a terminal state', instance.state);
+    if (operationId !== null && related.length === 0) return block(`journaled provider operation ${operationId} is absent from the complete operation snapshot`, instance.state);
     if (prior.recoveryRetryEmitted === true) return block('recovery retry was already emitted and cannot be repeated', instance.state);
     const observed = await observe(context);
     if (!observed.provider.complete || !observed.queue.complete || observed.queue.ownedBusy !== false
@@ -622,17 +633,25 @@ async function reconcileEffect(context: RuntimeContext, pending: PendingEffect):
   if (pending.effect.type === 'start-vm' && provider.vmStatus === 'running') {
     const instance = exactOwnedInstance(await listInstances(context), expectedResource(context));
     if (instance === null) return { resolved: false, readback: provider };
-    const startedAtMs = Date.now();
+    const generation = pending.effect.generation;
+    // A start is only reconciled once the guest enforces the grant it was given: a lost grant
+    // write leaves the previous generation's deadline in force and idle grace unreachable.
+    const armed = await observeGuest(context, provider);
+    if (armed.grant?.generation === generation) return { resolved: true, readback: { provider, guest: armed } };
+    const bootDeadlineMs = pending.createdAtMs + context.config.timing.bootTimeoutMs;
     try {
       await runGuest(context, instance, '/opt/cirujano/arm-grant', [
-        String(pending.effect.generation), String(startedAtMs), String(pending.effect.deadlineMs),
+        String(generation), String(Date.now()), String(pending.effect.deadlineMs),
         String(context.config.timing.maxJobMs), String(context.config.timing.shutdownMarginMs),
-        String(Math.max(0, pending.effect.generation - 1)),
+        String(Math.max(0, generation - 1)),
       ].join('\n') + '\n');
     } catch (error) {
       if (!(error instanceof SshInvocationError)) throw error;
       const { classification } = error;
-      const bootDeadlineMs = pending.createdAtMs + context.config.timing.bootTimeoutMs;
+      // Exit 4: the watchdog held the grant lock; the next tick arms again.
+      if (!error.result.timedOut && error.result.exitCode === 4 && Date.now() < bootDeadlineMs) {
+        return { resolved: false, readback: { provider, grantLockBusy: true } };
+      }
       if (classification.transient && Date.now() < bootDeadlineMs) {
         return {
           resolved: false,
@@ -642,7 +661,8 @@ async function reconcileEffect(context: RuntimeContext, pending: PendingEffect):
       if (classification.transient) throw new Error(`ssh readiness failed: boot deadline expired (${classification.reason})`, { cause: error });
       throw new Error(`ssh readiness failed: ${classification.reason}`, { cause: error });
     }
-    return { resolved: true, readback: provider };
+    const guest = await observeGuest(context, provider);
+    return { resolved: guest.grant?.generation === generation, readback: { provider, guest } };
   }
   if (pending.effect.type === 'register-runner' || pending.effect.type === 'begin-drain' || pending.effect.type === 'resume-admission') {
     const guest = await observeGuest(context, provider);

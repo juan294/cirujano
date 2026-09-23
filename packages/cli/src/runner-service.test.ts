@@ -206,6 +206,18 @@ describe('production runner command composition (R11/R12)', () => {
     expect(JSON.parse(await readFile(join(resolve(fixture.configPath, '..'), 'direct-action-state.json'), 'utf8'))).toMatchObject({ action: 'cleanup', stage: 'resolved', providerState: 'absent' });
   });
 
+  it('does not replay a resolved stop once the provider shows the VM running again', async () => {
+    // 2026-09-23 P2: a later generation restarted the VM, yet runner stop answered done/stopped from the old record.
+    const fixture = await createFixture(true, true, true);
+    const service = createRunnerCommandService({ ...fixture.env, CIRUJANO_RUNNER_ONCE: '1' });
+    expect(await service.run({ command: 'runner', action: 'stop', configPath: fixture.configPath, permitPath: fixture.permitPath! }, captureIo())).toBe(0);
+    await writeFile(fixture.env.CIRUJANO_PROVIDER_STATE_PATH!, 'RUNNING');
+    const io = captureIo();
+    expect(await service.run({ command: 'runner', action: 'stop', configPath: fixture.configPath, permitPath: fixture.permitPath! }, io)).toBe(0);
+    expect((await readFile(fixture.logPath, 'utf8')).split('\n').filter((line) => line.includes('instance stop'))).toHaveLength(2);
+    expect(JSON.parse(await readFile(join(resolve(fixture.configPath, '..'), 'direct-action-state.json'), 'utf8'))).toMatchObject({ action: 'stop', stage: 'resolved', providerState: 'stopped' });
+  });
+
   it('returns runtime exit 1 for an expired permit without emitting provider mutations', async () => {
     const fixture = await createFixture(true, true, true);
     const permit = JSON.parse(await readFile(fixture.permitPath!, 'utf8')) as Record<string, unknown>;
@@ -284,6 +296,26 @@ describe('production runner command composition (R11/R12)', () => {
       stage: 'emitting', providerState: 'running', blockedReason: expect.stringContaining('has not produced terminal resource state'),
     });
     expect((await readFile(fixture.logPath, 'utf8')).split('\n').filter((line) => line.includes('instance stop'))).toHaveLength(0);
+  }, 15_000);
+
+  it('recovers an ambiguous stop when every related provider operation already finished', async () => {
+    // 2026-09-23 P2: eight hours-old SUCCEEDED operations were treated as in-flight and blocked recovery forever.
+    const fixture = await createFixture(true, true, true);
+    const markerPath = join(resolve(fixture.configPath, '..'), 'boundaries.log');
+    const executable = join(packageDirectory, 'dist/bin.js');
+    const child = spawn(process.execPath, [executable, 'runner', 'stop', '--config', fixture.configPath, '--permit', fixture.permitPath!], {
+      env: { ...fixture.env, CIRUJANO_FIXTURE_BOUNDARY_PATH: markerPath, CIRUJANO_FIXTURE_PAUSE_BOUNDARY: 'direct-emitting' }, stdio: 'ignore',
+    });
+    await waitForText(markerPath, 'direct-emitting');
+    child.kill('SIGKILL');
+    await new Promise<void>((resolveClose) => child.once('close', () => resolveClose()));
+    const retry = await executeFile(process.execPath, [executable, 'runner', 'stop', '--config', fixture.configPath, '--permit', fixture.permitPath!], {
+      env: { ...fixture.env, CIRUJANO_FIXTURE_OPERATION_PRESENT: 'succeeded', CIRUJANO_RUNNER_ONCE: '1' },
+    }).then((value) => ({ code: 0, ...value })).catch((error: { code?: number; stdout?: string }) => ({ code: error.code ?? 1, stdout: error.stdout ?? '' }));
+    expect(retry.stdout).toContain('"status":"done"');
+    expect(retry.code).toBe(0);
+    expect(JSON.parse(await readFile(join(resolve(fixture.configPath, '..'), 'direct-action-state.json'), 'utf8'))).toMatchObject({ stage: 'resolved', providerState: 'stopped', recoveryRetryEmitted: true });
+    expect((await readFile(fixture.logPath, 'utf8')).split('\n').filter((line) => line.includes('instance stop'))).toHaveLength(1);
   }, 15_000);
 
   it('drains and emits structured resolved recovery when the built watcher receives SIGINT', async () => {
@@ -369,6 +401,23 @@ describe('production runner command composition (R11/R12)', () => {
     const report = await executeFile(process.execPath, [executable, 'runner', 'report', '--state', reportPath, '--format', 'json'], { env: fixture.env });
     expect(JSON.parse(report.stdout)).toMatchObject({ complete: true, assignments: assignmentState.assignments, cleanup: { vmState: 'absent' }, finalProviderState: 'absent' });
   }, 60_000);
+
+  it('does not reconcile a start until the guest reports the generation it armed', async () => {
+    const fixture = await createLifecycleFixture();
+    await builtTick(fixture); // idle
+    await updateScenario(fixture, (state) => { state.jobs[0]!.status = 'queued'; });
+    await builtTick(fixture); // create
+    await builtTick(fixture); // reconcile create
+    await builtTick(fixture); // start
+    await updateScenario(fixture, (state) => { state.lostGrantUpdates = 1; });
+    await builtTick(fixture); // arm-grant "succeeds" but the grant write is lost
+    const unresolved = JSON.parse(await readFile(join(fixture.directory, 'controller-state.json'), 'utf8')) as { pendingEffect: { effect: { type: string } } | null };
+    expect(unresolved.pendingEffect?.effect.type).toBe('start-vm');
+    await builtTick(fixture); // re-arm the same generation; now the guest reports it
+    const resolved = JSON.parse(await readFile(join(fixture.directory, 'controller-state.json'), 'utf8')) as { pendingEffect: unknown; lifecycle: { startCount: number } };
+    expect(resolved.pendingEffect).toBeNull();
+    expect((JSON.parse(await readFile(fixture.scenarioPath, 'utf8')) as LifecycleScenario).grant?.generation).toBe(resolved.lifecycle.startCount);
+  }, 30_000);
 
   it('replaces a generation that powered itself off at its immutable deadline and keeps accounting monotonic', async () => {
     const fixture = await createLifecycleFixture();
@@ -576,6 +625,8 @@ interface LifecycleScenario {
   runnerId: number | null;
   runnerBusy: boolean;
   sshFailures: string[];
+  /** arm-grant reports success but a concurrent writer restores the previous grant. */
+  lostGrantUpdates?: number;
   registerFailure?: string;
   jobs: Array<{ runId: number; jobId: number; status: 'none' | 'queued' | 'in_progress' | 'completed'; conclusion: string | null; runnerId: number | null; runnerName: string | null }>;
 }
@@ -651,6 +702,7 @@ process.stdout.write(JSON.stringify(body));
 ${sharedPrelude}
 const helper=process.argv.at(-1);const lines=fs.readFileSync(0,'utf8').trim().split('\\n');
 if(helper==='/opt/cirujano/arm-grant'&&s.sshFailures.length>0){const failure=s.sshFailures.shift();save();process.stderr.write(failure);process.exit(255);}
+else if(helper==='/opt/cirujano/arm-grant'&&(s.lostGrantUpdates??0)>0){s.lostGrantUpdates-=1;s.guest='ready';save();process.stdout.write('armed\\n');}
 else if(helper==='/opt/cirujano/arm-grant'){s.grant={generation:Number(lines[0]),startedAtMs:Number(lines[1]),deadlineMs:Number(lines[2])};s.guest='ready';save();process.stdout.write('armed\\n');}
 else if(helper==='/opt/cirujano/register-runner'&&s.registerFailure){process.stderr.write(s.registerFailure+'\\ntoken='+lines[4]+'\\n');process.exit(1);}
 else if(helper==='/opt/cirujano/register-runner'){const job=s.jobs.find(j=>j.status==='queued');s.runnerName=lines[1];s.runnerId=job.jobId===2001?301:302;s.runnerBusy=true;job.status='in_progress';job.runnerId=s.runnerId;job.runnerName=s.runnerName;s.guest='busy';save();process.stdout.write('registered\\n');}
@@ -726,7 +778,7 @@ fs.appendFileSync(process.env.CIRUJANO_FIXTURE_LOG, process.argv.slice(2).join('
 const args = process.argv.slice(2);
 let state = process.env.CIRUJANO_FIXTURE_RUNNING === '1' ? 'RUNNING' : 'ABSENT';
 if (process.env.CIRUJANO_PROVIDER_STATE_PATH && fs.existsSync(process.env.CIRUJANO_PROVIDER_STATE_PATH)) state = fs.readFileSync(process.env.CIRUJANO_PROVIDER_STATE_PATH, 'utf8');
-if (args.includes('list-operations-by-parent')) process.stdout.write(process.env.CIRUJANO_FIXTURE_OPERATION_PRESENT === '1' ? JSON.stringify({items:[{metadata:{id:'ambiguous-stop'},spec:{resource_id:'instance-1'},status:{state:'RUNNING'}}]}) : '{}');
+if (args.includes('list-operations-by-parent')) process.stdout.write(process.env.CIRUJANO_FIXTURE_OPERATION_PRESENT === '1' ? JSON.stringify({items:[{metadata:{id:'ambiguous-stop'},spec:{resource_id:'instance-1'},status:{state:'RUNNING'}}]}) : process.env.CIRUJANO_FIXTURE_OPERATION_PRESENT === 'succeeded' ? JSON.stringify({items:[{metadata:{id:'old-start'},spec:{resource_id:'instance-1'},status:{state:'SUCCEEDED'}},{metadata:{id:'old-stop'},spec:{resource_id:'instance-1'},status:{state:'SUCCEEDED'}}]}) : '{}');
 else if (args.includes('stop')) { state = 'STOPPED'; fs.writeFileSync(process.env.CIRUJANO_PROVIDER_STATE_PATH, state); process.stdout.write(JSON.stringify({metadata:{id:'operation-stop'}})); }
 else if (args.includes('delete')) { state = 'ABSENT'; fs.writeFileSync(process.env.CIRUJANO_PROVIDER_STATE_PATH, state); process.stdout.write(JSON.stringify({metadata:{id:'operation-delete'}})); }
 else if (state !== 'ABSENT') process.stdout.write(JSON.stringify({items:[{metadata:{id:'instance-1',parent_id:'project-1',name:'cirujano-a-vm',labels:{'cirujano-controller':'controller-a','cirujano-config':process.env.CIRUJANO_CONFIG_HASH}},spec:{stopped:state==='STOPPED',recovery_policy:'FAIL',resources:{platform:'cpu-d3',preset:'4vcpu-16gb'},network_interfaces:[{name:'primary',subnet_id:'subnet-1',ip_address:{},public_ip_address:{}}],boot_disk:{attach_mode:'READ_WRITE',managed_disk:{name:'cirujano-a-boot',spec:{type:'NETWORK_SSD',size_gibibytes:80,source_image_id:'image-1'}}}},status:{state,network_interfaces:[{name:'primary',ip_address:{address:'10.0.0.4'},public_ip_address:{address:'203.0.113.4'}}],disk_attachments:[{name:'cirujano-a-boot',id:'disk-1'}]}}]}));

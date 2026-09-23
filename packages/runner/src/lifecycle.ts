@@ -152,6 +152,13 @@ export function decideLifecycle(input: LifecycleInput): LifecycleDecision {
     return { state: input.journal.state, effect: { type: 'none' }, reason: 'reconcile outstanding operation or intent before another mutation' };
   }
 
+  // A guest enforcing another generation's grant can never earn idle grace and stops on the
+  // wrong deadline; name it rather than wait silently.
+  if (input.provider.vmStatus === 'running' && GUEST_UP_STATES.includes(input.journal.state)
+    && grant !== null && grant.generation !== input.journal.startCount) {
+    return blocked(`guest grant generation ${grant.generation} does not match journal generation ${input.journal.startCount}`);
+  }
+
   if (input.queue.ownedBusy || input.guest.workerActive === true || input.guest.status === 'busy') {
     return { state: 'busy', effect: { type: 'none' }, reason: 'owned job is busy' };
   }

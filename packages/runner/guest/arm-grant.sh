@@ -20,6 +20,11 @@ done
 (( generation > 0 && deadline_ms > started_at_ms && max_job_ms > 0 && shutdown_margin_ms > 0 )) \
   || { echo 'grant bounds are invalid' >&2; exit 2; }
 
+# The watchdog rewrites grant.env every tick; without a shared lock its write-back can
+# silently restore the previous generation over the one armed here.
+exec 9>"$state_dir/grant.lock"
+"${CIRUJANO_FLOCK_BIN:-flock}" -w "${CIRUJANO_GRANT_LOCK_WAIT_S:-10}" 9 || { echo 'grant lock busy' >&2; exit 4; }
+
 boot_id=${CIRUJANO_BOOT_ID:-$(cat /proc/sys/kernel/random/boot_id)}
 monotonic_ms=${CIRUJANO_MONOTONIC_MS:-$(awk '{ printf "%d", $1 * 1000 }' /proc/uptime)}
 monotonic_elapsed_ms=0

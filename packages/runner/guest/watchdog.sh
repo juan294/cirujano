@@ -83,10 +83,24 @@ fi
 
 while true; do
   read_clock
+  # arm-grant holds the same lock across its check and write, so a tick either sees the new
+  # generation or waits; a tick that cannot get the lock skips its write and retries.
+  exec 9>"$state_dir/grant.lock"
+  if ! "${CIRUJANO_FLOCK_BIN:-flock}" -w 10 9; then
+    exec 9>&-
+    [[ "${CIRUJANO_WATCHDOG_ONCE:-0}" == 1 ]] && exit 0
+    sleep 5
+    continue
+  fi
   if [[ -f "$grant_file" ]]; then
     # shellcheck disable=SC1090 -- file is root-owned and written atomically
     source "$grant_file"
     : "${grant_deadline_ms:?grant deadline missing}"
+    if [[ "${CIRUJANO_TEST_MODE:-0}" == 1 && -n "${CIRUJANO_TEST_HOLD_AFTER_READ:-}" ]]; then
+      # Test-only pause between reading and writing back the grant (race regression test).
+      touch "$CIRUJANO_TEST_HOLD_AFTER_READ.reached"
+      for _ in {1..100}; do [[ -e "$CIRUJANO_TEST_HOLD_AFTER_READ" ]] || break; sleep 0.1; done
+    fi
     if [[ "$current_boot_id" == "$grant_boot_id" ]]; then
       (( current_monotonic_ms >= last_monotonic_ms )) || quarantine
       monotonic_elapsed_ms=$((monotonic_elapsed_ms + current_monotonic_ms - last_monotonic_ms))
@@ -99,6 +113,7 @@ while true; do
   elif (( current_monotonic_ms - anchor_monotonic_ms >= unarmed_window_ms )); then
     expire
   fi
+  exec 9>&-
   [[ "${CIRUJANO_WATCHDOG_ONCE:-0}" == 1 ]] && exit 0
   sleep 5
 done

@@ -8,16 +8,36 @@ import { describe, expect, it } from 'vitest';
 const guestDir = resolve(import.meta.dirname, '../../guest');
 const scripts = ['bootstrap.sh', 'diagnose-ssh.sh', 'arm-grant.sh', 'watchdog.sh', 'register-runner.sh', 'job-start-hook.sh', 'drain.sh', 'status.sh', 'resume-admission.sh'];
 
+/** A non-blocking flock(1) stand-in (macOS has none): any lock request fails at once when held. */
+function fakeFlock(directory: string): string {
+  const flock = resolve(directory, '.flock.py');
+  if (!existsSync(flock)) {
+    writeFileSync(flock, '#!/usr/bin/python3\nimport fcntl, sys\nfd=int(sys.argv[-1])\nop=fcntl.LOCK_UN if "-u" in sys.argv else fcntl.LOCK_EX | fcntl.LOCK_NB\ntry: fcntl.flock(fd, op)\nexcept BlockingIOError: sys.exit(1)\n');
+    chmodSync(flock, 0o700);
+  }
+  return flock;
+}
+
 function armFirstGrant(state: string): NodeJS.ProcessEnv {
-  const env = { ...process.env, CIRUJANO_TEST_MODE: '1', CIRUJANO_STATE_DIR: state, CIRUJANO_BOOT_ID: 'boot-a', CIRUJANO_MONOTONIC_MS: '100', CIRUJANO_SKIP_SYNC: '1' };
+  const env = { ...process.env, CIRUJANO_TEST_MODE: '1', CIRUJANO_STATE_DIR: state, CIRUJANO_BOOT_ID: 'boot-a', CIRUJANO_MONOTONIC_MS: '100', CIRUJANO_SKIP_SYNC: '1', CIRUJANO_FLOCK_BIN: fakeFlock(state) };
   execFileSync('/bin/bash', [resolve(guestDir, 'arm-grant.sh')], { env, input: '1\n1000\n91000\n60000\n5000\n0\n' });
   return env;
 }
 
+function watchdogEnv(state: string, clock: { boot: string; monotonic: string }): NodeJS.ProcessEnv {
+  return { ...process.env, CIRUJANO_STATE_DIR: state, CIRUJANO_BOOT_ID: clock.boot, CIRUJANO_MONOTONIC_MS: clock.monotonic, CIRUJANO_WATCHDOG_ONCE: '1', CIRUJANO_POWEROFF_FILE: resolve(state, 'powered-off'), CIRUJANO_SKIP_SYNC: '1', CIRUJANO_FLOCK_BIN: fakeFlock(state) };
+}
+
 function tickWatchdog(state: string, clock: { boot: string; monotonic: string }): void {
-  execFileSync('/bin/bash', [resolve(guestDir, 'watchdog.sh')], {
-    env: { ...process.env, CIRUJANO_STATE_DIR: state, CIRUJANO_BOOT_ID: clock.boot, CIRUJANO_MONOTONIC_MS: clock.monotonic, CIRUJANO_WATCHDOG_ONCE: '1', CIRUJANO_POWEROFF_FILE: resolve(state, 'powered-off'), CIRUJANO_SKIP_SYNC: '1' },
-  });
+  execFileSync('/bin/bash', [resolve(guestDir, 'watchdog.sh')], { env: watchdogEnv(state, clock) });
+}
+
+/** Holds grant.lock from another process until the returned release runs. */
+async function holdGrantLock(state: string): Promise<() => void> {
+  const ready = resolve(state, 'holder-ready');
+  const holder = spawn('/bin/bash', ['-c', `exec 9>"${resolve(state, 'grant.lock')}"; "${fakeFlock(state)}" -n 9; touch "${ready}"; sleep 30`]);
+  for (let attempt = 0; attempt < 100 && !existsSync(ready); attempt += 1) await new Promise((wait) => setTimeout(wait, 20));
+  return () => { holder.kill('SIGKILL'); };
 }
 
 describe('guest helpers (R08-R09)', () => {
@@ -291,6 +311,44 @@ describe('guest helpers (R08-R09)', () => {
     // Once the previous generation has used its whole window, only a fresh VM may be armed.
     tickWatchdog(state, { boot: 'boot-a', monotonic: '90700' });
     expect(() => execFileSync('/bin/bash', [arm], { env, input: '3\n182000\n272000\n60000\n5000\n2\n' })).toThrow(/expired grant/u);
+  });
+
+  it('refuses to arm while another writer holds the grant lock, leaving the grant untouched', async () => {
+    const state = mkdtempSync(resolve(tmpdir(), 'cirujano-grant-lock-'));
+    const env = armFirstGrant(state);
+    const before = readFileSync(resolve(state, 'grant.env'), 'utf8');
+    const release = await holdGrantLock(state);
+    try {
+      const armed = spawnSync('/bin/bash', [resolve(guestDir, 'arm-grant.sh')], { env, input: '2\n92000\n182000\n60000\n5000\n1\n', encoding: 'utf8' });
+      expect(armed.status).toBe(4);
+      expect(armed.stderr).toContain('grant lock busy');
+      tickWatchdog(state, { boot: 'boot-a', monotonic: '600' });
+      expect(readFileSync(resolve(state, 'grant.env'), 'utf8')).toBe(before);
+    } finally {
+      release();
+    }
+  });
+
+  it('never lets a watchdog write-back undo a newly armed generation', async () => {
+    const state = mkdtempSync(resolve(tmpdir(), 'cirujano-grant-race-'));
+    const env = armFirstGrant(state);
+    const hold = resolve(state, 'hold-after-read');
+    writeFileSync(hold, '');
+    // The watchdog reads generation 1, then pauses before writing it back.
+    const watchdog = spawn('/bin/bash', [resolve(guestDir, 'watchdog.sh')], {
+      env: { ...watchdogEnv(state, { boot: 'boot-a', monotonic: '600' }), CIRUJANO_TEST_MODE: '1', CIRUJANO_TEST_HOLD_AFTER_READ: hold },
+    });
+    const exited = new Promise<void>((done) => watchdog.once('close', () => done()));
+    for (let attempt = 0; attempt < 100 && !existsSync(`${hold}.reached`); attempt += 1) await new Promise((wait) => setTimeout(wait, 20));
+    expect(existsSync(`${hold}.reached`)).toBe(true);
+    const armedMidTick = spawnSync('/bin/bash', [resolve(guestDir, 'arm-grant.sh')], { env, input: '2\n92000\n182000\n60000\n5000\n1\n', encoding: 'utf8' });
+    rmSync(hold);
+    await exited;
+    // Mid-tick arming must fail loudly rather than be silently overwritten by the stale generation.
+    expect(armedMidTick.status).toBe(4);
+    execFileSync('/bin/bash', [resolve(guestDir, 'arm-grant.sh')], { env, input: '2\n92000\n182000\n60000\n5000\n1\n' });
+    tickWatchdog(state, { boot: 'boot-a', monotonic: '700' });
+    expect(readFileSync(resolve(state, 'grant.env'), 'utf8')).toContain('grant_generation=2');
   });
 
   it('powers off an expired prior generation even after guest drain', () => {

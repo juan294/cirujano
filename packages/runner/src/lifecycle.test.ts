@@ -223,6 +223,18 @@ describe('drain safety (R03)', () => {
     expect(withinGrace).toMatchObject({ state: 'draining', effect: { type: 'none' } });
   });
 
+  it('names a guest grant that lags the journal generation instead of waiting on idle grace forever', () => {
+    // 2026-09-23 P2: journal generation 4, guest still enforcing generation 3's grant.
+    const lagging = decideLifecycle({ ...idleInput, journal: { ...idleInput.journal, startCount: 2 } });
+    expect(lagging).toMatchObject({ state: 'blocked', effect: { type: 'none' } });
+    expect(lagging.reason).toBe('guest grant generation 1 does not match journal generation 2');
+    const busyLagging = decideLifecycle({
+      ...idleInput, journal: { ...idleInput.journal, startCount: 2 },
+      queue: { ...idleInput.queue, ownedBusy: true }, guest: { ...idleInput.guest, status: 'busy', workerActive: true, runnerActive: true },
+    });
+    expect(busyLagging.reason).toBe('guest grant generation 1 does not match journal generation 2');
+  });
+
   it('counts idle grace only from observations after the last interruption of the generation', () => {
     const resumedOnce = [
       { observedAtMs: NOW - 900_000, complete: true, generation: 1 },
