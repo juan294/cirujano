@@ -118,11 +118,15 @@ export function advanceObservedLifecycle(input: ObservedLifecycleInput): { lifec
   const diskUsd = (accounting.diskRetainedMs / THIRTY_DAY_MONTH_MS) * input.diskSizeGiB * input.rates.diskUsdPerGibMonth;
   const networkUsd = (accounting.networkEgressBytes / 1_073_741_824) * input.rates.networkEgressUsdPerGib;
   const cumulativeCostUsd = Math.max(input.lifecycle.cumulativeCostUsd, roundMoney(computeUsd + diskUsd + networkUsd));
-  const idle = input.queueComplete && input.ownedBusy === false && input.guest.complete && input.guest.status === 'drained'
+  const currentGeneration = input.queueComplete && input.ownedBusy !== null && input.guest.complete
     && input.guest.generation !== null && input.guest.generation === input.lifecycle.startCount;
-  const idleObservations = idle && input.lifecycle.idleObservations.length < 100
-    && input.lifecycle.idleObservations.at(-1)?.observedAtMs !== input.nowMs
-    ? [...input.lifecycle.idleObservations, { observedAtMs: input.nowMs, complete: true, generation: input.guest.generation! }]
+  const idle = currentGeneration && input.ownedBusy === false && input.guest.status === 'drained';
+  // A generation seen working again after idle evidence gets one incomplete marker, so a resumed
+  // drain earns its own idle grace. The controller merge keeps the latest 100 entries.
+  const previous = input.lifecycle.idleObservations.at(-1);
+  const interrupted = currentGeneration && !idle && previous?.generation === input.guest.generation && previous.complete;
+  const idleObservations = (idle || interrupted) && previous?.observedAtMs !== input.nowMs
+    ? [...input.lifecycle.idleObservations, { observedAtMs: input.nowMs, complete: idle, generation: input.guest.generation! }]
     : input.lifecycle.idleObservations;
   const lifecycle = { ...input.lifecycle, cumulativeRuntimeMs: runtimeMs, cumulativeCostUsd, idleObservations };
   return { lifecycle, accounting };
@@ -490,12 +494,9 @@ async function observe(context: RuntimeContext): Promise<LifecycleInput> {
   });
   journal = advanced.lifecycle;
   await writeJournalAtomic(context.accountingPath, { schemaVersion: 1, identity: context.identity, ...advanced.accounting });
-  const decisionQueue = journal.state === 'draining' && queue.ownedBusy === false
-    ? { ...queue, eligibleQueuedJobs: 0 }
-    : queue;
   return {
     nowMs, config: context.config, identity: context.identity, permit: context.permit,
-    provider, queue: decisionQueue, guest, journal,
+    provider, queue, guest, journal,
     projectedStartCostUsd: projectedStartCost(context),
   };
 }

@@ -172,7 +172,11 @@ export function decideLifecycle(input: LifecycleInput): LifecycleDecision {
     return blocked('owned VM stopped outside the controller; delete it and create a fresh generation');
   }
 
-  if (input.journal.state === 'draining' && input.queue.eligibleQueuedJobs > 0) {
+  // A drained guest only returns to work when the job still fits its immutable deadline; otherwise
+  // the drain runs out and the next start arms a fresh grant.
+  if (input.journal.state === 'draining' && input.queue.eligibleQueuedJobs > 0 && input.provider.vmStatus === 'running'
+    && input.guest.status === 'drained' && grant !== null
+    && input.nowMs <= safeCutoffMs(grant.deadlineMs, input.permit?.expiresAtMs ?? 0, input.config.timing.maxJobMs, input.config.timing.shutdownMarginMs)) {
     return authorized(input, 'register', {
       state: 'ready', effect: { type: 'resume-admission' }, reason: 'eligible work arrived during drain',
     });
@@ -297,9 +301,12 @@ function guestIsDrained(input: LifecycleInput): boolean {
 function idleGraceSatisfied(input: LifecycleInput): boolean {
   const generation = input.guest.grant?.generation;
   if (generation === undefined) return false;
-  const complete = input.journal.idleObservations
-    .filter((entry) => entry.complete && entry.generation === generation && entry.observedAtMs <= input.nowMs)
+  // An incomplete entry marks the generation leaving idle (a resumed drain); grace restarts after it.
+  const ofGeneration = input.journal.idleObservations
+    .filter((entry) => entry.generation === generation && entry.observedAtMs <= input.nowMs)
     .sort((a, b) => a.observedAtMs - b.observedAtMs);
+  const lastInterruption = ofGeneration.findLastIndex((entry) => !entry.complete);
+  const complete = ofGeneration.slice(lastInterruption + 1);
   const first = complete[0];
   const last = complete.at(-1);
   return first !== undefined && last !== undefined && complete.length >= 2

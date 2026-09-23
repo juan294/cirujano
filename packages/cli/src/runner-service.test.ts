@@ -44,6 +44,36 @@ describe('production runner command composition (R11/R12)', () => {
     expect(repeated.lifecycle.cumulativeRuntimeMs).toBeGreaterThanOrEqual(result.lifecycle.cumulativeRuntimeMs);
     expect(repeated.lifecycle.cumulativeCostUsd).toBeGreaterThanOrEqual(result.lifecycle.cumulativeCostUsd);
   });
+  it('keeps recording idle evidence once the observation window is full', () => {
+    const full = Array.from({ length: 100 }, (_, index) => ({ observedAtMs: index + 1, complete: true, generation: 2 }));
+    const result = advanceObservedLifecycle({
+      nowMs: 10_000,
+      lifecycle: { state: 'draining', startCount: 2, cumulativeRuntimeMs: 0, cumulativeCostUsd: 0, outstandingIntent: null, idleObservations: full, grantDeadlineMs: null },
+      providerPresent: true, queueComplete: true, ownedBusy: false,
+      guest: { complete: true, status: 'drained', generation: 2, startedAtMs: 8_000, networkEgressBytes: 0 },
+      accounting: { diskStartedAtMs: 1_000, diskRetainedMs: 0, runtimeBaselineMs: 0, generation: 2, networkEgressBytes: 0 },
+      rates: validRunnerConfig.rates, diskSizeGiB: 80,
+    });
+    // The controller merge trims to the latest 100; the observation layer must still append.
+    expect(result.lifecycle.idleObservations).toHaveLength(101);
+    expect(result.lifecycle.idleObservations.at(-1)).toEqual({ observedAtMs: 10_000, complete: true, generation: 2 });
+  });
+  it('marks a generation leaving idle once, so a resumed drain restarts its grace', () => {
+    const base = {
+      lifecycle: { state: 'draining', startCount: 2, cumulativeRuntimeMs: 0, cumulativeCostUsd: 0, outstandingIntent: null, grantDeadlineMs: null,
+        idleObservations: [{ observedAtMs: 1_000, complete: true, generation: 2 }] },
+      providerPresent: true, queueComplete: true,
+      accounting: { diskStartedAtMs: 1_000, diskRetainedMs: 0, runtimeBaselineMs: 0, generation: 2, networkEgressBytes: 0 },
+      rates: validRunnerConfig.rates, diskSizeGiB: 80,
+    } as const;
+    const busy = { complete: true, status: 'busy', generation: 2, startedAtMs: 500, networkEgressBytes: 0 };
+    const interrupted = advanceObservedLifecycle({ ...base, nowMs: 2_000, ownedBusy: true, guest: busy });
+    expect(interrupted.lifecycle.idleObservations.at(-1)).toEqual({ observedAtMs: 2_000, complete: false, generation: 2 });
+    const stillBusy = advanceObservedLifecycle({ ...base, nowMs: 3_000, ownedBusy: true, guest: busy, lifecycle: interrupted.lifecycle, accounting: interrupted.accounting });
+    expect(stillBusy.lifecycle.idleObservations).toHaveLength(2);
+    const unknown = advanceObservedLifecycle({ ...base, nowMs: 2_000, ownedBusy: null, guest: busy });
+    expect(unknown.lifecycle.idleObservations).toHaveLength(1);
+  });
   it('inspects live repository and provider identity through injected process endpoints', async () => {
     const fixture = await createFixture();
     const io = captureIo();
@@ -298,16 +328,18 @@ describe('production runner command composition (R11/R12)', () => {
     expect((JSON.parse(await readFile(fixture.scenarioPath, 'utf8')) as LifecycleScenario).jobs[1]?.status).toBe('queued');
     await builtTick(fixture); // reconcile drain
     expect((JSON.parse(await readFile(fixture.scenarioPath, 'utf8')) as LifecycleScenario).jobs[1]?.status).toBe('queued');
-    await builtTick(fixture); // first complete idle observation
-    await new Promise((resolveWait) => setTimeout(resolveWait, 5));
-    await builtTick(fixture); // stop after generation-bound idle grace
-    await builtTick(fixture); // reconcile stop while second job remains queued
-    await builtTick(fixture); // next authorized start
-    await builtTick(fixture); // reconcile and arm
-    await builtTick(fixture); // register second exact assignment
+    await builtTick(fixture); // R03: the queued job fits, so the drained guest resumes admission
+    await builtTick(fixture); // reconcile resume
+    await builtTick(fixture); // register the second assignment on the same generation
     await builtTick(fixture); // reconcile registration
+    expect((JSON.parse(await readFile(fixture.scenarioPath, 'utf8')) as LifecycleScenario).jobs[1]?.status).toBe('in_progress');
+    const resumedEvents = (await readFile(join(fixture.directory, 'events.jsonl'), 'utf8')).trim().split('\n').map((line) => JSON.parse(line) as { type: string; effect?: string });
+    const resumedEffects = resumedEvents.filter((event) => event.type === 'effect-intent').map((event) => event.effect);
+    expect(resumedEffects.slice(-3)).toEqual(['begin-drain', 'resume-admission', 'register-runner']);
+    expect(resumedEffects.filter((effect) => effect === 'stop-vm' || effect === 'start-vm')).toEqual(['start-vm']);
+    expect(JSON.parse(await readFile(join(fixture.directory, 'controller-state.json'), 'utf8'))).toMatchObject({ lifecycle: { startCount: 1 } });
     await updateScenario(fixture, (state) => { state.jobs[1]!.status = 'completed'; state.jobs[1]!.conclusion = 'success'; state.runnerBusy = false; state.guest = 'ready'; });
-    await builtTick(fixture); // drain second generation
+    await builtTick(fixture); // drain the same generation again
     await builtTick(fixture); // reconcile drain
     await builtTick(fixture); // idle observation one
     await new Promise((resolveWait) => setTimeout(resolveWait, 5));
@@ -318,7 +350,7 @@ describe('production runner command composition (R11/R12)', () => {
     const assignmentState = JSON.parse(await readFile(join(fixture.directory, 'assignments.json'), 'utf8')) as { assignments: KnownFixtureAssignment[] };
     expect(assignmentState.assignments).toEqual([
       { runId: 1001, runAttempt: 1, jobId: 2001, runnerId: 301, runnerName: 'cirujano-a-g1', conclusion: 'success' },
-      { runId: 1002, runAttempt: 1, jobId: 2002, runnerId: 302, runnerName: 'cirujano-a-g2', conclusion: 'success' },
+      { runId: 1002, runAttempt: 1, jobId: 2002, runnerId: 302, runnerName: 'cirujano-a-g1', conclusion: 'success' },
     ]);
     const reportPath = join(fixture.directory, 'report-input.json');
     await writeFile(reportPath, JSON.stringify({

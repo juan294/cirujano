@@ -227,6 +227,30 @@ describe('tickController intent recovery (R10/R12)', () => {
     await second.release();
   });
 
+  it('rolls a full idle-observation window forward instead of freezing it', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'cirujano-controller-window-'));
+    const paths = { journalPath: join(directory, 'state.json'), eventPath: join(directory, 'events.jsonl') };
+    const full = Array.from({ length: 100 }, (_, index) => ({ observedAtMs: NOW - 100_000 + index * 1_000, complete: true, generation: 1 }));
+    const current = startInput();
+    current.queue.eligibleQueuedJobs = 0;
+    current.journal = { ...current.journal, startCount: 1, idleObservations: full };
+    const first = await acquireControllerLock(directory);
+    await tickController({ lock: first, ...paths, input: current, executeEffect: async () => ({}), reconcileEffect: async () => ({ resolved: false }) });
+    await first.release();
+
+    const latest = { observedAtMs: NOW + 1_000, complete: true, generation: 1 };
+    const next = startInput();
+    next.queue.eligibleQueuedJobs = 0;
+    next.journal = { ...current.journal, idleObservations: [...full, latest] };
+    const second = await acquireControllerLock(directory);
+    await tickController({ lock: second, ...paths, input: next, executeEffect: async () => ({}), reconcileEffect: async () => ({ resolved: false }) });
+    await second.release();
+    const saved = await readJournal<{ lifecycle: LifecycleInput['journal'] }>(paths.journalPath);
+    expect(saved.lifecycle.idleObservations).toHaveLength(100);
+    expect(saved.lifecycle.idleObservations.at(-1)).toEqual(latest);
+    expect(saved.lifecycle.idleObservations[0]).toEqual(full[1]);
+  });
+
   it('rejects pending-effect and lifecycle-intent disagreement', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'cirujano-controller-invariant-'));
     const journalPath = join(directory, 'state.json');

@@ -210,6 +210,37 @@ describe('drain safety (R03)', () => {
     expect(result).toMatchObject({ state: 'ready', effect: { type: 'resume-admission' } });
   });
 
+  it('keeps draining instead of resuming when a job would not fit before the immutable deadline', () => {
+    // Cutoff = deadline - maxJobMs - shutdownMarginMs = NOW - 900_000: a resumed guest could never take the job.
+    const nearDeadline = { ...grant, deadlineMs: NOW + 3_000_000 };
+    const queued = { ...idleInput.queue, eligibleQueuedJobs: 1 };
+    const result = decideLifecycle({ ...idleInput, queue: queued, guest: { ...idleInput.guest, grant: nearDeadline } });
+    expect(result.effect).toEqual({ type: 'stop-vm', emergency: false });
+    const withinGrace = decideLifecycle({
+      ...idleInput, queue: queued, guest: { ...idleInput.guest, grant: nearDeadline },
+      journal: { ...idleInput.journal, idleObservations: [idleInput.journal.idleObservations[1]!] },
+    });
+    expect(withinGrace).toMatchObject({ state: 'draining', effect: { type: 'none' } });
+  });
+
+  it('counts idle grace only from observations after the last interruption of the generation', () => {
+    const resumedOnce = [
+      { observedAtMs: NOW - 900_000, complete: true, generation: 1 },
+      { observedAtMs: NOW - 600_000, complete: true, generation: 1 },
+      { observedAtMs: NOW - 400_000, complete: false, generation: 1 },
+    ];
+    const oneAfter = decideLifecycle({ ...idleInput, journal: { ...idleInput.journal, idleObservations: [...resumedOnce, { observedAtMs: NOW, complete: true, generation: 1 }] } });
+    expect(oneAfter).toMatchObject({ state: 'draining', effect: { type: 'none' } });
+    const spanAfter = decideLifecycle({
+      ...idleInput,
+      journal: {
+        ...idleInput.journal,
+        idleObservations: [...resumedOnce, { observedAtMs: NOW - 300_000, complete: true, generation: 1 }, { observedAtMs: NOW, complete: true, generation: 1 }],
+      },
+    });
+    expect(spanAfter.effect).toEqual({ type: 'stop-vm', emergency: false });
+  });
+
   it('blocks ordinary stop on unknown busy state or incomplete observations', () => {
     for (const changed of [
       { ...idleInput, queue: { ...idleInput.queue, ownedBusy: null } },
