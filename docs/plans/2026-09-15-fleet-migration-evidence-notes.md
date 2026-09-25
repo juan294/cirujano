@@ -202,12 +202,67 @@ staleness check so recovery can run late.
 
 Remediation: the P1 VM was deleted, P1's launchd agent was booted out, and
 `juan294/portfolio` PR #1122 returns the `check` job to `ubuntu-latest`. P2
-and P3 still run the bundle that carries this defect.
+and P3 ran the bundle that carries this defect until the 2026-09-23 swap onto
+`86ea6e6` and later (see D-12 to D-14).
 
 Lesson: a permit bounds what the controller may do, not what it will do when
 it stops deciding. Every state that returns without clearing `pendingEffect`
 needs an exit, and the budget ceiling cannot bound a VM that is already
 running while accounting is frozen.
+
+### D-12 Work arriving mid-drain forced a VM restart (found live 2026-09-23, P2)
+
+The observe step zeroed `eligibleQueuedJobs` whenever the journal said
+`draining`, so the R03 rule "queue arrival during drain returns to work"
+(`lifecycle.ts`, `resume-admission`) never fired. A job queued mid-drain cost
+a full stop and start: 2 min 16 s on P2 plus one permit start. Removing the
+override exposed two more gaps. A resume near the grant deadline would idle
+until the watchdog fired, and a second drain in the same generation reused
+the first drain's idle evidence. A latent defect sat alongside: the idle
+observation append stopped at 100 entries, after which idle grace could never
+pass and a drained VM would idle until its watchdog deadline. P2's archived
+journal reached 67 entries in 8 generations.
+
+Fix `813b3f7`: pass the real queue; resume only when the VM is running, the
+guest is drained and the job fits the grant and permit cutoff; mark a
+generation leaving idle with one `complete: false` observation and count grace
+only after it; append without the cap (the controller merge already keeps the
+latest 100). Verified live 2026-09-24: P2 went `begin-drain` →
+`resume-admission` → `register-runner` on one generation.
+
+### D-13 A lost grant update wedged a controller in draining (found live 2026-09-23, P2)
+
+P2 sat in `draining` with its VM running: journal `startCount 4`, guest still
+enforcing generation 3's exact grant. Idle observations need the two to match,
+so grace could never pass, and the guest was enforcing the old deadline. Root
+cause, reproduced against the old scripts: the watchdog rewrote `grant.env`
+every tick (`source` → update → write back) without a lock, so an `arm-grant`
+landing between its read and write-back was silently undone (generation 2
+armed, generation 1 restored). The controller then marked the start resolved
+because `arm-grant` exited 0. An earlier diagnosis blamed Nebius operation
+parsing; `mapInstanceState` reads the real `status.state` and was not at fault.
+
+Fix `3243628`: `arm-grant` and the watchdog share `grant.lock` (`arm-grant`
+exits 4 when busy); a start reconciles only once the guest reports the armed
+generation, re-arming otherwise; a guest grant that lags the journal is a named
+`blocked` decision instead of a silent idle-grace loop. Guest scripts reach
+only VMs created after a deploy, so the swap's `cleanup` is what rolls them
+out. Verified 2026-09-25: two restarts of an existing P2 VM, grant equal to
+`startCount` each time, no mismatch decisions on P2 or P3.
+
+### D-14 Direct-stop recovery blocked forever and replayed stale results (found live 2026-09-23, P2)
+
+Recovering P2 by hand exposed two defects in `runner stop`. With no journalled
+operation id, `recoverDirectEmission` treated every operation ever run on the
+instance, including hours-old `SUCCEEDED` ones, as in flight and blocked on
+every run. And `mutateOwned` answered "done" from any `resolved` record
+without reading the provider: once a later generation restarted the VM,
+`runner stop` reported stopped in 0.6 s while it was running, and `cleanup`
+then refused to delete a running instance.
+
+Fix `3243628`: only `PENDING`/`RUNNING` operations block; a `stopping` VM
+waits; a VM still running after finished operations gets the one-shot retry;
+a resolved record replays only while the provider still agrees.
 
 ## Phase 3 state
 
@@ -401,3 +456,13 @@ today by the owner's own project cost and the report's controller evidence.
   after `cleanup` so an abandoned generation's runtime is still counted,
   right-sizing or releasing retained disk between runs, a second runner slot
   or larger preset for P3, and re-cutting P1 once the D-11 fix is deployed.
+- 2026-09-23/24: P2 and P3 swapped three times, onto `86ea6e6` (D-11),
+  `813b3f7` (D-12) and `3243628` (D-13, D-14), each with cleanup, archived
+  journals and owner-issued permits; the live bundle is `ab45ac4c` under
+  permits `P#-operating-20260924` (USD 80 of the USD 120 ceiling). P1's
+  permit is retired, its registry entry recorded `reverted` by `fleet verify`,
+  and its launchd agent removed. A fourth candidate was declined: each of its
+  workflows alone spends less than one controller's retained-disk floor.
+- Operating lesson 2026-09-23: another operator (an owner-authorized release
+  session) recovered P2 by hand while a swap was waiting for an idle window.
+  Swaps now check for other active operators before touching a controller.
