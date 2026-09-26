@@ -415,7 +415,7 @@ describe('fleet controller-config and permit-proposal (phase 2 U1)', () => {
       expect(parsePermit(permit)).toMatchObject({ permitId: 'P1-operating-20260916', maxTotalCostUsd: 40 });
 
       // Other enrollments count toward the fleet ceiling through their issued permit, or their draft
-      // or proposal when nothing is issued yet; the fourth USD 40 proposal is refused.
+      // or proposal when nothing is issued yet; the fourth USD 40 proposal fits the expanded ceiling.
       const fake = fakeGitHub();
       for (const [id, key] of [['P2', 'lint'], ['P3', 'mac'], ['P4', 'check']] as const) {
         fake.files[HEAD] = { sha: HOSTED_BLOB, content: HOSTED_WORKFLOW.replace('runs-on: macos-latest', 'runs-on: ubuntu-latest') };
@@ -432,9 +432,9 @@ describe('fleet controller-config and permit-proposal (phase 2 U1)', () => {
       expect(await service.run({ ...proposalArguments, id: 'P3' }, p3.io)).toBe(0);
       expect(JSON.parse(p3.out.join(''))).toMatchObject({ fleetCommittedUsd: 120 });
       const p4 = capture();
-      expect(await service.run({ ...proposalArguments, id: 'P4' }, p4.io)).toBe(1);
-      expect(p4.err.join('')).toMatch(/fleet ceiling USD 120 would be exceeded: USD 120 already committed plus USD 40/u);
-      await expect(stat(join(stateRoot, 'P4', 'permit-proposal.json'))).rejects.toThrow();
+      expect(await service.run({ ...proposalArguments, id: 'P4' }, p4.io)).toBe(0);
+      expect(JSON.parse(p4.out.join(''))).toMatchObject({ fleetCommittedUsd: 160 });
+      await expect(stat(join(stateRoot, 'P4', 'permit-proposal.json'))).resolves.toBeDefined();
     } finally {
       vi.useRealTimers();
     }

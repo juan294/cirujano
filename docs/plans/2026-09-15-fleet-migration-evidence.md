@@ -77,6 +77,17 @@ the excluded projects; Nemotron diagnosis and workflow patch proposals.
   of blocking forever (today it blocks by design, lifecycle.ts guard added
   2026-09-15).
 
+### Budget decision update (2026-09-26)
+
+The owner authorized a larger fleet spending cap to collect evidence beyond the
+initial pilot. The fleet ceiling is USD 320, enough for eight private-repository
+operating permits at the existing USD 40 per-enrollment maximum. This is a
+maximum committed liability through the measurement window, not a spending
+target or a savings claim. The per-enrollment start, runtime, cost, and expiry
+bounds in D3 remain unchanged. Enrollment and workflow cutover still require
+their own compatibility and exact-run verification; public repositories remain
+telemetry-only because their standard hosted minutes have no list cost.
+
 ## Baseline and evidence
 
 - Telemetry contract and credit rule: `packages/cli/src/telemetry.ts:6-21`

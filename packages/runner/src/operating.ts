@@ -7,7 +7,7 @@ export const OPERATING_PERMIT_BOUNDS = {
   maxStarts: 600,
   maxRuntimeMs: 540_000_000,
   maxTotalCostUsd: 40,
-  fleetCeilingUsd: 120,
+  fleetCeilingUsd: 320,
 } as const;
 
 const OPERATIONS: readonly PermitOperation[] = ['create', 'start', 'register', 'stop', 'delete'];

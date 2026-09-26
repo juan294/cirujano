@@ -49,7 +49,7 @@ describe('operating permit proposal (phase 2 U1)', () => {
     // 150 h × 0.0992 + 1020 h × 80 GiB × 0.071 / 730 + 10 GiB × 0
     expect(maximum).toBeCloseTo(14.88 + 7.936438, 5);
     expect(OPERATING_PERMIT_BOUNDS).toEqual({
-      expiresAtMs: Date.parse('2026-10-28T23:59:59Z'), maxStarts: 600, maxRuntimeMs: 540_000_000, maxTotalCostUsd: 40, fleetCeilingUsd: 120,
+      expiresAtMs: Date.parse('2026-10-28T23:59:59Z'), maxStarts: 600, maxRuntimeMs: 540_000_000, maxTotalCostUsd: 40, fleetCeilingUsd: 320,
     });
   });
 
@@ -58,7 +58,7 @@ describe('operating permit proposal (phase 2 U1)', () => {
     const result = buildOperatingPermitProposal({ ...input, quote });
     expect(result).toMatchObject({ accepted: true, proposal: {
       kind: 'operating', enrollmentId: 'P1', approved: false, maxStarts: 600, maxRuntimeMs: 540_000_000, maxTotalCostUsd: 40,
-      fleetCeilingUsd: 120, fleetCommittedUsd: 120, operations: ['create', 'start', 'register', 'stop', 'delete'], recoveryAllowed: true,
+      fleetCeilingUsd: 320, fleetCommittedUsd: 120, operations: ['create', 'start', 'register', 'stop', 'delete'], recoveryAllowed: true,
       resources: { platform: 'cpu-d3', preset: '4vcpu-16gb', vmCount: 1, diskCount: 1, diskType: 'network_ssd', diskSizeGiB: 80 },
     } });
     if (!result.accepted) throw new Error('unreachable');
@@ -71,13 +71,20 @@ describe('operating permit proposal (phase 2 U1)', () => {
     ]);
   });
 
+  it('accepts exactly eight USD 40 permits at the fleet ceiling', () => {
+    const quote = { ...input.quote, estimatedMaximumUsd: calculateOperatingQuoteMaximum(input.quote, input.maxRuntimeMs, input.expiresAtMs - input.nowMs) };
+    const otherPermits = Array.from({ length: 7 }, (_, index) => ({ permitId: `P${index + 2}`, maxTotalCostUsd: 40 }));
+    const result = buildOperatingPermitProposal({ ...input, otherPermits, quote });
+    expect(result).toMatchObject({ accepted: true, proposal: { fleetCeilingUsd: 320, fleetCommittedUsd: 320 } });
+  });
+
   it.each([
     ['expiry after the measurement window', { expiresAtMs: Date.parse('2026-10-29T00:00:00Z') }, /measurement window/u],
     ['expiry in the past', { expiresAtMs: NOW }, /follow now/u],
     ['too many starts', { maxStarts: 601 }, /at most 600 starts/u],
     ['too much runtime', { maxRuntimeMs: 540_000_001 }, /150 hours/u],
     ['too much cost', { maxTotalCostUsd: 40.01 }, /USD 40/u],
-    ['a fleet ceiling breach', { otherPermits: [{ permitId: 'a', maxTotalCostUsd: 40 }, { permitId: 'b', maxTotalCostUsd: 40 }, { permitId: 'c', maxTotalCostUsd: 1 }] }, /fleet ceiling USD 120/u],
+    ['a fleet ceiling breach', { otherPermits: Array.from({ length: 8 }, (_, index) => ({ permitId: `P${index + 2}`, maxTotalCostUsd: 40 })) }, /fleet ceiling USD 320/u],
     ['a quote that exceeds the cost ceiling', { maxTotalCostUsd: 20 }, /exceeds the cost ceiling/u],
     ['a stale quote', { quote: { ...input.quote, quotedAt: '2026-09-01' } }, /dated within seven days/u],
     ['disk retention shorter than the permit', { quote: { ...input.quote, maxRetainedDiskHours: 100 } }, /disk retention/u],

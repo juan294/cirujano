@@ -179,7 +179,7 @@ The template supplies the Nebius project, subnet, image and dated rates; the
 generator refuses anything but the pilot preset. `permit-proposal` binds the
 proposal to the installed bundle digest and the config hash, applies the D3
 bounds (expiry `2026-10-28T23:59:59Z`, 600 starts, 150 h, USD 40, fleet
-ceiling USD 120 across the other enrollments' `permit.json` files) and refuses
+ceiling USD 320 across other enrollments' issued permits or pending proposals) and refuses
 a quote whose conservative maximum exceeds the ceiling. The owner reviews
 `permit-proposal.json`, then copies `permit.draft.json` to `permit.json` with
 mode `0600` and restarts the agent:
