@@ -41,8 +41,9 @@ export async function githubPages(ghPath: string, endpoint: string, pageRunner: 
 
 function isTimeout(error: unknown): boolean {
   if (typeof error !== 'object' || error === null) return false;
-  const value = error as { killed?: unknown; signal?: unknown };
-  return value.killed === true || value.signal === 'SIGTERM';
+  const value = error as { killed?: unknown; signal?: unknown; message?: unknown; stderr?: unknown };
+  if (value.killed === true || value.signal === 'SIGTERM') return true;
+  return [value.message, value.stderr].some((part) => typeof part === 'string' && /TLS handshake timeout/iu.test(part));
 }
 
 export function record(value: unknown, name: string): Record<string, unknown> {

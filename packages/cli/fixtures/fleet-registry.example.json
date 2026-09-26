@@ -3,8 +3,6 @@
   "owner": "example-owner",
   "measurementWindow": { "since": "2026-09-13", "through": "2026-10-28" },
   "exclusions": [
-    { "repository": "example-owner/chapa", "reason": "code freeze; covers the -cli, -alexa and -upptime companions", "lockedBy": "fleet-telemetry plan 2026-09-13" },
-    { "repository": "example-owner/spoken-letter", "reason": "code freeze; covers the -cli, -alexa and -upptime companions", "lockedBy": "fleet-telemetry plan 2026-09-13" },
     { "repository": "frivas/contribution-dashboard", "reason": "named exclusion", "lockedBy": "fleet-telemetry plan 2026-09-13" },
     { "repository": "behboud/opencode-rpi", "reason": "named exclusion", "lockedBy": "fleet-telemetry plan 2026-09-13" },
     { "repository": "juan294/home-network", "reason": "named exclusion", "lockedBy": "fleet-telemetry plan 2026-09-13" }

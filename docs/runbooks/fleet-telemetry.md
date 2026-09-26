@@ -46,11 +46,14 @@ the paths above, a start date of 2026-09-13, and a 48-hour overlap.
 ## Fleet boundaries
 
 The collector is read-only and may retain baseline records for every discovered
-repository. Migration is a separate write operation. Chapa, Chapa CLI, Spoken
-Letter, Spoken Letter Alexa and their uptime repositories are excluded from
-migration and all GitHub writes while their code freezes remain active. The
-same exclusion applies to `frivas/contribution-dashboard`,
-`behboud/opencode-rpi` and `juan294/home-network` until the owner changes it.
+repository. Migration is a separate write operation. The owner lifted the
+Chapa and Spoken Letter code freezes on 2026-09-26. New registries no longer
+lock those products or their companion repositories out of enrollment. Existing
+registries keep their explicit exclusions until edited locally. Enrollment
+still refuses public repositories: Chapa's standard hosted minutes cost $0 at
+GitHub and moving them to Nebius would add provider cost. The named exclusions
+for `frivas/contribution-dashboard`, `behboud/opencode-rpi` and
+`juan294/home-network` remain locked until the owner changes them.
 
 ## Fleet registry and enrollment records
 
@@ -72,10 +75,10 @@ cirujano fleet show --registry <registry>
 cirujano telemetry report --store <store> --since 2026-09-13 --registry <registry>
 ```
 
-- `init` writes the locked exclusions from the fleet telemetry plan. The
-  validator refuses a registry that omits any of them or that enrolls an
-  excluded repository or a frozen product's `-cli`, `-alexa` or `-upptime`
-  companion.
+- `init` writes the remaining named exclusions from the fleet telemetry plan.
+  The validator refuses a registry that omits any of them or that enrolls an
+  explicitly excluded repository. It does not remove entries from a registry
+  created while the product freezes were active.
 - `enroll` records `before`: the commit, blob SHA and hosted `runs-on` at the
   default branch head. It refuses public repositories, jobs that already run
   self-hosted, matrix or expression `runs-on` values, and jobs priced under a

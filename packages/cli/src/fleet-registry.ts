@@ -5,12 +5,10 @@ import { validIsoDate } from './args.js';
 import { HOSTED_SKUS, TELEMETRY_RATES, type HostedSku } from './telemetry.js';
 
 /**
- * Exclusions locked by the fleet telemetry plan (docs/plans/2026-09-13-fleet-telemetry.md).
- * Frozen products cover their `-cli`, `-alexa` and `-upptime` companions under the registry owner.
+ * Named exclusions retained from the fleet telemetry plan
+ * (docs/plans/2026-09-13-fleet-telemetry.md).
  */
 export const LOCKED_EXCLUSIONS = {
-  frozenProducts: ['chapa', 'spoken-letter'],
-  companionSuffixes: ['-cli', '-alexa', '-upptime'],
   repositories: ['frivas/contribution-dashboard', 'behboud/opencode-rpi', 'juan294/home-network'],
   lockedBy: 'fleet-telemetry plan 2026-09-13',
 } as const;
@@ -77,11 +75,8 @@ const ENROLLMENT_KEYS = [
   'sku', 'runnerLabel', 'status', 'before', 'after', 'controller', 'notes',
 ] as const;
 
-export function lockedExclusionRepositories(owner: string): string[] {
-  return [
-    ...LOCKED_EXCLUSIONS.frozenProducts.map((product) => `${owner}/${product}`),
-    ...LOCKED_EXCLUSIONS.repositories,
-  ];
+export function lockedExclusionRepositories(): string[] {
+  return [...LOCKED_EXCLUSIONS.repositories];
 }
 
 export function enrollmentLabelFor(sku: HostedSku): string {
@@ -101,11 +96,9 @@ export function findActiveEnrollment(registry: Pick<FleetRegistry, 'enrollments'
   return registry.enrollments.find((entry) => entry.status !== 'reverted' && entry.repository === repository && entry.workflowPath === workflowPath && entry.jobKey === jobKey);
 }
 
-/** Exact exclusion, or a frozen product's companion under the registry owner. */
-export function isExcludedRepository(registry: Pick<FleetRegistry, 'owner' | 'exclusions'>, repository: string): boolean {
-  if (registry.exclusions.some((exclusion) => exclusion.repository === repository)) return true;
-  return LOCKED_EXCLUSIONS.frozenProducts.some((product) => LOCKED_EXCLUSIONS.companionSuffixes
-    .some((suffix) => repository === `${registry.owner}/${product}${suffix}`));
+/** Explicit registry exclusions are exact repository names. */
+export function isExcludedRepository(registry: Pick<FleetRegistry, 'exclusions'>, repository: string): boolean {
+  return registry.exclusions.some((exclusion) => exclusion.repository === repository);
 }
 
 export function parseFleetRegistry(input: unknown): FleetRegistry {
@@ -128,7 +121,7 @@ export function parseFleetRegistry(input: unknown): FleetRegistry {
       lockedBy: text(exclusion['lockedBy'], `exclusions[${index}].lockedBy`),
     };
   });
-  for (const locked of lockedExclusionRepositories(owner)) {
+  for (const locked of lockedExclusionRepositories()) {
     if (!exclusions.some(({ repository }) => repository === locked)) throw new FleetRegistryError(`locked exclusion ${locked} is missing`);
   }
   const partial = { owner, exclusions };

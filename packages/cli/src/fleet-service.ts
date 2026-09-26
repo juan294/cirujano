@@ -102,11 +102,9 @@ async function init(args: Extract<FleetArguments, { action: 'init' }>, registryP
     schemaVersion: 1,
     owner: args.owner,
     measurementWindow: { since: args.since, through: args.through },
-    exclusions: lockedExclusionRepositories(args.owner).map((repository) => ({
+    exclusions: lockedExclusionRepositories().map((repository) => ({
       repository,
-      reason: LOCKED_EXCLUSIONS.frozenProducts.some((product) => repository === `${args.owner}/${product}`)
-        ? `code freeze; covers the ${LOCKED_EXCLUSIONS.companionSuffixes.join(', ')} companions`
-        : 'named exclusion',
+      reason: 'named exclusion',
       lockedBy: LOCKED_EXCLUSIONS.lockedBy,
     })),
     enrollments: [],

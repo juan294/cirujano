@@ -115,7 +115,7 @@ describe('fleet command service (phase 1 U2)', () => {
     const registryPath = await freshRegistry();
     const registry = await readRegistry(registryPath);
     expect(registry.exclusions.map(({ repository }) => repository)).toEqual([
-      'juan294/chapa', 'juan294/spoken-letter', 'frivas/contribution-dashboard', 'behboud/opencode-rpi', 'juan294/home-network',
+      'frivas/contribution-dashboard', 'behboud/opencode-rpi', 'juan294/home-network',
     ]);
     expect(registry.enrollments).toEqual([]);
     expect((await stat(registryPath)).mode & 0o777).toBe(0o600);
@@ -147,7 +147,7 @@ describe('fleet command service (phase 1 U2)', () => {
   });
 
   it.each([
-    ['an excluded repository', { repository: 'juan294/chapa-cli' }, /excluded from migration/u],
+    ['an excluded repository', { repository: 'juan294/home-network' }, /excluded from migration/u],
     ['a repository outside the owner', { repository: 'other/app' }, /must belong to juan294/u],
     ['an unknown workflow path', { workflowPath: '.github/workflows/missing.yml' }, /workflow .* is not registered/u],
     ['an unknown job key', { jobKey: 'deploy' }, /job deploy is not defined/u],

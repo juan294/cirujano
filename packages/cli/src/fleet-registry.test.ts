@@ -19,10 +19,8 @@ import {
 const OWNER = 'example-owner';
 
 describe('fleet registry (phase 1 U1)', () => {
-  it('derives the locked exclusions for an owner from the parent plan', () => {
-    expect(lockedExclusionRepositories(OWNER)).toEqual([
-      `${OWNER}/chapa`,
-      `${OWNER}/spoken-letter`,
+  it('keeps the remaining named exclusions from the parent plan', () => {
+    expect(lockedExclusionRepositories()).toEqual([
       'frivas/contribution-dashboard',
       'behboud/opencode-rpi',
       'juan294/home-network',
@@ -44,9 +42,6 @@ describe('fleet registry (phase 1 U1)', () => {
     ['a missing locked exclusion', (registry: FleetRegistry) => {
       registry.exclusions = registry.exclusions.filter(({ repository }) => repository !== 'behboud/opencode-rpi');
     }, /locked exclusion behboud\/opencode-rpi is missing/u],
-    ['an enrollment of a frozen product companion', (registry: FleetRegistry) => {
-      registry.enrollments[1]!.repository = `${OWNER}/spoken-letter-alexa`;
-    }, /spoken-letter-alexa is excluded/u],
     ['an enrollment of a named exclusion', (registry: FleetRegistry) => {
       registry.exclusions.push({ repository: `${OWNER}/private-two`, reason: 'owner decision', lockedBy: 'owner' });
     }, /private-two is excluded/u],
@@ -94,16 +89,24 @@ describe('fleet registry (phase 1 U1)', () => {
     expect(() => parseFleetRegistry(JSON.parse(JSON.stringify({ ...registry, enrollments: [registry.enrollments[0], fresh] })))).toThrow(/already enrolled as P1/u);
   });
 
-  it('matches exclusions exactly and through the frozen product companion suffixes only', async () => {
+  it('matches explicit exclusions only, including after a product freeze ends', async () => {
     const registry = parseFleetRegistry(JSON.parse(await readFile(fixturePath(), 'utf8')));
-    expect(isExcludedRepository(registry, `${OWNER}/chapa`)).toBe(true);
-    expect(isExcludedRepository(registry, `${OWNER}/chapa-cli`)).toBe(true);
-    expect(isExcludedRepository(registry, `${OWNER}/chapa-upptime`)).toBe(true);
-    expect(isExcludedRepository(registry, `${OWNER}/spoken-letter-alexa`)).toBe(true);
+    expect(isExcludedRepository(registry, `${OWNER}/chapa`)).toBe(false);
+    expect(isExcludedRepository(registry, `${OWNER}/chapa-cli`)).toBe(false);
+    expect(isExcludedRepository(registry, `${OWNER}/spoken-letter`)).toBe(false);
+    expect(isExcludedRepository(registry, `${OWNER}/spoken-letter-alexa`)).toBe(false);
     expect(isExcludedRepository(registry, 'juan294/home-network')).toBe(true);
     expect(isExcludedRepository(registry, 'juan294/home-network-cli')).toBe(false);
     expect(isExcludedRepository(registry, `${OWNER}/chapati`)).toBe(false);
     expect(isExcludedRepository(registry, `${OWNER}/private-one`)).toBe(false);
+  });
+
+  it('keeps exclusions in an existing registry until they are explicitly removed', async () => {
+    const registry = parseFleetRegistry(JSON.parse(await readFile(fixturePath(), 'utf8')));
+    registry.exclusions.push({ repository: `${OWNER}/spoken-letter`, reason: 'old freeze', lockedBy: 'old plan' });
+    expect(isExcludedRepository(parseFleetRegistry(registry), `${OWNER}/spoken-letter`)).toBe(true);
+    registry.exclusions.pop();
+    expect(isExcludedRepository(parseFleetRegistry(registry), `${OWNER}/spoken-letter`)).toBe(false);
   });
 
   it('maps the Linux SKU to its enrolled baseline label and refuses a SKU without one', () => {
