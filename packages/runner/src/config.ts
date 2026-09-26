@@ -11,7 +11,7 @@ const ROOT_KEYS = [
   'runnerLabel', 'slots', 'nebius', 'ssh', 'ownership', 'timing', 'rates',
 ] as const;
 // Optional on input so pilot configs keep parsing; the parsed config always carries it.
-const OPTIONAL_ROOT_KEYS = ['admission'] as const;
+const OPTIONAL_ROOT_KEYS = ['admission', 'idleResourcePolicy'] as const;
 const ADMISSION_POLICIES: readonly AdmissionPolicy[] = ['default-branch-pushes', 'same-repository'];
 const REPOSITORY_KEYS = ['id', 'nameWithOwner', 'visibility'] as const;
 const NEBIUS_KEYS = ['profile', 'projectId', 'subnetId', 'imageId', 'platform', 'preset', 'diskType', 'diskSizeGiB'] as const;
@@ -50,6 +50,9 @@ export function parseRunnerConfig(input: unknown): RunnerConfig {
   if (typeof admission !== 'string' || !ADMISSION_POLICIES.includes(admission as AdmissionPolicy)) {
     throw new ConfigError('admission must be default-branch-pushes or same-repository');
   }
+  if (Object.hasOwn(root, 'idleResourcePolicy') && root['idleResourcePolicy'] !== 'delete-after-stop') {
+    throw new ConfigError('idleResourcePolicy must be delete-after-stop when set');
+  }
 
   const parsed: RunnerConfig = {
     schemaVersion: RUNNER_SCHEMA_VERSION,
@@ -60,6 +63,7 @@ export function parseRunnerConfig(input: unknown): RunnerConfig {
     runnerLabel: nonemptyString(root['runnerLabel'], 'runnerLabel'),
     slots: 1,
     admission: admission as AdmissionPolicy,
+    ...(root['idleResourcePolicy'] === 'delete-after-stop' ? { idleResourcePolicy: 'delete-after-stop' as const } : {}),
     nebius: {
       profile: nonemptyString(nebius['profile'], 'nebius.profile'),
       projectId: nonemptyString(nebius['projectId'], 'nebius.projectId'),

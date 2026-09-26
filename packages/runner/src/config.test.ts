@@ -37,6 +37,14 @@ describe('runner admission policy', () => {
   });
 });
 
+describe('idle resource policy', () => {
+  it('preserves legacy configs and accepts only an explicit delete-after-stop policy', () => {
+    expect(parseRunnerConfig(validConfig)).not.toHaveProperty('idleResourcePolicy');
+    expect(parseRunnerConfig({ ...validConfig, idleResourcePolicy: 'delete-after-stop' }).idleResourcePolicy).toBe('delete-after-stop');
+    expect(() => parseRunnerConfig({ ...validConfig, idleResourcePolicy: 'delete-while-running' })).toThrow(/idleResourcePolicy/u);
+  });
+});
+
 describe('parseRunnerConfig (R01)', () => {
   it.each([
     ['schema version', { ...validConfig, schemaVersion: 2 }],

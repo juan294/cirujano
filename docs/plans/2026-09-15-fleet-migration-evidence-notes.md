@@ -7,6 +7,47 @@ Worktree `/Users/juan/code/cirujano-fleet-migration`, branch
 
 ## Deviations
 
+### D-15 Archived controller evidence and incomplete net savings (2026-09-26)
+
+- Plan said: the fleet report joins controller assignments and cost to the
+  45-day telemetry window.
+- Found: controller bundle swaps archived earlier journals, but the report read
+  only the current journal. It omitted earlier assignments and provider cost;
+  the report also displayed net savings even when assignments were missing.
+- Chose: read every direct controller journal archive, validate each archive's
+  identity, reject repeated assignments or ambiguous duplicate counters, and
+  sum cost at each archive's own dated rates. Report net savings only when the
+  assignment coverage check is complete.
+- Why: otherwise the trial appears cheaper merely because its earlier provider
+  spend vanished from the report. The result remains an estimate from list
+  prices and controller observations, not a cloud invoice or billed GitHub
+  credit reconciliation.
+
+### D-16 Delete idle stopped resources (2026-09-26)
+
+- Plan said: normal idle handling stops the VM and retains its managed disk.
+- Found: disk retention dominates the measured provider estimate while the
+  controller is idle.
+- Chose: new fleet configs opt into deletion after an ordinary stop and complete
+  no-demand observation. Only an owned, stopped VM can be deleted. An active
+  permit with delete authority or its explicit recovery authority may complete
+  cleanup after expiry. Existing configs retain their behavior until migrated.
+- Why: stopping compute alone leaves a continuing bill. The first live deletion
+  must be checked against both instance and managed-disk inventory before any
+  saved-disk claim.
+
+### D-17 Scope expansion requested 2026-09-26
+
+- Plan said: evaluate three selected private enrollments, with the remaining
+  fleet outside the migration acceptance scope.
+- Found: the owner requested deployment across the fleet today. Public
+  repositories have free standard hosted minutes; private repositories differ
+  in job duration, workflow needs and provider economics.
+- Chose: retain the existing controller safety and verification gates while
+  auditing every repository. A paid runner cutover needs a verified cost and
+  workflow case for its target, a local workflow gate, and a live rollback.
+- Why: enrollment counts alone do not prove savings or a working CI result.
+
 ### D-1 Enrollment record carries repository and workflow identity
 
 - Plan said: enrollment `{ id, repository, workflowPath, jobName, sku, runnerLabel, status, before, after, controller, notes }`.

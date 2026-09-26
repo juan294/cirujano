@@ -35,6 +35,7 @@ import {
   runProcess,
   sshAttemptTiming,
   tickController,
+  validateCleanupPermit,
   validatePermit,
   verifySshPublicKeyFingerprint,
   writeJournalAtomic,
@@ -588,9 +589,9 @@ async function executeEffect(context: RuntimeContext, effect: Exclude<LifecycleE
   const state = await priorState(context);
   const generation = Math.max(1, state?.lifecycle.startCount ?? 1);
   if (effect.type === 'delete-vm') {
-    // Expired-generation recovery: the guest already powered itself off, so only its offline
-    // runner registration and the spent VM remain. Never delete a VM that is not stopped.
-    requirePermit(context, 'delete');
+    // Both an expired generation and ordinary idle cleanup delete only an owned, stopped VM.
+    const cleanupAuthority = validateCleanupPermit(context.permit, context.identity, Date.now());
+    if (!cleanupAuthority.valid) throw new Error(cleanupAuthority.reason);
     if (instance.state !== 'stopped') throw new Error(`delete-vm requires a stopped VM, found ${instance.state}`);
     await removeOwnedRegistration(context, state, 'before delete', { refuseBusy: true });
     return operation(await context.nebius.delete(instance.id), 'Nebius delete');
@@ -757,6 +758,7 @@ function requireRecoveryPermit(context: RuntimeContext, operation: Permit['opera
   if (context.permit === null) throw new Error('approval permit is absent');
   const validation = validatePermit(context.permit, context.identity, context.permit.issuedAtMs);
   if (!validation.valid) throw new Error(validation.reason);
+  if (Date.now() < context.permit.issuedAtMs) throw new Error('permit is not active yet');
   if (!context.permit.recoveryAllowed) throw new Error('permit does not authorize recovery');
   if (!context.permit.operations.includes(operation)) throw new Error(`permit does not authorize ${operation} recovery`);
   return context.permit;

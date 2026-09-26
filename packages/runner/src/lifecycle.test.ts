@@ -164,6 +164,20 @@ describe('replay-safe transitions (R02)', () => {
     });
   });
 
+  it('deletes an idle stopped VM and its retained disk only when configured and authorized', () => {
+    const idle = input({
+      config: parseRunnerConfig({ ...rawConfig, idleResourcePolicy: 'delete-after-stop' }),
+      queue: { complete: true, eligibleQueuedJobs: 0, ownedBusy: false, observedAtMs: NOW },
+      journal: { ...input().journal, state: 'stopping', startCount: 1 },
+    });
+    expect(decideLifecycle(idle)).toMatchObject({ state: 'absent', effect: { type: 'delete-vm', generation: 1 } });
+    expect(decideLifecycle({ ...idle, permit: { ...permit, operations: ['start'] } }).effect).toEqual({ type: 'none' });
+    expect(decideLifecycle({ ...idle, queue: { ...idle.queue, eligibleQueuedJobs: 1 }, permit: { ...permit, maxStarts: 2 } })).toMatchObject({ effect: { type: 'start-vm' } });
+    expect(decideLifecycle({ ...idle, config, queue: { ...idle.queue, eligibleQueuedJobs: 0 } }).effect).toEqual({ type: 'none' });
+    expect(decideLifecycle({ ...idle, permit: { ...permit, expiresAtMs: NOW } })).toMatchObject({ effect: { type: 'delete-vm' } });
+    expect(decideLifecycle({ ...idle, permit: { ...permit, expiresAtMs: NOW, recoveryAllowed: false } }).effect).toEqual({ type: 'none' });
+  });
+
   it('does not duplicate a start while an operation or intent is outstanding', () => {
     for (const changed of [
       input({ provider: { complete: true, vmStatus: 'starting', ownership: 'owned', ownedMatches: 1, outstandingOperation: 'op-1' } }),

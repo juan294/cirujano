@@ -76,8 +76,28 @@ describe('telemetry net savings (phase 4)', () => {
     expect(report.enrollments![0]).toMatchObject({
       complete: false, incompleteReason: '1 Cirujano job credited by telemetry has no controller assignment',
       unmatchedCirujanoJobs: ['juan294/private-one:104:1:1004'],
+      netSavingsUsd: null,
     });
-    expect(report.fleet).toMatchObject({ complete: false });
+    expect(report.fleet).toMatchObject({ complete: false, netSavingsUsd: null });
+  });
+
+  it('counts archived controller generations and their assignments at their own rates', async () => {
+    const current = evidence({
+      assignments: [{ runId: 104, runAttempt: 1, jobId: 1004, runnerId: 302, runnerName: 'cirujano-p1-g2', conclusion: 'failure' }],
+    });
+    const historical = evidence({
+      startCount: 1, cumulativeRuntimeMs: 3_600_000, cumulativeCostUsd: 0.2,
+      diskRetainedMs: 0, networkEgressBytes: 0,
+      rates: { ...current.rates, computeUsdPerHour: 0.2 },
+      assignments: [{ runId: 103, runAttempt: 1, jobId: 1003, runnerId: 301, runnerName: 'cirujano-p1-g1', conclusion: 'success' }],
+    });
+    const report = aggregateTelemetry([await fixtureSnapshot()], SINCE, registry([enrollment({})]),
+      new Map([['P1', { ...current, historical: [historical] }]]));
+    expect(report.enrollments![0]).toMatchObject({
+      vmStarts: 3, nebiusComputeUsd: 0.2992, controllerJournaledCostUsd: 0.32,
+      nebiusTotalUsd: 0.498533, netSavingsUsd: -0.462533,
+      complete: true, unmatchedCirujanoJobs: [],
+    });
   });
 
   it('reports a cut-over enrollment without controller evidence as incomplete with null cost', async () => {

@@ -148,6 +148,8 @@ export interface ControllerEvidence {
   networkEgressBytes: number;
   rates: CostRates;
   assignments: ReadonlyArray<{ runId: number; runAttempt: number; jobId: number; runnerId: number; runnerName: string; conclusion: string | null }>;
+  /** Prior journals preserved when a controller bundle was replaced. */
+  historical?: ReadonlyArray<Omit<ControllerEvidence, 'historical'>>;
 }
 
 export interface EnrollmentAssignment {
@@ -456,15 +458,19 @@ function enrollmentReport(
   };
   if (enrollment.status === 'proposed') return { ...base, ...noCost, complete: false, incompleteReason: 'not cut over' };
   if (evidence === undefined) return { ...base, ...noCost, complete: false, incompleteReason: 'controller evidence is absent' };
-  const cost = estimateRunnerCost({
-    rates: evidence.rates,
-    computeIntervals: [{ startMs: 0, endMs: evidence.cumulativeRuntimeMs }],
-    disk: { sizeGiB: evidence.diskSizeGiB, retainedMs: evidence.diskRetainedMs },
-    networkEgressGiB: evidence.networkEgressBytes / 1_073_741_824,
+  const generations = [evidence, ...(evidence.historical ?? [])];
+  const costs = generations.map((generation) => estimateRunnerCost({
+    rates: generation.rates,
+    computeIntervals: [{ startMs: 0, endMs: generation.cumulativeRuntimeMs }],
+    disk: { sizeGiB: generation.diskSizeGiB, retainedMs: generation.diskRetainedMs },
+    networkEgressGiB: generation.networkEgressBytes / 1_073_741_824,
     hostedBillableMinutes: base.after.cirujanoMinutes,
-  });
-  if (!cost.complete) return { ...base, ...noCost, complete: false, incompleteReason: `controller cost is incomplete: ${cost.reason}` };
-  const assignmentByKey = new Map(evidence.assignments.map((entry) => [`${entry.runId}:${entry.runAttempt}:${entry.jobId}`, entry]));
+  }));
+  const incompleteCost = costs.find((cost) => !cost.complete);
+  if (incompleteCost !== undefined) return { ...base, ...noCost, complete: false, incompleteReason: `controller cost is incomplete: ${incompleteCost.reason}` };
+  const completeCosts = costs.filter((cost) => cost.complete);
+  const total = (key: 'computeUsd' | 'diskUsd' | 'networkUsd' | 'runnerTotalUsd') => money(completeCosts.reduce((sum, cost) => sum + cost[key], 0));
+  const assignmentByKey = new Map(generations.flatMap((generation) => generation.assignments).map((entry) => [`${entry.runId}:${entry.runAttempt}:${entry.jobId}`, entry]));
   const assignments: EnrollmentAssignment[] = [];
   const unmatchedCirujanoJobs: string[] = [];
   for (const job of cirujano) {
@@ -477,13 +483,13 @@ function enrollmentReport(
     : `${unmatchedCirujanoJobs.length} Cirujano job${unmatchedCirujanoJobs.length === 1 ? '' : 's'} credited by telemetry ${unmatchedCirujanoJobs.length === 1 ? 'has' : 'have'} no controller assignment`;
   return {
     ...base,
-    vmStarts: evidence.startCount,
-    controllerJournaledCostUsd: evidence.cumulativeCostUsd,
-    nebiusComputeUsd: cost.computeUsd,
-    nebiusDiskUsd: cost.diskUsd,
-    nebiusNetworkUsd: cost.networkUsd,
-    nebiusTotalUsd: cost.runnerTotalUsd,
-    netSavingsUsd: money(grossHostedCostAvoidedUsd - cost.runnerTotalUsd),
+    vmStarts: generations.reduce((sum, generation) => sum + generation.startCount, 0),
+    controllerJournaledCostUsd: money(generations.reduce((sum, generation) => sum + generation.cumulativeCostUsd, 0)),
+    nebiusComputeUsd: total('computeUsd'),
+    nebiusDiskUsd: total('diskUsd'),
+    nebiusNetworkUsd: total('networkUsd'),
+    nebiusTotalUsd: total('runnerTotalUsd'),
+    netSavingsUsd: incompleteReason === null ? money(grossHostedCostAvoidedUsd - total('runnerTotalUsd')) : null,
     assignments,
     unmatchedCirujanoJobs,
     complete: incompleteReason === null,
@@ -497,12 +503,13 @@ function fleetSavings(enrollments: readonly TelemetryEnrollmentReport[]): FleetS
   const grossHostedCostAvoidedUsd = money(cutOver.reduce((total, row) => total + row.after.grossHostedCostAvoidedUsd, 0));
   const costed = cutOver.every((row) => row.nebiusTotalUsd !== null);
   const nebiusTotalUsd = costed ? money(cutOver.reduce((total, row) => total + (row.nebiusTotalUsd ?? 0), 0)) : null;
+  const complete = cutOver.every((row) => row.complete);
   return {
     enrollments: cutOver.length,
     grossHostedCostAvoidedUsd,
     nebiusTotalUsd,
-    netSavingsUsd: nebiusTotalUsd === null ? null : money(grossHostedCostAvoidedUsd - nebiusTotalUsd),
-    complete: cutOver.every((row) => row.complete),
+    netSavingsUsd: !complete || nebiusTotalUsd === null ? null : money(grossHostedCostAvoidedUsd - nebiusTotalUsd),
+    complete,
   };
 }
 

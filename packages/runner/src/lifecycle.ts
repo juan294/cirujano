@@ -189,6 +189,15 @@ export function decideLifecycle(input: LifecycleInput): LifecycleDecision {
     });
   }
 
+  if (input.provider.vmStatus === 'stopped' && input.journal.state === 'stopping'
+    && input.journal.startCount > 0 && input.queue.eligibleQueuedJobs === 0
+    && input.config.idleResourcePolicy === 'delete-after-stop') {
+    return authorizedCleanup(input, {
+      state: 'absent', effect: { type: 'delete-vm', generation: input.journal.startCount },
+      reason: 'idle stopped VM and its retained disk are no longer needed',
+    });
+  }
+
   if (input.provider.vmStatus === 'stopped' && input.queue.eligibleQueuedJobs > 0) {
     if (input.journal.startCount >= (input.permit?.maxStarts ?? 0)) return blocked('permit start count is exhausted');
     const budget = startBudget(input);
@@ -250,6 +259,21 @@ function authorized(input: LifecycleInput, operation: PermitOperation, decision:
   if (!validation.valid) return blocked(validation.reason);
   if (!permits(input.permit, operation)) return blocked(`permit does not authorize ${operation}`);
   return decision;
+}
+
+function authorizedCleanup(input: LifecycleInput, decision: LifecycleDecision): LifecycleDecision {
+  const authority = validateCleanupPermit(input.permit, input.identity, input.nowMs);
+  if (!authority.valid) return blocked(authority.reason);
+  return decision;
+}
+
+/** Permit cleanup of an already stopped owned VM under active or explicit recovery authority. */
+export function validateCleanupPermit(permit: Permit | null, identity: PermitIdentity, nowMs: number): PermitValidation {
+  const current = validatePermit(permit, identity, nowMs);
+  const authority = current.valid ? current : validateRecoveryPermit(permit, identity, nowMs);
+  if (!authority.valid) return authority;
+  if (!permits(permit, 'delete')) return invalid('permit does not authorize delete');
+  return { valid: true };
 }
 
 function permits(permit: Permit | null, operation: PermitOperation): boolean {

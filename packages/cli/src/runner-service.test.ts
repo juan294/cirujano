@@ -402,6 +402,28 @@ describe('production runner command composition (R11/R12)', () => {
     expect(JSON.parse(report.stdout)).toMatchObject({ complete: true, assignments: assignmentState.assignments, cleanup: { vmState: 'absent' }, finalProviderState: 'absent' });
   }, 60_000);
 
+  it('deletes the retained disk after an idle stop even if recovery-authorized permit expires', async () => {
+    const fixture = await createLifecycleFixture('delete-after-stop');
+    await builtTick(fixture); // idle
+    await updateScenario(fixture, (state) => { state.jobs[0]!.status = 'queued'; });
+    for (let tick = 0; tick < 8; tick += 1) await builtTick(fixture); // create, start, register
+    await updateScenario(fixture, (state) => { state.jobs[0]!.status = 'completed'; state.jobs[0]!.conclusion = 'success'; state.runnerBusy = false; state.guest = 'ready'; });
+    await builtTick(fixture); // begin drain
+    await builtTick(fixture); // reconcile drain
+    await builtTick(fixture); // idle observation
+    await new Promise((resolveWait) => setTimeout(resolveWait, 5));
+    await builtTick(fixture); // stop
+    await builtTick(fixture); // reconcile stop
+    const expiredPermit = JSON.parse(await readFile(fixture.permitPath, 'utf8')) as Record<string, unknown>;
+    expiredPermit.expiresAtMs = Date.now() - 1;
+    await writeFile(fixture.permitPath, JSON.stringify(expiredPermit));
+    await builtTick(fixture); // delete
+    await builtTick(fixture); // reconcile delete
+    expect((JSON.parse(await readFile(fixture.scenarioPath, 'utf8')) as LifecycleScenario).provider).toBe('ABSENT');
+    expect(JSON.parse(await readFile(join(fixture.directory, 'controller-state.json'), 'utf8'))).toMatchObject({ lifecycle: { state: 'absent' } });
+    expect(await readFile(fixture.logPath, 'utf8')).toContain('instance delete');
+  }, 60_000);
+
   it('does not reconcile a start until the guest reports the generation it armed', async () => {
     const fixture = await createLifecycleFixture();
     await builtTick(fixture); // idle
@@ -652,7 +674,7 @@ async function updateScenario(fixture: LifecycleFixture, update: (state: Lifecyc
   await writeFile(fixture.scenarioPath, JSON.stringify(state));
 }
 
-async function createLifecycleFixture(): Promise<LifecycleFixture> {
+async function createLifecycleFixture(idleResourcePolicy?: 'delete-after-stop'): Promise<LifecycleFixture> {
   const directory = await mkdtemp(join(tmpdir(), 'cirujano-r11-lifecycle-'));
   const scenarioPath = join(directory, 'scenario.json');
   const logPath = join(directory, 'commands.log');
@@ -713,6 +735,7 @@ else{const ready=s.guest!=='booting';process.stdout.write(JSON.stringify({comple
   for (const path of [ghPath, nebiusPath, sshPath]) await chmod(path, 0o755);
   const config = {
     ...validRunnerConfig,
+    ...(idleResourcePolicy === undefined ? {} : { idleResourcePolicy }),
     ssh: { publicKey: hostPublicKey, fingerprint: verifySshPublicKeyFingerprint(hostPublicKey) },
     timing: { ...validRunnerConfig.timing, pollIntervalMs: 2_000, idleGraceMs: 1 },
   };

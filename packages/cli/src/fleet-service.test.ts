@@ -8,7 +8,7 @@ import { parseRunnerConfig, parsePermit, runnerConfigHash, verifySshPublicKeyFin
 
 import { runCli } from './cli.js';
 import { parseFleetRegistry, type FleetRegistry } from './fleet-registry.js';
-import { assertPublishable, createFleetCommandService, extractJobRunsOn, readControllerEvidence } from './fleet-service.js';
+import { assertPublishable, createFleetCommandService, extractJobRunsOn, loadControllerEvidence, readControllerEvidence } from './fleet-service.js';
 
 const OWNER = 'juan294';
 const HEAD = 'a'.repeat(40);
@@ -318,6 +318,7 @@ describe('fleet controller-config and permit-proposal (phase 2 U1)', () => {
         ownership: { controllerId: 'cirujano-p1-20260916', resourcePrefix: 'cirujano-p1' },
         timing: { pollIntervalMs: 30_000, idleGraceMs: 300_000, bootTimeoutMs: 600_000, maxJobMs: 3_600_000, lifetimeMs: 14_400_000, shutdownMarginMs: 300_000 },
         rates: { ...template.rates, hostedUsdPerMinute: 0.006 },
+        idleResourcePolicy: 'delete-after-stop',
       });
       expect(config.ssh.publicKey).toMatch(/^ssh-ed25519 /u);
       expect(config.ssh.fingerprint).toBe(verifySshPublicKeyFingerprint(config.ssh.publicKey));
@@ -338,6 +339,17 @@ describe('fleet controller-config and permit-proposal (phase 2 U1)', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('refuses to replace a journal-bound config with a different identity', async () => {
+    const { registryPath, service, templatePath, stateRoot } = await enrolledFixture();
+    expect(await service.run({ command: 'fleet', action: 'controller-config', registryPath, id: 'P1', stateRoot, templatePath }, silent())).toBe(0);
+    const configPath = join(stateRoot, 'P1', 'config.json');
+    const original = await readFile(configPath, 'utf8');
+    await writeFile(join(stateRoot, 'P1', 'controller-state.json'), JSON.stringify({ identity: { configHash: runnerConfigHash(parseRunnerConfig(JSON.parse(original))) } }));
+    await expect(service.run({ command: 'fleet', action: 'controller-config', registryPath, id: 'P1', stateRoot, templatePath, allowedBranch: 'different' }, silent()))
+      .rejects.toThrow(/archive the bound journals before changing the controller config/u);
+    expect(await readFile(configPath, 'utf8')).toBe(original);
   });
 
   it('refuses a controller config for an unknown, reverted or public-template enrollment', async () => {
@@ -454,6 +466,50 @@ describe('controller evidence and the sanitized publication (phase 4)', () => {
     await expect(readControllerEvidence(stateDirectory, { controllerId: identity.controllerId, resourcePrefix: identity.resourcePrefix })).resolves.toMatchObject({
       cumulativeRuntimeMs: 7_200_000, assignments: [],
     });
+  });
+
+  it('loads archived generations with their own assignments and rejects unrelated archives', async () => {
+    const stateDirectory = await journals();
+    const archived = join(stateDirectory, 'archive-previous-bundle');
+    await mkdir(archived);
+    for (const name of ['config.json', 'controller-state.json', 'accounting-state.json', 'assignments.json']) {
+      await writeFile(join(archived, name), await readFile(join(stateDirectory, name)));
+    }
+    const archivedState = JSON.parse(await readFile(join(archived, 'controller-state.json'), 'utf8')) as Record<string, unknown>;
+    await writeFile(join(archived, 'controller-state.json'), JSON.stringify({ ...archivedState, lifecycle: {
+      ...archivedState['lifecycle'] as object, startCount: 1, cumulativeRuntimeMs: 3_600_000, cumulativeCostUsd: 0.14,
+    } }));
+    const archivedAssignments = JSON.parse(await readFile(join(archived, 'assignments.json'), 'utf8')) as Record<string, unknown>;
+    await writeFile(join(archived, 'assignments.json'), JSON.stringify({ ...archivedAssignments, assignments: [
+      { runId: 4, runAttempt: 1, jobId: 40, runnerId: 899, runnerName: 'cirujano-p1-g0', conclusion: 'success' },
+    ] }));
+    const registry = { enrollments: [{ id: 'P1', repositoryId: 777, controller: { stateDirectory, controllerId: identity.controllerId, resourcePrefix: identity.resourcePrefix } }] } as FleetRegistry;
+    const evidence = await loadControllerEvidence(registry);
+    expect(evidence.get('P1')?.historical?.[0]?.assignments).toMatchObject([{ runId: 4, jobId: 40 }]);
+    const unrelated = join(stateDirectory, 'archive-unrelated');
+    await mkdir(unrelated);
+    for (const name of ['config.json', 'controller-state.json', 'accounting-state.json']) {
+      await writeFile(join(unrelated, name), await readFile(join(stateDirectory, name)));
+    }
+    const state = JSON.parse(await readFile(join(unrelated, 'controller-state.json'), 'utf8')) as Record<string, unknown>;
+    await writeFile(join(unrelated, 'controller-state.json'), JSON.stringify({ ...state, identity: { ...state['identity'] as object, controllerId: 'foreign' } }));
+    await expect(loadControllerEvidence(registry)).rejects.toThrow(/archive-unrelated/u);
+  });
+
+  it('counts a carried-forward journal snapshot once and keeps its greater disk evidence', async () => {
+    const stateDirectory = await journals({ omitAssignments: true });
+    const snapshot = join(stateDirectory, 'journal-archive-before-upgrade');
+    await mkdir(snapshot);
+    for (const name of ['controller-state.json', 'accounting-state.json']) {
+      await writeFile(join(snapshot, name), await readFile(join(stateDirectory, name)));
+    }
+    const accounting = JSON.parse(await readFile(join(snapshot, 'accounting-state.json'), 'utf8')) as Record<string, unknown>;
+    await writeFile(join(snapshot, 'accounting-state.json'), JSON.stringify({ ...accounting, diskRetainedMs: 86_400_000 }));
+    const registry = { enrollments: [{ id: 'P1', repositoryId: 777, controller: { stateDirectory, controllerId: identity.controllerId, resourcePrefix: identity.resourcePrefix } }] } as FleetRegistry;
+    const found = (await loadControllerEvidence(registry)).get('P1')!;
+    expect(found.startCount).toBe(3);
+    expect(found.diskRetainedMs).toBe(86_400_000);
+    expect(found.historical).toBeUndefined();
   });
 
   it('refuses journals whose config was regenerated or whose repository differs from the enrollment', async () => {

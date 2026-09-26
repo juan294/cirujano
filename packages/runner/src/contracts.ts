@@ -66,6 +66,8 @@ export interface RunnerConfig {
   runnerLabel: string;
   slots: 1;
   admission: AdmissionPolicy;
+  /** Omitted in legacy permits, which retain stopped VMs and their disks. */
+  idleResourcePolicy?: 'delete-after-stop';
   nebius: NebiusConfig;
   ssh: SshConfig;
   ownership: OwnershipConfig;

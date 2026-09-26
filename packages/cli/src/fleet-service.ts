@@ -1,5 +1,5 @@
 import { execFile as execFileCallback } from 'node:child_process';
-import { access, chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { access, chmod, mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 
@@ -265,6 +265,7 @@ async function controllerConfig(
     slots: 1,
     // Fleet enrollments serve the repository's own pull requests too; forks are still refused.
     admission: 'same-repository',
+    idleResourcePolicy: 'delete-after-stop',
     nebius: template.nebius,
     ssh: { publicKey: hostKey.publicKey, fingerprint: hostKey.fingerprint },
     ownership: { controllerId, resourcePrefix },
@@ -272,6 +273,16 @@ async function controllerConfig(
     rates: { ...template.rates, hostedUsdPerMinute: TELEMETRY_RATES.skus[enrollment.sku] },
   });
   const configPath = join(stateDirectory, 'config.json');
+  const boundState = await readOptionalJson(join(stateDirectory, 'controller-state.json'));
+  if (boundState !== null) {
+    const stateIdentity = record(record(boundState, 'controller-state.json')['identity'], 'controller-state.json identity');
+    const existingConfig = parseRunnerConfig(JSON.parse(await readFile(configPath, 'utf8')));
+    const existingHash = runnerConfigHash(existingConfig);
+    if (stateIdentity['configHash'] !== existingHash) throw new Error('controller-state.json is not bound to the existing config.json');
+    if (runnerConfigHash(config) !== existingHash) {
+      throw new Error('archive the bound journals before changing the controller config');
+    }
+  }
   await writeFile(configPath, `${JSON.stringify(config)}\n`, { mode: 0o600 });
   await chmod(configPath, 0o600);
   const controller = { stateDirectory, controllerId, resourcePrefix, permitId: enrollment.controller?.permitId ?? null };
@@ -388,8 +399,11 @@ async function ensureHostKey(stateDirectory: string, id: string, environment: No
 export async function readControllerEvidence(
   stateDirectory: string,
   controller: { controllerId: string; resourcePrefix: string; repositoryId?: number },
+  fallbackConfigPath?: string,
 ): Promise<ControllerEvidence> {
-  const config = parseRunnerConfig(JSON.parse(await readFile(join(stateDirectory, 'config.json'), 'utf8')));
+  const rawConfig = await readOptionalJson(join(stateDirectory, 'config.json'));
+  if (rawConfig === null && fallbackConfigPath === undefined) throw new Error(`config.json is absent in ${stateDirectory}`);
+  const config = parseRunnerConfig(rawConfig ?? JSON.parse(await readFile(fallbackConfigPath!, 'utf8')));
   const state = parseControllerState(JSON.parse(await readFile(join(stateDirectory, 'controller-state.json'), 'utf8')));
   if (state.identity.controllerId !== controller.controllerId) throw new Error(`controller-state.json controllerId ${state.identity.controllerId} does not match enrollment controller ${controller.controllerId}`);
   if (state.identity.resourcePrefix !== controller.resourcePrefix) throw new Error(`controller-state.json resourcePrefix ${state.identity.resourcePrefix} does not match enrollment controller ${controller.resourcePrefix}`);
@@ -435,10 +449,56 @@ export async function loadControllerEvidence(registry: FleetRegistry): Promise<M
   const evidence = new Map<string, ControllerEvidence>();
   for (const enrollment of registry.enrollments) {
     if (enrollment.controller === null) continue;
+    const stateDirectory = enrollment.controller.stateDirectory;
     try {
-      evidence.set(enrollment.id, await readControllerEvidence(enrollment.controller.stateDirectory, { ...enrollment.controller, repositoryId: enrollment.repositoryId }));
+      await access(stateDirectory);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
+      throw error;
+    }
+    try {
+      const controller = { ...enrollment.controller, repositoryId: enrollment.repositoryId };
+      const current = await readControllerEvidence(stateDirectory, controller);
+      const archives = (await readdir(stateDirectory, { withFileTypes: true }))
+        .filter((entry) => entry.isDirectory() && (entry.name.startsWith('archive-') || entry.name.startsWith('journal-archive-')))
+        .map((entry) => entry.name).sort();
+      const segments: ControllerEvidence[] = [current];
+      const assignmentKeys = new Set(current.assignments.map(({ runId, runAttempt, jobId }) => `${runId}:${runAttempt}:${jobId}`));
+      for (const archive of archives) {
+        let segment: ControllerEvidence;
+        try {
+          segment = await readControllerEvidence(join(stateDirectory, archive), controller, join(stateDirectory, 'config.json'));
+        } catch (error) {
+          throw new Error(`${archive}: ${error instanceof Error ? error.message : String(error)}`);
+        }
+        const sameSnapshot = segment.startCount === 0 ? -1 : segments.findIndex((previous) =>
+          previous.startCount === segment.startCount
+          && previous.cumulativeRuntimeMs === segment.cumulativeRuntimeMs
+          && previous.cumulativeCostUsd === segment.cumulativeCostUsd);
+        if (sameSnapshot !== -1) {
+          const previous = segments[sameSnapshot]!;
+          if (previous.assignments.length > 0 || segment.assignments.length > 0
+            || previous.diskSizeGiB !== segment.diskSizeGiB || JSON.stringify(previous.rates) !== JSON.stringify(segment.rates)) {
+            throw new Error(`${archive} repeats lifecycle counters with incompatible evidence; cost overlap is ambiguous`);
+          }
+          // Upgrade archives may carry forward the same stopped generation. Keep the fuller
+          // cost observation once only when its accounting counters dominate the prior copy.
+          const segmentDominates = segment.diskRetainedMs >= previous.diskRetainedMs && segment.networkEgressBytes >= previous.networkEgressBytes;
+          const previousDominates = previous.diskRetainedMs >= segment.diskRetainedMs && previous.networkEgressBytes >= segment.networkEgressBytes;
+          if (!segmentDominates && !previousDominates) throw new Error(`${archive} repeats lifecycle counters with conflicting cost evidence`);
+          if (segmentDominates) segments[sameSnapshot] = segment;
+          continue;
+        }
+        for (const { runId, runAttempt, jobId } of segment.assignments) {
+          const key = `${runId}:${runAttempt}:${jobId}`;
+          if (assignmentKeys.has(key)) throw new Error(`${archive} repeats controller assignment ${key}`);
+          assignmentKeys.add(key);
+        }
+        segments.push(segment);
+      }
+      const [primary, ...historical] = segments;
+      evidence.set(enrollment.id, historical.length === 0 ? primary! : { ...primary!, historical });
+    } catch (error) {
       throw new Error(`${enrollment.id} controller evidence is unreadable: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
