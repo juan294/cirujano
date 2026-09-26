@@ -274,6 +274,13 @@ describe('fleet command service (phase 1 U2)', () => {
     // A reverted job can be enrolled afresh under a new handle.
     expect(await service.run(enrollArguments(registryPath), silent())).toBe(0);
     expect((await readRegistry(registryPath)).enrollments.map(({ id, status }) => [id, status])).toEqual([['P1', 'reverted'], ['P2', 'proposed']]);
+
+    // The new enrollment owns live drift; historical P1 must not reject its cutover.
+    fake.files[edited] = { sha: MIGRATED_BLOB, content: MIGRATED_WORKFLOW };
+    expect(await service.run({ command: 'fleet', action: 'cutover', registryPath, id: 'P2', commit: edited }, silent())).toBe(0);
+    const reenrolled = capture();
+    expect(await service.run(verify, reenrolled.io)).toBe(0);
+    expect(reenrolled.err).toEqual([]);
   });
 
   it('shows the registry as JSON through the CLI and maps runtime failures to exit 1', async () => {

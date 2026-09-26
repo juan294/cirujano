@@ -229,7 +229,10 @@ async function verify(registry: FleetRegistry, registryPath: string, source: Git
       continue;
     }
     if (enrollment.status === 'reverted') {
-      if (labelled) problems.push(`${enrollment.id}: reverted enrollment carries ${enrollment.runnerLabel} again at ${head}; enroll it afresh`);
+      // A later enrollment of this job owns the current workflow. Keep the
+      // reverted entry as history without reporting its successor as drift.
+      const successor = findActiveEnrollment(registry, enrollment.repository, enrollment.workflowPath, enrollment.jobKey);
+      if (labelled && !successor) problems.push(`${enrollment.id}: reverted enrollment carries ${enrollment.runnerLabel} again at ${head}; enroll it afresh`);
       continue;
     }
     const after = enrollment.after!;
