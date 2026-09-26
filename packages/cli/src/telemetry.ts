@@ -388,7 +388,16 @@ export function aggregateTelemetry(
     };
   });
   const visibilityByRepository = new Map(latestSnapshot?.repositoryInventory.map(({ fullName, visibility }) => [fullName, visibility]) ?? []);
-  const enrollments = registry?.enrollments.map((enrollment) => enrollmentReport(enrollment, jobs, evidenceById.get(enrollment.id), visibilityByRepository));
+  const enrollments = registry?.enrollments.map((enrollment, index) => {
+    // A reverted enrollment remains in the registry for historical cost, but
+    // the next enrollment of this job owns executions from its baseline onward.
+    const successor = enrollment.status === 'reverted'
+      ? registry.enrollments.slice(index + 1).find((entry) => entry.repository === enrollment.repository
+        && entry.workflowPath === enrollment.workflowPath && entry.jobKey === enrollment.jobKey)
+      : undefined;
+    const endMs = successor === undefined ? Number.POSITIVE_INFINITY : Date.parse(successor.before.recordedAt);
+    return enrollmentReport(enrollment, jobs, evidenceById.get(enrollment.id), visibilityByRepository, endMs);
+  });
   return {
     schemaVersion: 1,
     since: new Date(sinceMs).toISOString(),
@@ -419,13 +428,18 @@ function enrollmentReport(
   jobs: readonly TelemetryJob[],
   evidence: ControllerEvidence | undefined,
   visibilityByRepository: ReadonlyMap<string, RepositoryVisibility>,
+  endMs: number,
 ): TelemetryEnrollmentReport {
   const cutoverAt = enrollment.after?.recordedAt ?? null;
   const cutoverMs = cutoverAt === null ? Number.POSITIVE_INFINITY : Date.parse(cutoverAt);
   const enrolled = jobs.filter((job) => job.repository === enrollment.repository
-    && job.workflowName === enrollment.workflowName && enrollment.jobNames.includes(job.jobName));
-  const before = enrolled.filter((job) => Date.parse(job.createdAt) < cutoverMs);
-  const after = enrolled.filter((job) => Date.parse(job.createdAt) >= cutoverMs);
+    && job.workflowName === enrollment.workflowName && enrollment.jobNames.includes(job.jobName)
+    && Date.parse(job.startedAt ?? job.createdAt) < endMs);
+  // A queued run can be created before the cutover yet execute on Cirujano
+  // afterward. Use job start for executed work, creation for jobs never started.
+  const isAfter = (job: TelemetryJob) => Date.parse(job.startedAt ?? job.createdAt) >= cutoverMs;
+  const before = enrolled.filter((job) => !isAfter(job));
+  const after = enrolled.filter(isAfter);
   const cirujano = after.filter(({ runnerKind }) => runnerKind === 'cirujano');
   const latencies = cirujano
     .filter((job) => job.startedAt !== null)

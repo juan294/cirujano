@@ -146,6 +146,33 @@ describe('telemetry net savings (phase 4)', () => {
 });
 
 describe('telemetry enrollment section (phase 1 U3)', () => {
+  it('credits a job that starts after cutover even when its run was queued earlier', async () => {
+    const snapshot = await fixtureSnapshot();
+    const queued = snapshot.jobs.find(({ jobId }) => jobId === 1003)!;
+    queued.createdAt = '2026-09-17T11:59:00.000Z';
+    snapshot.runs.find(({ id }) => id === 103)!.createdAt = queued.createdAt;
+    queued.startedAt = '2026-09-17T12:01:00.000Z';
+    const report = aggregateTelemetry([snapshot], SINCE, registry([enrollment({})]), new Map([['P1', evidence()]]));
+    expect(report.enrollments?.[0]).toMatchObject({
+      before: { jobs: 2, hostedJobs: 2 },
+      after: { jobs: 3, cirujanoJobs: 2, grossHostedCostAvoidedUsd: 0.036 },
+      complete: true,
+    });
+  });
+
+  it('does not credit successor jobs to a reverted enrollment', async () => {
+    const old = enrollment({ status: 'reverted' });
+    const successor = enrollment({
+      id: 'P6',
+      before: { ...old.before, recordedAt: '2026-09-18T08:00:00.000Z' },
+      after: { ...old.after!, recordedAt: '2026-09-18T08:30:00.000Z' },
+    });
+    const report = aggregateTelemetry([await fixtureSnapshot()], SINCE, registry([old, successor]));
+    expect(report.enrollments?.map(({ id, after }) => ({ id, jobs: after.jobs, cirujanoJobs: after.cirujanoJobs })))
+      .toEqual([{ id: 'P1', jobs: 0, cirujanoJobs: 0 }, { id: 'P6', jobs: 3, cirujanoJobs: 2 }]);
+    expect(report.fleet?.grossHostedCostAvoidedUsd).toBe(0.036);
+  });
+
   it('keeps the no-registry JSON and Markdown byte-identical to the pinned fixture', async () => {
     const report = aggregateTelemetry([await fixtureSnapshot()], SINCE);
     expect(`${JSON.stringify(report)}\n`).toBe(await readFile(join(fixtures, 'telemetry-report.expected.json'), 'utf8'));
