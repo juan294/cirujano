@@ -174,19 +174,36 @@ async function cutover(
   io: CliIo,
 ): Promise<0> {
   const enrollment = requireEnrollment(registry, args.id);
-  if (enrollment.status !== 'proposed') throw new Error(`enrollment ${args.id} is ${enrollment.status}, not proposed`);
+  if (enrollment.status === 'reverted') throw new Error(`enrollment ${args.id} is reverted, not proposed or cut-over`);
   const repository = await source.repository(enrollment.repository);
   if (!(await source.isOnBranch(enrollment.repository, args.commit, repository.defaultBranch))) {
     throw new Error(`commit ${args.commit} is not on the default branch ${repository.defaultBranch} of ${enrollment.repository}`);
+  }
+  if (enrollment.status === 'cut-over') {
+    const head = await source.branchHead(enrollment.repository, repository.defaultBranch);
+    if (args.commit !== head) throw new Error(`refresh commit ${args.commit} is not the current ${repository.defaultBranch} head ${head}`);
   }
   const live = await readLiveIdentity(source, enrollment, args.commit);
   const missing = requiredSelfHostedLabels(enrollment.runnerLabel).filter((label) => !live.runsOn.includes(label));
   if (missing.length > 0) {
     throw new Error(`job ${enrollment.jobKey} at ${args.commit} runs-on lacks ${missing.join(', ')}: ${JSON.stringify(live.runsOn)}; cutover not recorded`);
   }
-  const updated: FleetEnrollment = { ...enrollment, status: 'cut-over', after: live };
+  const previous = enrollment.after;
+  if (previous?.workflowBlobSha === live.workflowBlobSha) {
+    throw new Error(`enrollment ${args.id} is already cut-over at workflow blob ${live.workflowBlobSha}`);
+  }
+  const updated: FleetEnrollment = {
+    ...enrollment,
+    status: 'cut-over',
+    after: previous === null ? live : { ...live, recordedAt: previous.recordedAt },
+    notes: previous === null ? enrollment.notes : [
+      ...enrollment.notes,
+      `after refreshed at ${live.recordedAt}: commit ${live.commit} blob ${live.workflowBlobSha} runs-on ${JSON.stringify(live.runsOn)} ` +
+        `(previous commit ${previous.commit} blob ${previous.workflowBlobSha} runs-on ${JSON.stringify(previous.runsOn)}; cutover at ${previous.recordedAt})`,
+    ],
+  };
   await writeFleetRegistry(registryPath, replaceEnrollment(registry, updated));
-  io.stdout(`${JSON.stringify({ status: 'cut-over', id: updated.id, repository: updated.repository, after: live })}\n`);
+  io.stdout(`${JSON.stringify({ status: 'cut-over', id: updated.id, repository: updated.repository, after: updated.after })}\n`);
   return 0;
 }
 

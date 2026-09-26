@@ -202,7 +202,8 @@ describe('fleet command service (phase 1 U2)', () => {
         after: { commit: MERGED, workflowBlobSha: MIGRATED_BLOB, runsOn: ['self-hosted', 'linux', 'x64', LABEL], recordedAt: '2026-09-17T12:00:00.000Z' },
       });
       expect(JSON.parse(out.join(''))).toMatchObject({ status: 'cut-over', id: 'P1' });
-      await expect(service.run(cutover, silent())).rejects.toThrow(/P1 is cut-over, not proposed/u);
+      fake.headCommit = MERGED;
+      await expect(service.run(cutover, silent())).rejects.toThrow(/P1 is already cut-over at workflow blob/u);
       await expect(service.run({ ...cutover, id: 'P9' }, silent())).rejects.toThrow(/enrollment P9 does not exist/u);
     } finally {
       vi.useRealTimers();
@@ -228,6 +229,8 @@ describe('fleet command service (phase 1 U2)', () => {
 
     fake.files[MERGED] = { sha: MIGRATED_BLOB, content: MIGRATED_WORKFLOW };
     expect(await service.run({ command: 'fleet', action: 'cutover', registryPath, id: 'P1', commit: MERGED }, silent())).toBe(0);
+    const initialCutoverAt = (await readRegistry(registryPath)).enrollments[0]!.after!.recordedAt;
+    const originalBefore = (await readRegistry(registryPath)).enrollments[0]!.before;
     expect(await service.run(verify, silent())).toBe(0);
 
     // An unrelated post-cutover edit with the label intact fails verification without rewriting the record.
@@ -240,14 +243,34 @@ describe('fleet command service (phase 1 U2)', () => {
     expect(stale.err.join('')).toMatch(/P1: live workflow blob 5{40} differs from the recorded after blob 2{40}/u);
     expect((await readRegistry(registryPath)).enrollments[0]).toMatchObject({ status: 'cut-over', after: { workflowBlobSha: MIGRATED_BLOB } });
 
+    const older = 'd'.repeat(40);
+    fake.ancestors.push(older);
+    fake.files[older] = { sha: '7'.repeat(40), content: MIGRATED_WORKFLOW.replace('echo hi', 'echo older') };
+    await expect(service.run({ command: 'fleet', action: 'cutover', registryPath, id: 'P1', commit: older }, silent()))
+      .rejects.toThrow(/is not the current main head/u);
+    const refreshed = capture();
+    expect(await service.run({ command: 'fleet', action: 'cutover', registryPath, id: 'P1', commit: edited }, refreshed.io)).toBe(0);
+    expect(JSON.parse(refreshed.out.join('')).after.recordedAt).toBe(initialCutoverAt);
+    expect((await readRegistry(registryPath)).enrollments[0]).toMatchObject({
+      status: 'cut-over',
+      after: { commit: edited, workflowBlobSha: '5'.repeat(40), recordedAt: initialCutoverAt },
+      notes: [expect.stringMatching(/before refreshed/u), expect.stringMatching(new RegExp(`after refreshed .*previous commit ${MERGED} blob ${MIGRATED_BLOB} .*cutover at`, 'u'))],
+    });
+    expect((await readRegistry(registryPath)).enrollments[0]!.before).toEqual(originalBefore);
+    expect(await service.run(verify, silent())).toBe(0);
+
     // Losing the label is a revert: recorded as such and reported, never silent.
     fake.files[edited] = { sha: '6'.repeat(40), content: HOSTED_WORKFLOW };
     const reverted = capture();
     expect(await service.run(verify, reverted.io)).toBe(1);
     expect(reverted.err.join('')).toMatch(/P1: enrolled label .* is gone from the live workflow at c{40}; recorded as reverted/u);
     expect((await readRegistry(registryPath)).enrollments[0]).toMatchObject({
-      status: 'reverted', notes: [expect.stringMatching(/before refreshed/u), expect.stringMatching(/reverted at .* commit c{40} blob 6{40}/u)],
+      status: 'reverted', notes: [expect.stringMatching(/before refreshed/u), expect.stringMatching(/after refreshed/u), expect.stringMatching(/reverted at .* commit c{40} blob 6{40}/u)],
     });
+    const afterRevert = await readRegistry(registryPath);
+    await expect(service.run({ command: 'fleet', action: 'cutover', registryPath, id: 'P1', commit: edited }, silent()))
+      .rejects.toThrow(/P1 is reverted/u);
+    expect(await readRegistry(registryPath)).toEqual(afterRevert);
     // A reverted job can be enrolled afresh under a new handle.
     expect(await service.run(enrollArguments(registryPath), silent())).toBe(0);
     expect((await readRegistry(registryPath)).enrollments.map(({ id, status }) => [id, status])).toEqual([['P1', 'reverted'], ['P2', 'proposed']]);

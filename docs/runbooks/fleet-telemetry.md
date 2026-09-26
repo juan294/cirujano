@@ -90,8 +90,11 @@ cirujano telemetry report --store <store> --since 2026-09-13 --registry <registr
   label. The record's `recordedAt` is the split point the report uses.
 - `verify` re-reads every enrollment. A pre-cutover workflow edit refreshes
   `before` with a note. After cutover, an unrelated edit that keeps the label
-  exits 1 and leaves the record for review; a workflow that lost the label is
-  recorded as `reverted`, never silently, and also exits 1.
+  exits 1 and leaves the record for review. After reviewing an intended edit,
+  run `fleet cutover --commit <current default-branch SHA>` again to record the
+  new blob; the original cutover time remains the reporting split point and a
+  note records the previous blob. A workflow that lost the label is recorded as
+  `reverted`, never silently, and also exits 1.
 - `telemetry report --registry` adds `enrollments[]` to the JSON and an
   "Enrollments" table to the Markdown: hosted jobs, minutes and list cost
   before the cutover; hosted stragglers, Cirujano jobs, minutes, gross avoided

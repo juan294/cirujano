@@ -35,7 +35,13 @@ describe('telemetry scheduler', () => {
     const directory = await mkdtemp(resolve(tmpdir(), 'cirujano-telemetry-lock-'));
     const mockCli = resolve(directory, 'mock-cli.mjs');
     await writeFile(mockCli, `
-      if (process.argv.includes('collect')) await new Promise((resolve) => setTimeout(resolve, 500));
+      import { existsSync, writeFileSync } from 'node:fs';
+      if (process.argv.includes('collect') && process.env.MOCK_HOLD === '1') {
+        writeFileSync(process.env.MOCK_COLLECT_STARTED, 'ready');
+        while (!existsSync(process.env.MOCK_COLLECT_RELEASE)) {
+          await new Promise((resolve) => setTimeout(resolve, 25));
+        }
+      }
       if (process.env.MOCK_STDERR === '1') process.stderr.write('provider failure\\n');
       if (process.argv.includes('report')) process.stdout.write('# report\\n');
     `);
@@ -46,15 +52,32 @@ describe('telemetry scheduler', () => {
       CIRUJANO_CLI_PATH: mockCli,
       CIRUJANO_TELEMETRY_OWNER: 'juan294',
       CIRUJANO_TELEMETRY_STORE: directory,
+      MOCK_COLLECT_STARTED: resolve(directory, 'collect.started'),
+      MOCK_COLLECT_RELEASE: resolve(directory, 'collect.release'),
     };
-    const first = spawn(script, { env, stdio: 'ignore' });
-    await new Promise((resolveDelay) => setTimeout(resolveDelay, 100));
-    const second = await execFile(script, { env });
-    expect(second.stdout).toMatch(/already active/u);
-    await new Promise<void>((resolveExit, reject) => {
+    const first = spawn(script, { env: { ...env, MOCK_HOLD: '1' }, stdio: 'ignore' });
+    const firstExit = new Promise<void>((resolveExit, reject) => {
       first.once('error', reject);
       first.once('exit', (code) => code === 0 ? resolveExit() : reject(new Error(`first collector exited ${String(code)}`)));
     });
+    try {
+      let started = false;
+      for (let attempt = 0; attempt < 200; attempt++) {
+        try {
+          await stat(env.MOCK_COLLECT_STARTED);
+          started = true;
+          break;
+        } catch {
+          await new Promise((resolveDelay) => setTimeout(resolveDelay, 25));
+        }
+      }
+      expect(started).toBe(true);
+      const second = await execFile(script, { env, timeout: 10_000 });
+      expect(second.stdout).toMatch(/already active/u);
+    } finally {
+      await writeFile(env.MOCK_COLLECT_RELEASE, 'release');
+      await firstExit;
+    }
     await expect(readFile(resolve(directory, 'latest.md'), 'utf8')).resolves.toBe('# report\n');
     const separated = await execFile(script, { env: { ...env, MOCK_STDERR: '1' } });
     expect(separated.stderr).toBe('provider failure\nprovider failure\n');
