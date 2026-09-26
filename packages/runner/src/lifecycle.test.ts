@@ -141,12 +141,14 @@ describe('replay-safe transitions (R02)', () => {
     expect(result.reason).toMatch(/stopped outside the controller/u);
   });
 
-  it('requires delete authority and a valid permit for expired-generation recovery', () => {
+  it('requires delete authority and recovery permission for expired-generation cleanup', () => {
     const journal = { ...input().journal, state: 'busy' as const, startCount: 1, grantDeadlineMs: NOW - 1 };
     expect(decideLifecycle(input({ permit: { ...permit, maxStarts: 2, operations: ['create', 'start', 'register', 'stop'] }, journal })))
       .toMatchObject({ state: 'blocked', effect: { type: 'none' }, reason: 'permit does not authorize delete' });
     expect(decideLifecycle(input({ permit: { ...permit, maxStarts: 2, expiresAtMs: NOW }, journal })))
-      .toMatchObject({ state: 'blocked', effect: { type: 'none' }, reason: 'permit is expired' });
+      .toMatchObject({ state: 'absent', effect: { type: 'delete-vm', generation: 1 } });
+    expect(decideLifecycle(input({ permit: { ...permit, maxStarts: 2, expiresAtMs: NOW, recoveryAllowed: false }, journal })))
+      .toMatchObject({ state: 'blocked', effect: { type: 'none' } });
   });
 
   it('creates the next generation under the same permit once the spent VM is gone', () => {
@@ -217,6 +219,20 @@ describe('drain safety (R03)', () => {
   it('stops only after two complete observations span idle grace and the guest is drained', () => {
     expect(decideLifecycle(idleInput).effect).toEqual({ type: 'stop-vm', emergency: false });
     expect(decideLifecycle(input({ ...idleInput, journal: { ...idleInput.journal, idleObservations: [idleInput.journal.idleObservations[1]!] } })).effect.type).toBe('none');
+  });
+
+  it('reissues a lost drain after its pending effect expires without draining the idle guest', () => {
+    const undrained = {
+      ...idleInput,
+      guest: { ...idleInput.guest, status: 'ready' as const, admissionEnabled: true },
+      journal: { ...idleInput.journal, idleObservations: [] },
+    };
+    expect(decideLifecycle(undrained)).toMatchObject({
+      state: 'draining', effect: { type: 'begin-drain', fallbackDeadlineMs: NOW + 600_000 },
+    });
+    expect(decideLifecycle({ ...undrained, permit: { ...permit, operations: ['stop'] } })).toMatchObject({
+      state: 'blocked', effect: { type: 'none' }, reason: 'permit does not authorize register',
+    });
   });
 
   it('returns to work when a queue arrives during drain', () => {

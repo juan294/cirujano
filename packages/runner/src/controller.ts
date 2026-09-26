@@ -76,7 +76,19 @@ export async function tickController(options: TickOptions): Promise<TickResult> 
   if (prior?.pendingEffect !== null && prior?.pendingEffect !== undefined) {
     assertStateInvariants(prior);
     const authorizationProblem = pendingAuthorizationProblem(prior.pendingEffect, options.input);
-    if (authorizationProblem !== null) return blockPendingAuthorization(options, prior, authorizationProblem);
+    if (authorizationProblem !== null) {
+      // Expiry cannot authorize a queued register mutation. Once that effect's own
+      // deadline has passed, clear its intent under the matching recovery permit
+      // so observation-driven stop and delete can continue.
+      if (authorizationProblem === 'pending authorization is expired'
+        && prior.pendingEffect.effect.type === 'begin-drain'
+        && prior.pendingEffect.authorization.recoveryAllowed
+        && options.input.permit?.recoveryAllowed === true
+        && pendingEffectIsStale(prior.pendingEffect, options.input)) {
+        return abandonPendingEffect(options, prior);
+      }
+      return blockPendingAuthorization(options, prior, authorizationProblem);
+    }
     if (pendingEffectIsStale(prior.pendingEffect, options.input)) {
       return abandonPendingEffect(options, prior);
     }

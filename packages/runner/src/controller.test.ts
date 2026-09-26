@@ -489,6 +489,13 @@ function registrationInput(): LifecycleInput {
   return input;
 }
 
+function drainInput(): LifecycleInput {
+  const input = registrationInput();
+  input.queue = { ...input.queue, eligibleQueuedJobs: 0 };
+  input.guest = { ...input.guest, admissionEnabled: true };
+  return input;
+}
+
 function createInput(): LifecycleInput {
   const input = startInput();
   input.permit = { ...input.permit!, operations: ['create', 'stop'] };
@@ -544,25 +551,53 @@ describe('stale pending effect recovery (D-11)', () => {
     expect(await readFile(eventPath, 'utf8')).toContain('effect-abandoned');
   });
 
-  it('still fails closed when the permit itself expired rather than abandoning the effect', async () => {
+  it('clears a stale drain after permit expiry only with recovery authority', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'cirujano-controller-permit-expiry-'));
     const journalPath = join(directory, 'state.json');
     const eventPath = join(directory, 'events.jsonl');
     const seedLock = await acquireControllerLock(directory);
     await expect(tickController({
-      lock: seedLock, journalPath, eventPath, input: registrationInput(),
+      lock: seedLock, journalPath, eventPath, input: drainInput(),
       executeEffect: async () => { throw new Error('ambiguous provider'); },
       reconcileEffect: async () => ({ resolved: false }),
     })).rejects.toThrow('ambiguous provider');
     await seedLock.release();
 
-    const expired = registrationInput();
+    const expired = drainInput();
     expired.nowMs = NOW + 7_200_001;
     expired.queue.observedAtMs = expired.nowMs;
     const expiredLock = await acquireControllerLock(directory);
     const result = await tickController({
       lock: expiredLock, journalPath, eventPath, input: expired,
       executeEffect: async () => { throw new Error('must not emit under an expired permit'); },
+      reconcileEffect: async () => ({ resolved: false }),
+    });
+    await expiredLock.release();
+    expect(result.status).toBe('abandoned');
+    expect((await readJournal<{ pendingEffect: unknown }>(journalPath)).pendingEffect).toBeNull();
+    expect(await readFile(eventPath, 'utf8')).toContain('effect-abandoned');
+  });
+
+  it('keeps a stale drain blocked if recovery authority was revoked', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'cirujano-controller-drain-revoked-'));
+    const journalPath = join(directory, 'state.json');
+    const eventPath = join(directory, 'events.jsonl');
+    const seedLock = await acquireControllerLock(directory);
+    await expect(tickController({
+      lock: seedLock, journalPath, eventPath, input: drainInput(),
+      executeEffect: async () => { throw new Error('ambiguous provider'); },
+      reconcileEffect: async () => ({ resolved: false }),
+    })).rejects.toThrow('ambiguous provider');
+    await seedLock.release();
+
+    const expired = drainInput();
+    expired.nowMs = NOW + 7_200_001;
+    expired.queue.observedAtMs = expired.nowMs;
+    expired.permit = { ...expired.permit!, recoveryAllowed: false };
+    const expiredLock = await acquireControllerLock(directory);
+    const result = await tickController({
+      lock: expiredLock, journalPath, eventPath, input: expired,
+      executeEffect: async () => { throw new Error('must not emit under a revoked permit'); },
       reconcileEffect: async () => ({ resolved: false }),
     });
     await expiredLock.release();

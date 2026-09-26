@@ -170,7 +170,7 @@ export function decideLifecycle(input: LifecycleInput): LifecycleDecision {
     // delete the spent generation so the next eligible demand creates a fresh one.
     const deadline = input.journal.grantDeadlineMs;
     if (deadline !== null && Number.isFinite(deadline) && input.nowMs >= deadline && input.journal.startCount >= 1) {
-      return authorized(input, 'delete', {
+      return authorizedCleanup(input, {
         state: 'absent',
         effect: { type: 'delete-vm', generation: input.journal.startCount },
         reason: 'immutable lifetime expired while the guest was up; deleting the spent generation',
@@ -220,7 +220,20 @@ export function decideLifecycle(input: LifecycleInput): LifecycleDecision {
   }
 
   if (input.journal.state === 'draining' && input.provider.vmStatus === 'running') {
-    if (!guestIsDrained(input)) return blocked('guest is not conclusively drained');
+    if (!guestIsDrained(input)) {
+      // A failed or expired begin-drain can leave the journal in draining while the
+      // guest still admits work. Reissue the idempotent drain only with complete,
+      // idle observations and the matching immutable grant.
+      if (input.queue.eligibleQueuedJobs === 0 && grant !== null
+        && (input.guest.status === 'ready' || input.guest.status === 'draining')) {
+        return authorized(input, 'register', {
+          state: 'draining',
+          effect: { type: 'begin-drain', fallbackDeadlineMs: drainDeadlineMs(grant.deadlineMs, input.nowMs) },
+          reason: 'idle guest was not drained after the previous drain attempt',
+        });
+      }
+      return blocked('guest is not conclusively drained');
+    }
     if (!idleGraceSatisfied(input)) return { state: 'draining', effect: { type: 'none' }, reason: 'idle grace requires two complete observations' };
     return authorized(input, 'stop', { state: 'stopping', effect: { type: 'stop-vm', emergency: false }, reason: 'idle grace passed and guest is drained' });
   }

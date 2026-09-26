@@ -206,16 +206,20 @@ tail -5 ~/.local/share/cirujano/runner/P1/events.jsonl
 A healthy agent shows `state = running` (KeepAlive restarts it after the
 bounded poll limit exits) and a recent `decision`, `dry-run` or
 `effect-reconciled` event. A `blocked` decision that persists for more than one
-poll interval needs its recorded reason resolved; the controller never
-retries a mutation on its own.
+poll interval needs its recorded reason resolved. The controller does not retry
+an uncertain provider mutation blindly. An expired `begin-drain` intent is
+cleared under matching recovery authority, and an idle guest that did not
+drain receives a new attempt while its grant and permit allow it.
 
 Expired-generation recovery: when the provider reports the owned VM `stopped`
 while the journal believed the guest was up, and the journaled grant deadline
 (`grantDeadlineMs`, persisted when the start reconciles) has passed, the
 controller treats the stop as the expected end of the immutable lifetime. It
 removes the offline runner registration, emits `delete-vm` under the permit's
-`delete` authority, reconciles the absence, and creates a fresh generation on
-the next eligible demand; start count and accounting continue monotonically.
+`delete` authority (including an expired permit with recovery enabled),
+reconciles the absence, and creates a fresh generation on the next eligible
+demand once a renewed active permit authorizes it; start count and accounting
+continue monotonically.
 A stop before the deadline still blocks and stays manual (quarantine or a
 provider fault).
 
