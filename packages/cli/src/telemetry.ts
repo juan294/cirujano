@@ -255,6 +255,11 @@ export async function collectTelemetry(input: {
         continue;
       }
       const normalized = (await input.source.listJobs(repository.fullName, run.id, run.attempt))
+        // GitHub includes successful jobs carried forward from a previous
+        // attempt under new job IDs. They did not execute on this retry.
+        .filter((job) => run.attempt === 1
+          || (job.startedAt === null || Date.parse(job.startedAt) >= Date.parse(run.createdAt))
+            && (job.completedAt === null || Date.parse(job.completedAt) >= Date.parse(run.createdAt)))
         .map((job) => normalizeTelemetryJob(repository, run, job));
       jobs.push(...normalized);
       evidence.push(runEvidence(
@@ -359,7 +364,15 @@ export function aggregateTelemetry(
       if (Date.parse(job.createdAt) > windowEndMs) continue;
       const existing = byKey.get(job.key);
       if (existing !== undefined && JSON.stringify(existing) !== JSON.stringify(job)) {
-        throw new Error(`conflicting duplicate telemetry job ${job.key}`);
+        // Older snapshots used the workflow run's creation time for retries.
+        // Attempt details give the later, attempt-specific time. Accept only
+        // this timestamp correction, while still rejecting every other drift.
+        const sameExceptCreatedAt = Object.keys(existing).length === Object.keys(job).length
+          && Object.entries(existing).every(([key, value]) => key === 'createdAt'
+            || JSON.stringify(value) === JSON.stringify(job[key as keyof TelemetryJob]));
+        if (job.runAttempt === 1 || !sameExceptCreatedAt) throw new Error(`conflicting duplicate telemetry job ${job.key}`);
+        if (Date.parse(job.createdAt) > Date.parse(existing.createdAt)) byKey.set(job.key, job);
+        continue;
       }
       byKey.set(job.key, job);
     }
@@ -706,7 +719,8 @@ export function normalizeTelemetryJob(repository: TelemetryRepository, run: Tele
   const startMs = hasStart ? Date.parse(job.startedAt!) : Number.NaN;
   const endMs = hasEnd ? Date.parse(job.completedAt!) : Number.NaN;
   const hasValidTiming = hasStart && hasEnd && Number.isFinite(startMs) && Number.isFinite(endMs) && endMs >= startMs;
-  const measurementStatus: MeasurementStatus = hasValidTiming ? 'measured' : !hasStart && !hasEnd ? 'not-run' : 'incomplete';
+  const measurementStatus: MeasurementStatus = job.conclusion.length === 0 ? 'incomplete' : hasValidTiming ? 'measured'
+    : !hasStart && !hasEnd && job.conclusion.length > 0 ? 'not-run' : 'incomplete';
   const minutes = measurementStatus === 'measured'
     ? billableMinutesForJob({ name: job.name, startedAt: job.startedAt, completedAt: job.completedAt })
     : measurementStatus === 'not-run' ? 0 : null;

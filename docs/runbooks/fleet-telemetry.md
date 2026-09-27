@@ -43,6 +43,17 @@ The wrapper accepts `CIRUJANO_TELEMETRY_OWNER`,
 `CIRUJANO_TELEMETRY_LOOKBACK_HOURS`. The defaults use the current `gh` account,
 the paths above, a start date of 2026-09-13, and a 48-hour overlap.
 
+GitHub lists runs by the workflow run's original creation time. A retry of an
+older run can fall outside that overlap even when its jobs ran today. The
+collector reads every attempt of each listed run and uses the attempt's own
+creation time. GitHub can copy prior jobs into a retry with new job IDs; the
+collector excludes jobs whose recorded start or completion preceded the retry.
+For older retries, keep separately fetched, validated evidence in a private
+`backfill-YYYY-MM-DD.json` snapshot beside the daily files. The
+report includes backfill snapshots, but they do not establish daily coverage or
+replace the daily snapshot used for collection reuse. Preserve the original
+daily files and the GitHub attempt/job responses used for a backfill.
+
 ## Fleet boundaries
 
 The collector is read-only and may retain baseline records for every discovered
@@ -98,7 +109,7 @@ cirujano telemetry report --store <store> --since 2026-09-13 --registry <registr
 - `telemetry report --registry` adds `enrollments[]` to the JSON and an
   "Enrollments" table to the Markdown: hosted jobs, minutes and list cost
   before the cutover; hosted stragglers, Cirujano jobs, minutes, gross avoided
-  cost and queue latency (job start minus run creation, p50 and p95) after it.
+  cost and queue latency (job start minus attempt creation, p50 and p95) after it.
   Without `--registry` the output is unchanged.
 
 ## Net savings and the 45-day report
@@ -169,7 +180,7 @@ identities prevent double counting.
 - `Other self-hosted jobs` are visible but receive no Cirujano savings credit.
 - `Jobs not run` preserves skipped and pre-start cancellations at zero minutes.
   `Jobs with incomplete timing` stays unpriced until GitHub supplies both
-  timestamps.
+  timestamps and a conclusion.
 - `Success rate` is successful jobs divided by recorded execution attempts;
   jobs that never started are excluded.
 

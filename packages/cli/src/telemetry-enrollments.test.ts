@@ -146,6 +146,26 @@ describe('telemetry net savings (phase 4)', () => {
 });
 
 describe('telemetry enrollment section (phase 1 U3)', () => {
+  it('prefers the attempt-specific creation time across old and corrected snapshots', async () => {
+    const old = await fixtureSnapshot();
+    const oldJob = old.jobs.find(({ jobId }) => jobId === 1003)!;
+    const oldRun = old.runs.find(({ id }) => id === 103)!;
+    old.jobs = [oldJob];
+    old.runs = [oldRun];
+    old.runsScanned = 1;
+    oldJob.runAttempt = 2;
+    oldJob.key = 'juan294/private-one:103:2:1003';
+    oldRun.attempt = 2;
+    oldRun.key = 'juan294/private-one:103:2';
+    const corrected = structuredClone(old);
+    corrected.jobs.find(({ jobId }) => jobId === 1003)!.createdAt = '2026-09-18T09:01:00.000Z';
+    corrected.runs.find(({ id }) => id === 103)!.createdAt = '2026-09-18T09:01:00.000Z';
+    const assignment = { runId: 103, runAttempt: 2, jobId: 1003, runnerId: 301, runnerName: 'cirujano-p1-g1', conclusion: 'success' };
+    const report = aggregateTelemetry([old, corrected], SINCE, registry([enrollment({})]),
+      new Map([['P1', evidence({ assignments: [assignment] })]]));
+    expect(report.enrollments?.[0]?.after).toMatchObject({ cirujanoJobs: 1, queueLatencyP50Ms: 30000 });
+  });
+
   it('credits a job that starts after cutover even when its run was queued earlier', async () => {
     const snapshot = await fixtureSnapshot();
     const queued = snapshot.jobs.find(({ jobId }) => jobId === 1003)!;

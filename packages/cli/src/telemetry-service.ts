@@ -91,18 +91,28 @@ function githubSource(ghPath: string, pageRunner: GitHubPageRunner): GitHubTelem
     },
     async listRuns(repository, windowStart): Promise<TelemetryRun[]> {
       const pages = await githubPages(ghPath, `/repos/${repository}/actions/runs?per_page=100&status=completed&created=>=${windowStart}`, pageRunner);
-      const runs = pages.flatMap((page) => array(record(page, 'runs page')['workflow_runs'], 'workflow_runs').map((entry) => {
-        const value = record(entry, 'workflow run');
-        return {
-          id: positiveInteger(value['id'], 'run.id'),
-          attempt: positiveInteger(value['run_attempt'], 'run.run_attempt'),
-          workflowName: text(value['name'], 'run.name'),
-          event: text(value['event'], 'run.event'),
-          createdAt: timestamp(value['created_at'], 'run.created_at'),
-          conclusion: nullableText(value['conclusion'], 'run.conclusion'),
-        };
-      }));
-      return deduplicateRuns(runs);
+      const latest = deduplicateRuns(pages.flatMap((page) => array(record(page, 'runs page')['workflow_runs'], 'workflow_runs')
+        .map((entry) => parseTelemetryRun(entry))));
+      const runs: TelemetryRun[] = [];
+      for (const run of latest) {
+        if (run.attempt === 1) {
+          runs.push(run);
+          continue;
+        }
+        // The listing can carry the original run time; attempt details carry
+        // each retry's own creation time and conclusion.
+        for (let attempt = 1; attempt <= run.attempt; attempt += 1) {
+          const details = await githubPages(ghPath, `/repos/${repository}/actions/runs/${run.id}/attempts/${attempt}`, pageRunner);
+          if (details.length !== 1) throw new Error(`run ${run.id} attempt ${attempt} returned ${details.length} records`);
+          const prior = parseTelemetryRun(details[0]);
+          if (prior.id !== run.id || prior.attempt !== attempt
+            || prior.workflowName !== run.workflowName || prior.event !== run.event) {
+            throw new Error(`run ${run.id} attempt ${attempt} metadata differs from the listed run`);
+          }
+          runs.push(prior);
+        }
+      }
+      return runs;
     },
     async listJobs(repository, runId, attempt): Promise<TelemetryJobInput[]> {
       const pages = await githubPages(ghPath, `/repos/${repository}/actions/runs/${runId}/attempts/${attempt}/jobs?per_page=100`, pageRunner);
@@ -113,7 +123,7 @@ function githubSource(ghPath: string, pageRunner: GitHubPageRunner): GitHubTelem
           name: text(value['name'], 'job.name'),
           startedAt: nullableTimestamp(value['started_at'], 'job.started_at'),
           completedAt: nullableTimestamp(value['completed_at'], 'job.completed_at'),
-          conclusion: text(value['conclusion'], 'job.conclusion'),
+          conclusion: nullableText(value['conclusion'], 'job.conclusion'),
           labels: array(value['labels'], 'job.labels').map((label) => text(label, 'job label')),
           runnerName: nullableText(value['runner_name'], 'job.runner_name'),
           runnerGroupName: nullableText(value['runner_group_name'], 'job.runner_group_name'),
@@ -123,15 +133,29 @@ function githubSource(ghPath: string, pageRunner: GitHubPageRunner): GitHubTelem
   };
 }
 
+function parseTelemetryRun(entry: unknown): TelemetryRun {
+  const value = record(entry, 'workflow run');
+  return {
+    id: positiveInteger(value['id'], 'run.id'),
+    attempt: positiveInteger(value['run_attempt'], 'run.run_attempt'),
+    workflowName: text(value['name'], 'run.name'),
+    event: text(value['event'], 'run.event'),
+    createdAt: timestamp(value['created_at'], 'run.created_at'),
+    conclusion: nullableText(value['conclusion'], 'run.conclusion'),
+  };
+}
+
 function deduplicateRuns(runs: readonly TelemetryRun[]): TelemetryRun[] {
-  const byKey = new Map<string, TelemetryRun>();
+  const byId = new Map<number, TelemetryRun>();
   for (const run of runs) {
-    const key = `${run.id}:${run.attempt}`;
-    const existing = byKey.get(key);
-    if (existing !== undefined && JSON.stringify(existing) !== JSON.stringify(run)) {
-      throw new Error(`conflicting duplicate GitHub run ${key}`);
+    const existing = byId.get(run.id);
+    if (existing !== undefined && existing.attempt === run.attempt && JSON.stringify(existing) !== JSON.stringify(run)) {
+      throw new Error(`conflicting duplicate GitHub run ${run.id}:${run.attempt}`);
     }
-    byKey.set(key, run);
+    if (existing !== undefined && (existing.workflowName !== run.workflowName || existing.event !== run.event)) {
+      throw new Error(`conflicting GitHub run metadata ${run.id}`);
+    }
+    if (existing === undefined || run.attempt > existing.attempt) byId.set(run.id, run);
   }
-  return [...byKey.values()];
+  return [...byId.values()];
 }

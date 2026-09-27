@@ -31,9 +31,11 @@ export async function buildStoreReport(input: {
   registry?: FleetRegistry;
   evidenceById?: ReadonlyMap<string, ControllerEvidence>;
 }): Promise<TelemetryReport> {
-  const snapshots = await readSnapshots(absolutePath(input.storePath, 'telemetry store'));
+  const files = await readSnapshotFiles(absolutePath(input.storePath, 'telemetry store'));
+  const snapshots = files.map(({ snapshot }) => snapshot);
   const sinceMs = Date.parse(`${input.since}T00:00:00Z`);
-  if (!snapshots.some((snapshot) => Date.parse(snapshot.windowStart) <= sinceMs && Date.parse(snapshot.collectedAt) >= sinceMs)) {
+  if (!files.some(({ name, snapshot }) => !name.startsWith('backfill-')
+    && Date.parse(snapshot.windowStart) <= sinceMs && Date.parse(snapshot.collectedAt) >= sinceMs)) {
     throw new Error(`telemetry snapshots do not cover ${input.since}`);
   }
   if (input.registry !== undefined && input.registry.owner !== snapshots[0]!.owner) {
@@ -58,20 +60,24 @@ export async function readLatestSnapshot(directory: string, date: string): Promi
 }
 
 export async function readSnapshots(directory: string): Promise<TelemetrySnapshot[]> {
-  const names = (await readdir(directory)).filter((name) => /^\d{4}-\d{2}-\d{2}\.json$/u.test(name)).sort();
-  const snapshots: TelemetrySnapshot[] = [];
+  return (await readSnapshotFiles(directory)).map(({ snapshot }) => snapshot);
+}
+
+async function readSnapshotFiles(directory: string): Promise<Array<{ name: string; snapshot: TelemetrySnapshot }>> {
+  const names = (await readdir(directory)).filter((name) => /^(?:backfill-)?\d{4}-\d{2}-\d{2}\.json$/u.test(name)).sort();
+  const files: Array<{ name: string; snapshot: TelemetrySnapshot }> = [];
   for (const name of names) {
     try {
       const value: unknown = JSON.parse(await readFile(join(directory, name), 'utf8'));
-      snapshots.push(validateSnapshot(value));
+      files.push({ name, snapshot: validateSnapshot(value) });
     } catch (error) {
       throw new Error(`snapshot ${name} is malformed: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
-  if (snapshots.length === 0) throw new Error('telemetry store has no snapshots');
-  const owners = new Set(snapshots.map(({ owner }) => owner));
+  if (files.length === 0) throw new Error('telemetry store has no snapshots');
+  const owners = new Set(files.map(({ snapshot }) => snapshot.owner));
   if (owners.size !== 1) throw new Error('telemetry snapshots contain mixed owners');
-  return snapshots;
+  return files;
 }
 
 function validateSnapshot(value: unknown): TelemetrySnapshot {
@@ -155,9 +161,10 @@ function validateSnapshot(value: unknown): TelemetrySnapshot {
 
 function validateJob(value: unknown, name: string): TelemetrySnapshot['jobs'][number] {
   const job = record(value, name);
-  for (const key of ['key', 'repository', 'workflowName', 'jobName', 'event', 'conclusion', 'createdAt'] as const) {
+  for (const key of ['key', 'repository', 'workflowName', 'jobName', 'event', 'createdAt'] as const) {
     text(job[key], `${name}.${key}`);
   }
+  const conclusion = nullableText(job['conclusion'], `${name}.conclusion`);
   timestamp(job['createdAt'], `${name}.createdAt`);
   const startedAt = nullableTimestamp(job['startedAt'], `${name}.startedAt`);
   const completedAt = nullableTimestamp(job['completedAt'], `${name}.completedAt`);
@@ -172,11 +179,11 @@ function validateJob(value: unknown, name: string): TelemetrySnapshot['jobs'][nu
     {
       id: job['runId'] as number, attempt: job['runAttempt'] as number,
       workflowName: job['workflowName'] as string, event: job['event'] as string,
-      createdAt: job['createdAt'] as string, conclusion: job['conclusion'] as string,
+      createdAt: job['createdAt'] as string, conclusion,
     },
     {
       id: job['jobId'] as number, name: job['jobName'] as string,
-      startedAt, completedAt, conclusion: job['conclusion'] as string, labels,
+      startedAt, completedAt, conclusion, labels,
       runnerName: job['runnerName'] as string, runnerGroupName: job['runnerGroupName'] as string,
     },
   );
