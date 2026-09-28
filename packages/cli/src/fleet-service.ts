@@ -134,7 +134,8 @@ async function enroll(
   if (repository.visibility !== 'private') throw new Error(`repository ${args.repository} is ${repository.visibility}; hosted minutes are free there, so migration only adds provider cost`);
   const workflow = (await source.workflows(args.repository)).find(({ path }) => path === args.workflowPath);
   if (workflow === undefined) throw new Error(`workflow ${args.workflowPath} is not registered in ${args.repository}`);
-  const commit = await source.branchHead(args.repository, repository.defaultBranch);
+  const targetBranch = args.targetBranch ?? repository.defaultBranch;
+  const commit = await source.branchHead(args.repository, targetBranch);
   const file = await source.workflowFile(args.repository, args.workflowPath, commit);
   const job = extractJobRunsOn(file.content, args.jobKey);
   if (job.runsOn.some((label) => label === 'self-hosted' || label.startsWith('cirujano-'))) {
@@ -152,6 +153,7 @@ async function enroll(
     id,
     repository: args.repository,
     repositoryId: repository.id,
+    ...(args.targetBranch === undefined ? {} : { targetBranch: args.targetBranch }),
     workflowPath: args.workflowPath,
     workflowId: workflow.id,
     workflowName: workflow.name,
@@ -180,12 +182,13 @@ async function cutover(
   const enrollment = requireEnrollment(registry, args.id);
   if (enrollment.status === 'reverted') throw new Error(`enrollment ${args.id} is reverted, not proposed or cut-over`);
   const repository = await source.repository(enrollment.repository);
-  if (!(await source.isOnBranch(enrollment.repository, args.commit, repository.defaultBranch))) {
-    throw new Error(`commit ${args.commit} is not on the default branch ${repository.defaultBranch} of ${enrollment.repository}`);
+  const targetBranch = enrollment.targetBranch ?? repository.defaultBranch;
+  if (!(await source.isOnBranch(enrollment.repository, args.commit, targetBranch))) {
+    throw new Error(`commit ${args.commit} is not on the ${enrollment.targetBranch === undefined ? 'default' : 'target'} branch ${targetBranch} of ${enrollment.repository}`);
   }
   if (enrollment.status === 'cut-over') {
-    const head = await source.branchHead(enrollment.repository, repository.defaultBranch);
-    if (args.commit !== head) throw new Error(`refresh commit ${args.commit} is not the current ${repository.defaultBranch} head ${head}`);
+    const head = await source.branchHead(enrollment.repository, targetBranch);
+    if (args.commit !== head) throw new Error(`refresh commit ${args.commit} is not the current ${targetBranch} head ${head}`);
   }
   const live = await readLiveIdentity(source, enrollment, args.commit);
   const missing = requiredSelfHostedLabels(enrollment.runnerLabel).filter((label) => !live.runsOn.includes(label));
@@ -216,7 +219,7 @@ async function verify(registry: FleetRegistry, registryPath: string, source: Git
   let next = registry;
   for (const enrollment of registry.enrollments) {
     const repository = await source.repository(enrollment.repository);
-    const head = await source.branchHead(enrollment.repository, repository.defaultBranch);
+    const head = await source.branchHead(enrollment.repository, enrollment.targetBranch ?? repository.defaultBranch);
     const live = await readLiveIdentity(source, enrollment, head);
     const labelled = requiredSelfHostedLabels(enrollment.runnerLabel).every((label) => live.runsOn.includes(label));
     if (enrollment.status === 'proposed') {
@@ -269,13 +272,16 @@ async function controllerConfig(
 ): Promise<0> {
   const enrollment = requireEnrollment(registry, args.id);
   if (enrollment.status === 'reverted') throw new Error(`enrollment ${args.id} is reverted; enroll it afresh before configuring a controller`);
+  if (enrollment.targetBranch !== undefined && args.allowedBranch !== undefined && args.allowedBranch !== enrollment.targetBranch) {
+    throw new Error(`controller allowed branch ${args.allowedBranch} differs from enrollment target branch ${enrollment.targetBranch}`);
+  }
   const template = parseRunnerConfig(JSON.parse(await readFile(absolutePath(args.templatePath, 'config template'), 'utf8')));
   const stateRoot = absolutePath(args.stateRoot, 'state root');
   const stateDirectory = join(stateRoot, enrollment.id);
   await mkdir(stateDirectory, { recursive: true, mode: 0o700 });
   await chmod(stateDirectory, 0o700);
   const hostKey = await ensureHostKey(stateDirectory, enrollment.id, environment);
-  const allowedBranch = args.allowedBranch ?? (await source.repository(enrollment.repository)).defaultBranch;
+  const allowedBranch = args.allowedBranch ?? enrollment.targetBranch ?? (await source.repository(enrollment.repository)).defaultBranch;
   const handle = enrollment.id.toLowerCase();
   const controllerId = enrollment.controller?.controllerId ?? `cirujano-${handle}-${compactDate(Date.now())}`;
   const resourcePrefix = enrollment.controller?.resourcePrefix ?? `cirujano-${handle}`;

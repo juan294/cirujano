@@ -48,6 +48,14 @@ describe('fleet registry (phase 1 U1)', () => {
       .toThrow(/runnerLabel .* is not enrolled for sku actions_linux/u);
   });
 
+  it('round-trips an optional integration branch and rejects malformed branch names', async () => {
+    const registry = parseFleetRegistry(JSON.parse(await readFile(fixturePath(), 'utf8')));
+    registry.enrollments[1]!.targetBranch = 'develop';
+    expect(parseFleetRegistry(JSON.parse(JSON.stringify(registry))).enrollments[1]!.targetBranch).toBe('develop');
+    registry.enrollments[1]!.targetBranch = '../main';
+    expect(() => parseFleetRegistry(JSON.parse(JSON.stringify(registry)))).toThrow(/targetBranch must be a safe Git branch name/u);
+  });
+
   it('rejects a shared active label within one repository, including a proposed enrollment', async () => {
     const registry = parseFleetRegistry(JSON.parse(await readFile(fixturePath(), 'utf8')));
     registry.enrollments[1]!.repository = registry.enrollments[0]!.repository;

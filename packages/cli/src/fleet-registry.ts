@@ -1,7 +1,7 @@
 import { chmod, mkdir, rename, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 
-import { validIsoDate } from './args.js';
+import { validGitBranchName, validIsoDate } from './args.js';
 import { cirujanoSkuForLabel, HOSTED_SKUS, TELEMETRY_RATES, type HostedSku } from './telemetry.js';
 
 /**
@@ -39,6 +39,7 @@ export interface FleetEnrollment {
   id: string;
   repository: string;
   repositoryId: number;
+  targetBranch?: string;
   workflowPath: string;
   workflowId: number;
   workflowName: string;
@@ -142,10 +143,12 @@ export function parseFleetRegistry(input: unknown): FleetRegistry {
 }
 
 function parseEnrollment(input: unknown, name: string, registry: Pick<FleetRegistry, 'owner' | 'exclusions'>): FleetEnrollment {
-  const root = strictObject(input, ENROLLMENT_KEYS, name);
+  const root = strictObject(input, [...ENROLLMENT_KEYS, 'targetBranch'], name, ['targetBranch']);
   const id = text(root['id'], `${name}.id`);
   if (!ENROLLMENT_ID_PATTERN.test(id)) throw new FleetRegistryError(`${name}.id must look like P1`);
   const repository = text(root['repository'], `${name}.repository`);
+  const targetBranch = root['targetBranch'] === undefined ? undefined : text(root['targetBranch'], `${name}.targetBranch`);
+  if (targetBranch !== undefined && !validGitBranchName(targetBranch)) throw new FleetRegistryError(`${name}.targetBranch must be a safe Git branch name`);
   if (!REPOSITORY_PATTERN.test(repository)) throw new FleetRegistryError(`${name}.repository must be owner/name`);
   if (!repository.startsWith(`${registry.owner}/`)) throw new FleetRegistryError(`${name}.repository must belong to ${registry.owner}`);
   if (isExcludedRepository(registry, repository)) throw new FleetRegistryError(`${name}.repository ${repository} is excluded from migration`);
@@ -185,6 +188,7 @@ function parseEnrollment(input: unknown, name: string, registry: Pick<FleetRegis
     id,
     repository,
     repositoryId: positiveInteger(root['repositoryId'], `${name}.repositoryId`),
+    ...(targetBranch === undefined ? {} : { targetBranch }),
     workflowPath: text(root['workflowPath'], `${name}.workflowPath`),
     workflowId: positiveInteger(root['workflowId'], `${name}.workflowId`),
     workflowName: text(root['workflowName'], `${name}.workflowName`),
@@ -220,12 +224,12 @@ export async function writeFleetRegistry(path: string, registry: FleetRegistry):
   await chmod(path, 0o600);
 }
 
-function strictObject(input: unknown, allowed: readonly string[], name: string): Record<string, unknown> {
+function strictObject(input: unknown, allowed: readonly string[], name: string, optional: readonly string[] = []): Record<string, unknown> {
   if (typeof input !== 'object' || input === null || Array.isArray(input)) throw new FleetRegistryError(`${name} must be an object`);
   const root = input as Record<string, unknown>;
   const unknown = Object.keys(root).find((key) => !allowed.includes(key));
   if (unknown !== undefined) throw new FleetRegistryError(`${name} contains unknown key ${unknown}`);
-  const missing = allowed.find((key) => !Object.hasOwn(root, key));
+  const missing = allowed.find((key) => !optional.includes(key) && !Object.hasOwn(root, key));
   if (missing !== undefined) throw new FleetRegistryError(`${name} is missing ${missing}`);
   return root;
 }

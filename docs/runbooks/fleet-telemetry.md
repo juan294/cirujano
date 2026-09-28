@@ -73,13 +73,14 @@ Migration evidence lives in a private, owner-only registry
 names real repositories and therefore never enters this repository. The
 schema, validator and a placeholder fixture
 (`packages/cli/fixtures/fleet-registry.example.json`) are tracked. Every
-`fleet` command is read-only against GitHub: it reads the default branch head,
+`fleet` command is read-only against GitHub: it reads the enrollment branch head,
 the workflow's git blob SHA and the job's literal `runs-on`, and writes only
 the local registry.
 
 ```bash
 cirujano fleet init --registry ~/.local/share/cirujano/telemetry/fleet-registry.json --owner "$(gh api user --jq .login)"
 cirujano fleet enroll --registry <registry> --repository <owner/name> --workflow .github/workflows/ci.yml --job <job key>
+cirujano fleet enroll --registry <registry> --repository <owner/name> --workflow .github/workflows/ci.yml --job <job key> --branch develop
 cirujano fleet cutover --registry <registry> --id P1 --commit <merged 40-character sha>
 cirujano fleet verify --registry <registry>
 cirujano fleet show --registry <registry>
@@ -91,21 +92,24 @@ cirujano telemetry report --store <store> --since 2026-09-13 --registry <registr
   explicitly excluded repository. It does not remove entries from a registry
   created while the product freezes were active.
 - `enroll` records `before`: the commit, blob SHA and hosted `runs-on` at the
-  default branch head. It refuses public repositories, jobs that already run
-  self-hosted, matrix or expression `runs-on` values, and jobs priced under a
-  SKU other than `--sku` (default `actions_linux`, whose enrolled label is
+  default branch head, or at `--branch` when a repository uses a separate
+  integration branch. The optional target branch is stored on that enrollment;
+  existing records continue to use the repository's default branch. It
+  refuses public repositories, jobs that already run self-hosted, matrix or
+  expression `runs-on` values, and jobs priced under a SKU other than `--sku`
+  (default `actions_linux`, whose enrolled label is
   `cirujano-baseline-actions_linux`). Pass `--job-name` once per display name
   when the YAML job name differs from the key or expands a matrix.
   A second active enrollment in the same repository receives its own label,
   such as `cirujano-p7-actions_linux`. The registry rejects two active
   enrollments in one repository with the same label.
-- `cutover` records `after` only when the merged commit is on the default
+- `cutover` records `after` only when the merged commit is on the enrollment
   branch and the job's `runs-on` contains `self-hosted` and the enrolled
   label. The record's `recordedAt` is the split point the report uses.
 - `verify` re-reads every enrollment. A pre-cutover workflow edit refreshes
   `before` with a note. After cutover, an unrelated edit that keeps the label
   exits 1 and leaves the record for review. After reviewing an intended edit,
-  run `fleet cutover --commit <current default-branch SHA>` again to record the
+  run `fleet cutover --commit <current enrollment-branch SHA>` again to record the
   new blob; the original cutover time remains the reporting split point and a
   note records the previous blob. A workflow that lost the label is recorded as
   `reverted`, never silently, and also exits 1.

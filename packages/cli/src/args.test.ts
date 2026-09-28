@@ -71,6 +71,9 @@ describe('parseArguments', () => {
     expect(parseArguments(['fleet', 'enroll', '--registry', 'r', '--repository', 'juan294/app', '--workflow', 'w.yml', '--job', 'shard', '--job-name', 'Shard 1', '--job-name', 'Shard 2', '--sku', 'actions_linux'])).toEqual({
       command: 'fleet', action: 'enroll', registryPath: 'r', repository: 'juan294/app', workflowPath: 'w.yml', jobKey: 'shard', jobNames: ['Shard 1', 'Shard 2'], sku: 'actions_linux',
     });
+    expect(parseArguments(['fleet', 'enroll', '--registry', 'r', '--repository', 'juan294/app', '--workflow', 'w.yml', '--job', 'check', '--branch', 'develop'])).toEqual({
+      command: 'fleet', action: 'enroll', registryPath: 'r', repository: 'juan294/app', workflowPath: 'w.yml', jobKey: 'check', jobNames: [], sku: 'actions_linux', targetBranch: 'develop',
+    });
     expect(parseArguments(['fleet', 'cutover', '--registry', 'r', '--id', 'P1', '--commit', 'a'.repeat(40)])).toEqual({
       command: 'fleet', action: 'cutover', registryPath: 'r', id: 'P1', commit: 'a'.repeat(40),
     });
@@ -117,6 +120,7 @@ describe('parseArguments', () => {
     [['fleet', 'enroll', '--registry', 'r', '--repository', 'juan294/app', '--workflow', 'w.yml'], /requires --job/],
     [['fleet', 'enroll', '--registry', 'r', '--repository', 'app', '--workflow', 'w.yml', '--job', 'j'], /owner\/name/],
     [['fleet', 'enroll', '--registry', 'r', '--repository', 'juan294/app', '--workflow', 'w.yml', '--job', 'j', '--sku', 'actions_gpu'], /--sku must be one of/],
+    [['fleet', 'enroll', '--registry', 'r', '--repository', 'juan294/app', '--workflow', 'w.yml', '--job', 'j', '--branch', '../main'], /--branch must be a safe Git branch name/],
     [['fleet', 'cutover', '--registry', 'r', '--id', 'P1'], /requires --commit/],
     [['fleet', 'cutover', '--registry', 'r', '--id', 'P1', '--commit', 'abc'], /40-character/],
     [['fleet', 'cutover', '--registry', 'r', '--commit', 'a'.repeat(40)], /requires --id/],

@@ -44,16 +44,20 @@ const UNLABELLED_WORKFLOW = HOSTED_WORKFLOW.replace('    runs-on: ubuntu-latest'
 
 interface FakeGitHub {
   headCommit: string;
+  developHead: string;
   files: Record<string, { sha: string; content: string }>;
   ancestors: string[];
+  developAncestors: string[];
   requests: string[];
 }
 
 function fakeGitHub(): FakeGitHub {
   return {
     headCommit: HEAD,
+    developHead: MERGED,
     files: { [HEAD]: { sha: HOSTED_BLOB, content: HOSTED_WORKFLOW } },
     ancestors: [HEAD],
+    developAncestors: [MERGED],
     requests: [],
   };
 }
@@ -66,6 +70,7 @@ function pageRunnerFor(fake: FakeGitHub) {
     const contents = /^\/repos\/juan294\/app\/contents\/\.github\/workflows\/ci\.yml\?ref=([0-9a-f]{40})$/u.exec(endpoint);
     if (endpoint === '/repos/juan294/app') return { stdout: JSON.stringify([{ id: 777, full_name: 'juan294/app', default_branch: 'main', visibility: 'private' }]) };
     if (endpoint === '/repos/juan294/app/branches/main') return { stdout: JSON.stringify([{ name: 'main', commit: { sha: fake.headCommit } }]) };
+    if (endpoint === '/repos/juan294/app/branches/develop') return { stdout: JSON.stringify([{ name: 'develop', commit: { sha: fake.developHead } }]) };
     if (endpoint === '/repos/juan294/app/actions/workflows?per_page=100') {
       return { stdout: JSON.stringify([{ total_count: 2, workflows: [
         { id: 41, name: 'CI', path: '.github/workflows/ci.yml', state: 'active' },
@@ -79,6 +84,8 @@ function pageRunnerFor(fake: FakeGitHub) {
     }
     const compare = /^\/repos\/juan294\/app\/compare\/([0-9a-f]{40})\.\.\.main\?per_page=1$/u.exec(endpoint);
     if (compare !== null) return { stdout: JSON.stringify([{ status: fake.ancestors.includes(compare[1]!) ? 'ahead' : 'diverged' }]) };
+    const developCompare = /^\/repos\/juan294\/app\/compare\/([0-9a-f]{40})\.\.\.develop\?per_page=1$/u.exec(endpoint);
+    if (developCompare !== null) return { stdout: JSON.stringify([{ status: fake.developAncestors.includes(developCompare[1]!) ? 'ahead' : 'diverged' }]) };
     throw new Error(`unexpected GitHub read ${endpoint}`);
   };
 }
@@ -154,6 +161,25 @@ describe('fleet command service (phase 1 U2)', () => {
     const [first, second] = (await readRegistry(registryPath)).enrollments;
     expect(first?.runnerLabel).toBe(LABEL);
     expect(second).toMatchObject({ id: 'P2', runnerLabel: 'cirujano-p2-actions_linux', status: 'proposed' });
+  });
+
+  it('anchors enrollment, cutover and verification to a named integration branch', async () => {
+    const registryPath = await freshRegistry();
+    const fake = fakeGitHub();
+    fake.files[MERGED] = { sha: HOSTED_BLOB, content: HOSTED_WORKFLOW };
+    const service = createFleetCommandService({}, pageRunnerFor(fake));
+    expect(await service.run({ ...enrollArguments(registryPath), targetBranch: 'develop' }, silent())).toBe(0);
+    expect((await readRegistry(registryPath)).enrollments[0]).toMatchObject({ targetBranch: 'develop', before: { commit: MERGED } });
+
+    fake.files[MERGED] = { sha: MIGRATED_BLOB, content: MIGRATED_WORKFLOW };
+    fake.ancestors.push(MERGED);
+    fake.developAncestors = [];
+    await expect(service.run({ command: 'fleet', action: 'cutover', registryPath, id: 'P1', commit: MERGED }, silent()))
+      .rejects.toThrow(/is not on the target branch develop/u);
+    fake.developAncestors.push(MERGED);
+    expect(await service.run({ command: 'fleet', action: 'cutover', registryPath, id: 'P1', commit: MERGED }, silent())).toBe(0);
+    expect(await service.run({ command: 'fleet', action: 'verify', registryPath }, silent())).toBe(0);
+    expect(fake.requests).toContain('/repos/juan294/app/branches/develop');
   });
 
   it.each([
@@ -379,6 +405,17 @@ describe('fleet controller-config and permit-proposal (phase 2 U1)', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('uses the enrollment branch for controller admission and refuses a conflicting override', async () => {
+    const { registryPath, service, templatePath, stateRoot } = await enrolledFixture();
+    const registry = await readRegistry(registryPath);
+    registry.enrollments[0]!.targetBranch = 'develop';
+    await writeFile(registryPath, JSON.stringify(registry));
+    await expect(service.run({ command: 'fleet', action: 'controller-config', registryPath, id: 'P1', stateRoot, templatePath, allowedBranch: 'main' }, silent()))
+      .rejects.toThrow(/differs from enrollment target branch develop/u);
+    expect(await service.run({ command: 'fleet', action: 'controller-config', registryPath, id: 'P1', stateRoot, templatePath }, silent())).toBe(0);
+    expect(parseRunnerConfig(JSON.parse(await readFile(join(stateRoot, 'P1', 'config.json'), 'utf8'))).allowedBranch).toBe('develop');
   });
 
   it('refuses to replace a journal-bound config with a different identity', async () => {

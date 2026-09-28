@@ -14,11 +14,11 @@ export const USAGE = [
   '  cirujano telemetry collect --owner <login> --store <directory> [--lookback-hours 48]',
   '  cirujano telemetry report --store <directory> --since <YYYY-MM-DD> [--format json|markdown] [--registry <fleet-registry.json>]',
   '  cirujano fleet init --registry <file> --owner <login> [--since <YYYY-MM-DD>] [--through <YYYY-MM-DD>]',
-  '  cirujano fleet enroll --registry <file> --repository <owner/name> --workflow <path> --job <key> [--job-name <name>]... [--sku actions_linux]',
+  '  cirujano fleet enroll --registry <file> --repository <owner/name> --workflow <path> --job <key> [--job-name <name>]... [--sku actions_linux] [--branch <name>]',
   '  cirujano fleet cutover --registry <file> --id <P#> --commit <sha>',
   '  cirujano fleet verify --registry <file>',
   '  cirujano fleet show --registry <file>',
-  '  cirujano fleet controller-config --registry <file> --id <P#> --state-root <dir> --template <config.json> [--allowed-branch <branch>] (admission is same-repository; the branch only matters for default-branch-pushes)',
+  '  cirujano fleet controller-config --registry <file> --id <P#> --state-root <dir> --template <config.json> [--allowed-branch <branch>] (admission is same-repository; the branch matters for integration pushes)',
   '  cirujano fleet permit-proposal --registry <file> --id <P#> --candidate-digest <sha256> --quote <quote.json>',
   '  cirujano fleet publish --registry <file> --store <directory> --since <YYYY-MM-DD> --output <report.md>',
   '  cirujano --help',
@@ -110,6 +110,7 @@ export interface FleetEnrollArguments {
   jobKey: string;
   jobNames: string[];
   sku: HostedSku;
+  targetBranch?: string;
 }
 
 export interface FleetCutoverArguments {
@@ -255,7 +256,7 @@ const FLEET_ACTIONS = ['init', 'enroll', 'cutover', 'verify', 'show', 'controlle
 type FleetAction = typeof FLEET_ACTIONS[number];
 const FLEET_OPTIONS: Record<FleetAction, readonly string[]> = {
   init: ['--registry', '--owner', '--since', '--through'],
-  enroll: ['--registry', '--repository', '--workflow', '--job', '--job-name', '--sku'],
+  enroll: ['--registry', '--repository', '--workflow', '--job', '--job-name', '--sku', '--branch'],
   cutover: ['--registry', '--id', '--commit'],
   verify: ['--registry'],
   show: ['--registry'],
@@ -331,12 +332,23 @@ function parseFleetArguments(argv: readonly string[]): FleetArguments {
   const workflowPath = values.get('--workflow');
   const jobKey = values.get('--job');
   const sku = values.get('--sku') ?? 'actions_linux';
+  const targetBranch = values.get('--branch');
   if (repository === undefined) throw new ArgumentError('fleet enroll requires --repository <owner/name>.');
   if (!/^[^/\s]+\/[^/\s]+$/u.test(repository)) throw new ArgumentError('fleet enroll --repository must be owner/name.');
   if (workflowPath === undefined) throw new ArgumentError('fleet enroll requires --workflow <path>.');
   if (jobKey === undefined) throw new ArgumentError('fleet enroll requires --job <key>.');
   if (!isHostedSku(sku)) throw new ArgumentError(`fleet enroll --sku must be one of ${HOSTED_SKUS.join(', ')}.`);
-  return { command: 'fleet', action: 'enroll', registryPath, repository, workflowPath, jobKey, jobNames, sku };
+  if (targetBranch !== undefined && !validGitBranchName(targetBranch)) throw new ArgumentError('fleet enroll --branch must be a safe Git branch name.');
+  return targetBranch === undefined
+    ? { command: 'fleet', action: 'enroll', registryPath, repository, workflowPath, jobKey, jobNames, sku }
+    : { command: 'fleet', action: 'enroll', registryPath, repository, workflowPath, jobKey, jobNames, sku, targetBranch };
+}
+
+export function validGitBranchName(value: string): boolean {
+  return value.length <= 200
+    && /^(?:[A-Za-z0-9_-][A-Za-z0-9._-]*)(?:\/[A-Za-z0-9_-][A-Za-z0-9._-]*)*$/u.test(value)
+    && !value.includes('..')
+    && !value.split('/').some((part) => part.endsWith('.') || part.endsWith('.lock'));
 }
 
 function isFleetAction(value: string): value is FleetAction {
