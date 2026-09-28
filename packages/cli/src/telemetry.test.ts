@@ -63,6 +63,18 @@ describe('fleet telemetry', () => {
     expect(snapshot.jobs[7]).toMatchObject({ visibility: 'public', actualGithubListCostUsd: 0, counterfactualHostedCostUsd: 0 });
   });
 
+  it('prices a job assigned to an enrollment-specific Cirujano runner', async () => {
+    const source: GitHubTelemetrySource = {
+      listRepositories: async () => [{ fullName: 'juan294/app', visibility: 'private', archived: false }],
+      listRuns: async () => [{ id: 1, attempt: 1, workflowName: 'Coverage', event: 'schedule', createdAt: '2026-09-13T10:00:00Z', conclusion: 'success' }],
+      listJobs: async () => [job(1, ['self-hosted', 'linux', 'x64', 'cirujano-p7-actions_linux'], 'cirujano-p7-g1')],
+    };
+    const snapshot = await collectTelemetry({ owner: 'juan294', lookbackHours: 48, nowMs: NOW, source });
+    expect(snapshot.jobs[0]).toMatchObject({
+      runnerKind: 'cirujano', hostedSku: 'actions_linux', actualGithubListCostUsd: 0, counterfactualHostedCostUsd: 0.012,
+    });
+  });
+
   it('skips an active run whose conclusion is not available yet', async () => {
     const source: GitHubTelemetrySource = {
       listRepositories: async () => [{ fullName: 'juan294/app', visibility: 'private', archived: false }],

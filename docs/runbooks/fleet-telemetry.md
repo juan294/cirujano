@@ -96,6 +96,9 @@ cirujano telemetry report --store <store> --since 2026-09-13 --registry <registr
   SKU other than `--sku` (default `actions_linux`, whose enrolled label is
   `cirujano-baseline-actions_linux`). Pass `--job-name` once per display name
   when the YAML job name differs from the key or expands a matrix.
+  A second active enrollment in the same repository receives its own label,
+  such as `cirujano-p7-actions_linux`. The registry rejects two active
+  enrollments in one repository with the same label.
 - `cutover` records `after` only when the merged commit is on the default
   branch and the job's `runs-on` contains `self-hosted` and the enrolled
   label. The record's `recordedAt` is the split point the report uses.
@@ -172,8 +175,9 @@ identities prevent double counting.
 - `GitHub-hosted list cost` uses dated public list prices. Private-account
   allowances and discounts are not subtracted.
 - `Gross hosted cost avoided` includes only jobs that actually acquired a
-  runner whose name starts with `cirujano-` and carries an enrolled baseline SKU
-  label such as `cirujano-baseline-actions_linux`. A queued or cancelled job
+  runner whose name starts with `cirujano-` and carries a supported Linux SKU
+  label, either `cirujano-baseline-actions_linux` or an enrollment-owned label
+  such as `cirujano-p7-actions_linux`. A queued or cancelled job
   with only a Cirujano target label receives no savings credit.
 - `Jobs with unknown price` preserves jobs whose runner labels cannot establish
   a hosted platform. Investigate this count before publishing a cost claim.

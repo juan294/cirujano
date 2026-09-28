@@ -125,7 +125,11 @@ async function enroll(
   if (isExcludedRepository(registry, args.repository)) throw new Error(`repository ${args.repository} is excluded from migration`);
   const existing = findActiveEnrollment(registry, args.repository, args.workflowPath, args.jobKey);
   if (existing !== undefined) throw new Error(`${args.repository} ${args.workflowPath} job ${args.jobKey} is already enrolled as ${existing.id}`);
-  const runnerLabel = enrollmentLabelFor(args.sku);
+  const id = nextEnrollmentId(registry);
+  const baseLabel = enrollmentLabelFor(args.sku);
+  const runnerLabel = registry.enrollments.some((entry) => entry.repository === args.repository && entry.status !== 'reverted')
+    ? `cirujano-${id.toLowerCase()}-${args.sku}`
+    : baseLabel;
   const repository = await source.repository(args.repository);
   if (repository.visibility !== 'private') throw new Error(`repository ${args.repository} is ${repository.visibility}; hosted minutes are free there, so migration only adds provider cost`);
   const workflow = (await source.workflows(args.repository)).find(({ path }) => path === args.workflowPath);
@@ -145,7 +149,7 @@ async function enroll(
   }
   const jobNames = args.jobNames.length > 0 ? args.jobNames : [job.name ?? args.jobKey];
   const enrollment: FleetEnrollment = {
-    id: nextEnrollmentId(registry),
+    id,
     repository: args.repository,
     repositoryId: repository.id,
     workflowPath: args.workflowPath,
@@ -477,6 +481,16 @@ export async function loadControllerEvidence(registry: FleetRegistry): Promise<M
       throw error;
     }
     try {
+      // Configuration and a permit proposal precede the first watch cycle.
+      // A proposed enrollment has no controller journal until that cycle starts.
+      if (enrollment.status === 'proposed') {
+        try {
+          await access(join(stateDirectory, 'controller-state.json'));
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
+          throw error;
+        }
+      }
       const controller = { ...enrollment.controller, repositoryId: enrollment.repositoryId };
       const current = await readControllerEvidence(stateDirectory, controller);
       const archives = (await readdir(stateDirectory, { withFileTypes: true }))

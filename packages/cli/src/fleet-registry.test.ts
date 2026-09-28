@@ -38,6 +38,31 @@ describe('fleet registry (phase 1 U1)', () => {
     expect(parseFleetRegistry(JSON.parse(await readFile(path, 'utf8')))).toEqual(registry);
   });
 
+  it('accepts only the enrollment-owned label for an isolated controller', async () => {
+    const registry = parseFleetRegistry(JSON.parse(await readFile(fixturePath(), 'utf8')));
+    registry.enrollments[1]!.runnerLabel = 'cirujano-p2-actions_linux';
+    expect(parseFleetRegistry(JSON.parse(JSON.stringify(registry))).enrollments[1]!.runnerLabel)
+      .toBe('cirujano-p2-actions_linux');
+    registry.enrollments[1]!.runnerLabel = 'cirujano-p3-actions_linux';
+    expect(() => parseFleetRegistry(JSON.parse(JSON.stringify(registry))))
+      .toThrow(/runnerLabel .* is not enrolled for sku actions_linux/u);
+  });
+
+  it('rejects a shared active label within one repository, including a proposed enrollment', async () => {
+    const registry = parseFleetRegistry(JSON.parse(await readFile(fixturePath(), 'utf8')));
+    registry.enrollments[1]!.repository = registry.enrollments[0]!.repository;
+    expect(() => parseFleetRegistry(registry)).toThrow(/runner label .* already belongs to P1/u);
+    registry.enrollments[0]!.status = 'reverted';
+    expect(() => parseFleetRegistry(registry)).not.toThrow();
+  });
+
+  it('rejects an owned label for a runner platform the controller cannot provide', async () => {
+    const registry = parseFleetRegistry(JSON.parse(await readFile(fixturePath(), 'utf8')));
+    registry.enrollments[1]!.sku = 'actions_macos';
+    registry.enrollments[1]!.runnerLabel = 'cirujano-p2-actions_macos';
+    expect(() => parseFleetRegistry(registry)).toThrow(/runnerLabel .* is not enrolled for sku actions_macos/u);
+  });
+
   it.each([
     ['a missing locked exclusion', (registry: FleetRegistry) => {
       registry.exclusions = registry.exclusions.filter(({ repository }) => repository !== 'behboud/opencode-rpi');

@@ -2,7 +2,7 @@ import { chmod, mkdir, rename, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 
 import { validIsoDate } from './args.js';
-import { HOSTED_SKUS, TELEMETRY_RATES, type HostedSku } from './telemetry.js';
+import { cirujanoSkuForLabel, HOSTED_SKUS, TELEMETRY_RATES, type HostedSku } from './telemetry.js';
 
 /**
  * Named exclusions retained from the fleet telemetry plan
@@ -133,6 +133,9 @@ export function parseFleetRegistry(input: unknown): FleetRegistry {
     // A reverted enrollment keeps its history; the same job may be enrolled afresh later.
     const existing = enrollment.status === 'reverted' ? undefined : findActiveEnrollment({ enrollments }, enrollment.repository, enrollment.workflowPath, enrollment.jobKey);
     if (existing !== undefined) throw new FleetRegistryError(`${enrollment.repository} ${enrollment.workflowPath} job ${enrollment.jobKey} is already enrolled as ${existing.id}`);
+    const labelOwner = enrollment.status === 'reverted' ? undefined : enrollments.find((prior) =>
+      prior.status !== 'reverted' && prior.repository === enrollment.repository && prior.runnerLabel === enrollment.runnerLabel);
+    if (labelOwner !== undefined) throw new FleetRegistryError(`${enrollment.repository} runner label ${enrollment.runnerLabel} already belongs to ${labelOwner.id}`);
     enrollments.push(enrollment);
   }
   return { schemaVersion: 1, owner, measurementWindow: { since, through }, exclusions, enrollments };
@@ -149,8 +152,9 @@ function parseEnrollment(input: unknown, name: string, registry: Pick<FleetRegis
   const sku = root['sku'];
   if (typeof sku !== 'string' || !(HOSTED_SKUS as readonly string[]).includes(sku)) throw new FleetRegistryError(`${name}.sku must be one of ${HOSTED_SKUS.join(', ')}`);
   const runnerLabel = text(root['runnerLabel'], `${name}.runnerLabel`);
-  const labelSku = (TELEMETRY_RATES.cirujanoLabels as Record<string, HostedSku>)[runnerLabel];
-  if (labelSku !== sku || !runnerLabel.startsWith('cirujano-baseline-')) {
+  const labelSku = cirujanoSkuForLabel(runnerLabel);
+  const ownedLabel = `cirujano-${id.toLowerCase()}-${sku}`;
+  if (labelSku !== sku || (runnerLabel !== `cirujano-baseline-${sku}` && runnerLabel !== ownedLabel)) {
     throw new FleetRegistryError(`${name}.runnerLabel ${runnerLabel} is not enrolled for sku ${sku}`);
   }
   const status = root['status'];

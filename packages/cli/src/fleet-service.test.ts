@@ -146,6 +146,16 @@ describe('fleet command service (phase 1 U2)', () => {
     }
   });
 
+  it('isolates a second active enrollment in the same repository with its own runner label', async () => {
+    const registryPath = await freshRegistry();
+    const service = createFleetCommandService({}, pageRunnerFor(fakeGitHub()));
+    expect(await service.run(enrollArguments(registryPath), silent())).toBe(0);
+    expect(await service.run({ ...enrollArguments(registryPath), jobKey: 'lint' }, silent())).toBe(0);
+    const [first, second] = (await readRegistry(registryPath)).enrollments;
+    expect(first?.runnerLabel).toBe(LABEL);
+    expect(second).toMatchObject({ id: 'P2', runnerLabel: 'cirujano-p2-actions_linux', status: 'proposed' });
+  });
+
   it.each([
     ['an excluded repository', { repository: 'juan294/home-network' }, /excluded from migration/u],
     ['a repository outside the owner', { repository: 'other/app' }, /must belong to juan294/u],
@@ -430,7 +440,7 @@ describe('fleet controller-config and permit-proposal (phase 2 U1)', () => {
         if (key !== 'check') expect(await other.run({ ...enrollArguments(registryPath), jobKey: key }, silent())).toBe(0);
         else {
           const registry = await readRegistry(registryPath);
-          await writeFile(registryPath, JSON.stringify({ ...registry, enrollments: [...registry.enrollments, { ...registry.enrollments[0]!, id, jobKey: 'lint2', controller: null }] }));
+          await writeFile(registryPath, JSON.stringify({ ...registry, enrollments: [...registry.enrollments, { ...registry.enrollments[0]!, id, jobKey: 'lint2', runnerLabel: `cirujano-${id.toLowerCase()}-actions_linux`, controller: null }] }));
         }
         expect(await other.run({ command: 'fleet', action: 'controller-config', registryPath, id, stateRoot, templatePath }, silent())).toBe(0);
       }
@@ -489,6 +499,17 @@ describe('controller evidence and the sanitized publication (phase 4)', () => {
       diskRetainedMs: 43_200_000, diskSizeGiB: 80, networkEgressBytes: 2048, rates,
       assignments: [{ runId: 5, runAttempt: 1, jobId: 50, runnerId: 900, runnerName: 'cirujano-p1-g1', conclusion: 'success' }],
     });
+  });
+
+  it('leaves a configured proposal without its first controller journal unmeasured', async () => {
+    const stateDirectory = await journals({ omitState: true, omitAssignments: true });
+    const registry = { enrollments: [{
+      id: 'P1', status: 'proposed', repositoryId: 777,
+      controller: { stateDirectory, controllerId: identity.controllerId, resourcePrefix: identity.resourcePrefix },
+    }] } as FleetRegistry;
+    await expect(loadControllerEvidence(registry)).resolves.toEqual(new Map());
+    const cutOver = { enrollments: [{ ...registry.enrollments[0], status: 'cut-over' }] } as FleetRegistry;
+    await expect(loadControllerEvidence(cutOver)).rejects.toThrow(/controller-state\.json/u);
   });
 
   it('treats a lazily written assignments.json as no assignments yet', async () => {

@@ -9,6 +9,13 @@ import type { EnrollmentStatus, FleetEnrollment, FleetRegistry } from './fleet-r
 export const HOSTED_SKUS = ['actions_linux', 'actions_linux_arm', 'actions_windows', 'actions_macos'] as const;
 export type HostedSku = typeof HOSTED_SKUS[number];
 
+/** Legacy shared labels and enrollment-owned labels both identify the hosted SKU. */
+export function cirujanoSkuForLabel(label: string): HostedSku | null {
+  const legacy = (TELEMETRY_RATES.cirujanoLabels as Record<string, HostedSku>)[label];
+  if (legacy !== undefined) return legacy;
+  return /^cirujano-p[1-9]\d{0,3}-actions_linux$/u.test(label) ? 'actions_linux' : null;
+}
+
 export const TELEMETRY_RATES = {
   currency: 'USD' as const,
   quotedAt: '2026-09-13',
@@ -778,8 +785,9 @@ export function hostedSkuForLabels(labels: readonly string[]): HostedSku | null 
 function hostedSku(labels: readonly string[], runnerKind: RunnerKind): HostedSku | null {
   const values = new Set(labels.map((label) => label.toLowerCase()));
   if (runnerKind === 'cirujano') {
-    for (const [label, sku] of Object.entries(TELEMETRY_RATES.cirujanoLabels)) {
-      if (values.has(label)) return sku;
+    for (const label of values) {
+      const sku = cirujanoSkuForLabel(label);
+      if (sku !== null) return sku;
     }
     return null;
   }
