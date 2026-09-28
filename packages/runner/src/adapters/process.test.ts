@@ -22,9 +22,9 @@ describe('runProcess (R08)', () => {
 
   it('terminates a timed-out child and marks truncated output', async () => {
     const result = await runProcess({
-      command: process.execPath,
-      args: ['-e', 'require("fs").writeSync(1,"x".repeat(100));setTimeout(()=>{},10_000)'],
-      timeoutMs: 200,
+      command: '/bin/sh',
+      args: ['-c', "printf '%0100d' 0; exec sleep 10"],
+      timeoutMs: 1_000,
       maxOutputBytes: 16,
     });
     expect(result.timedOut).toBe(true);

@@ -295,6 +295,23 @@ describe('guest helpers (R08-R09)', () => {
     expect(JSON.parse(output)).toMatchObject({ complete: true, status: 'ready', grant: { generation: 3, startedAtMs: 1000, deadlineMs: 9000 } });
   });
 
+  it('reports an armed grant while bootstrap is still in progress', () => {
+    const state = mkdtempSync(resolve(tmpdir(), 'cirujano-status-booting-'));
+    writeFileSync(resolve(state, 'grant.env'), 'grant_generation=1\ngrant_started_at_ms=1000\ngrant_deadline_ms=9000\n');
+    const output = execFileSync('/bin/bash', [resolve(guestDir, 'status.sh')], {
+      env: { ...process.env, CIRUJANO_TEST_MODE: '1', CIRUJANO_STATE_DIR: state }, encoding: 'utf8',
+    });
+    expect(JSON.parse(output)).toMatchObject({
+      complete: true, status: 'booting', watchdogReady: false,
+      grant: { generation: 1, startedAtMs: 1000, deadlineMs: 9000 },
+    });
+    writeFileSync(resolve(state, 'grant.env'), 'grant_generation=invalid\n');
+    const malformed = execFileSync('/bin/bash', [resolve(guestDir, 'status.sh')], {
+      env: { ...process.env, CIRUJANO_TEST_MODE: '1', CIRUJANO_STATE_DIR: state }, encoding: 'utf8',
+    });
+    expect(JSON.parse(malformed)).toMatchObject({ complete: false, status: 'unknown', grant: null });
+  });
+
   it('persists an immutable grant, rejects extension, and permits exactly the confirmed next generation', () => {
     const state = mkdtempSync(resolve(tmpdir(), 'cirujano-grant-'));
     const arm = resolve(guestDir, 'arm-grant.sh');
