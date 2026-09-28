@@ -88,6 +88,25 @@ bounds in D3 remain unchanged. Enrollment and workflow cutover still require
 their own compatibility and exact-run verification; public repositories remain
 telemetry-only because their standard hosted minutes have no list cost.
 
+### Budget decision update (2026-09-28)
+
+The owner authorized more spending to complete the experiment across the fleet.
+The fleet permit ceiling is now USD 440 through 2026-10-28, leaving room for
+three additional USD 40 permits beyond the eight currently active (USD 315.14
+committed as of this update). The USD 40 per-permit maximum, runtime and start
+limits, and expiry remain unchanged. This is a liability ceiling for future
+permits, not actual spending or evidence of savings. Each additional workflow
+still needs a recent provider quote, compatibility check, and exact-run proof.
+
+The owner's goal includes public repositories. The current repository-level
+self-hosted runner cannot safely serve them: GitHub can assign an untrusted
+fork job to a registered runner regardless of the controller's queue filter.
+Public enrollment remains blocked until an execution boundary prevents that
+assignment. GitHub's standard hosted minutes for public repositories are free;
+their migration would measure coverage or performance, not reduce billed
+Actions minutes. The public-scope decision is therefore reopened for a safe
+design, while the current guard remains in force.
+
 ## Baseline and evidence
 
 - Telemetry contract and credit rule: `packages/cli/src/telemetry.ts:6-21`
