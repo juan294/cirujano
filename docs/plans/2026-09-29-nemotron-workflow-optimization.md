@@ -109,6 +109,8 @@ A supported patch with no measured benefit ends `no-improvement`, retains eviden
 
 Phase execution and acceptance are sequential. Independent units are identified in phase files; shared dispatch/export/package changes belong to one integration owner. `[batch-eligible]` never means remote branch publication. Every phase follows TDD, independent review, repair, simplify and sequential verification. Do not advance with unresolved review findings.
 
+Current local acceptance: Phase 1 at `23a8cf7145a060fbbba0641e5de104e11f82ac27`; Phase 2 at `0d3d7023ab0daa766e5450e57a260033de19b41c`. Both passed all parent gates. Phases 3-6 remain pending. The companion notes retain exact evidence and unresolved live proof.
+
 ## Required local gates
 
 Run every phase's focused tests first, then all of: `pnpm run typecheck`, `pnpm run lint`, `pnpm run test`, `pnpm run test:coverage`, `pnpm run build`, `node scripts/verify-bundle.mjs`, and `git diff --check`, sequentially with aggregated exit statuses. Stage/commit the rebuilt Action bundle with source before the parity check when it changed; never weaken the check to ignore a stale bundle. Capture source SHA and any uncommitted diff digest, command, exit and log path. Do not run gates that require an external permit as though they were local checks. Existing runner boot/provider code is untouched; any discovery requiring that scope adds its applicable boot/schema gates before implementation.
