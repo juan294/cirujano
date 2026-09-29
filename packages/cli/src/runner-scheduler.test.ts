@@ -17,9 +17,10 @@ describe('operating controller launch agent (phase 2 U3)', () => {
     expect(template).toContain('<key>RunAtLoad</key>');
     expect(template).toContain('<key>ThrottleInterval</key>');
     expect(template).toContain('<integer>63</integer>');
-    for (const placeholder of ['__ENROLLMENT_ID__', '__WRAPPER_PATH__', '__CLI_PATH__', '__STATE_DIR__', '__GUEST_DIR__', '__CONTROLLER_KEY_PATH__', '__LOG_DIR__']) {
+    for (const placeholder of ['__ENROLLMENT_ID__', '__WRAPPER_PATH__', '__CLI_PATH__', '__NODE_PATH__', '__STATE_DIR__', '__GUEST_DIR__', '__CONTROLLER_KEY_PATH__', '__LOG_DIR__']) {
       expect(template).toContain(placeholder);
     }
+    expect(template).toContain('<key>ProcessType</key>\n  <string>Standard</string>');
     expect(template).not.toMatch(/GITHUB_TOKEN|NEBIUS_API_KEY|ghp_|github_pat_|PRIVATE KEY/u);
   });
 
@@ -43,6 +44,7 @@ describe('operating controller launch agent (phase 2 U3)', () => {
     const plist = await readFile(resolve(fixture.home, 'Library/LaunchAgents/com.thecreativetoken.cirujano-runner-P1.plist'), 'utf8');
     expect(plist).toContain('<string>com.thecreativetoken.cirujano-runner-P1</string>');
     expect(plist).toContain(`<string>${fixture.stateDir}</string>`);
+    expect(plist).toContain(`<key>CIRUJANO_NODE_PATH</key>\n    <string>${process.execPath}</string>`);
     expect(plist).not.toMatch(/__[A-Z_]+__/u);
     expect((await stat(resolve(fixture.home, '.local/lib/cirujano/runner'))).mode & 0o777).toBe(0o700);
     expect((await stat(resolve(fixture.stateDir, 'actions-runner.env'))).mode & 0o777).toBe(0o600);
@@ -57,6 +59,15 @@ describe('operating controller launch agent (phase 2 U3)', () => {
     expect(removal.stdout).toMatch(/removed agent com\.thecreativetoken\.cirujano-runner-P1/u);
     await expect(stat(resolve(fixture.home, 'Library/LaunchAgents/com.thecreativetoken.cirujano-runner-P1.plist'))).rejects.toThrow();
     await expect(stat(resolve(fixture.stateDir, 'config.json'))).resolves.toBeDefined();
+  });
+
+  macIt('retries a transient launchd bootstrap failure after bootout', async () => {
+    const fixture = await installerFixture();
+    const result = await execFile(resolve(root, 'scripts/install-runner-agent.sh'), ['P1'], {
+      env: { ...fixture.env, FAKE_BOOTSTRAP_FAIL_ONCE: '1' }, timeout: 15_000,
+    });
+    expect(result.stdout).toMatch(/verified first dry-run tick for P1/u);
+    expect(await readFile(resolve(fixture.home, 'bootstraps'), 'utf8')).toBe('2\n');
   });
 
   macIt.each([
@@ -112,6 +123,7 @@ case "$1" in
   bootstrap)
     count="$(cat "$HOME/bootstraps" 2>/dev/null || echo 0)"
     echo "$((count + 1))" > "$HOME/bootstraps"
+    if [ "\${FAKE_BOOTSTRAP_FAIL_ONCE:-0}" = 1 ] && [ "$count" = 0 ]; then exit 5; fi
     (
       if [ "\${FAKE_HANG:-0}" = 1 ]; then sleep 5; status=0
       elif [ "\${FAKE_LAUNCH_EXIT:-0}" = 1 ]; then status=1
@@ -145,6 +157,7 @@ esac
       ...process.env,
       HOME: home,
       CIRUJANO_SOURCE_CLI_PATH: mockCli,
+      CIRUJANO_NODE_PATH: process.execPath,
       CIRUJANO_SOURCE_GUEST_DIR: guestSource,
       CIRUJANO_LAUNCHCTL_PATH: fakeLaunchctl,
       CIRUJANO_INSTALL_POLL_SECONDS: '0.05',

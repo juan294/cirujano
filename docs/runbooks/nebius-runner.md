@@ -176,6 +176,12 @@ cirujano fleet permit-proposal --registry "$REGISTRY" --id P1 \
   --quote <quote.json>
 ```
 
+The installer records the current Node executable in the launch agent so a
+non-interactive launch uses the same runtime. Set `CIRUJANO_NODE_PATH` to an
+absolute executable path when installing if a different Node is required.
+The controller uses launchd's Standard process type so its polls receive
+normal scheduling priority.
+
 The template supplies the Nebius project, subnet, image and dated rates; the
 generator refuses anything but the pilot preset. `permit-proposal` binds the
 proposal to the installed bundle digest and the config hash, applies the D3

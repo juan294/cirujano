@@ -14,6 +14,8 @@
     <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
     <key>CIRUJANO_CLI_PATH</key>
     <string>__CLI_PATH__</string>
+    <key>CIRUJANO_NODE_PATH</key>
+    <string>__NODE_PATH__</string>
     <key>CIRUJANO_RUNNER_STATE_DIR</key>
     <string>__STATE_DIR__</string>
     <key>CIRUJANO_GUEST_DIR</key>
@@ -34,6 +36,6 @@
   <key>StandardErrorPath</key>
   <string>__LOG_DIR__/runner-__ENROLLMENT_ID__-error.log</string>
   <key>ProcessType</key>
-  <string>Background</string>
+  <string>Standard</string>
 </dict>
 </plist>

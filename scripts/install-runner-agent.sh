@@ -41,6 +41,7 @@ SOURCE_CLI_PATH="${CIRUJANO_SOURCE_CLI_PATH:-}"
 SOURCE_GUEST_DIR="${CIRUJANO_SOURCE_GUEST_DIR:-$REPO_ROOT/packages/runner/guest}"
 LAUNCHCTL_PATH="${CIRUJANO_LAUNCHCTL_PATH:-/bin/launchctl}"
 SSH_KEYGEN_PATH="${CIRUJANO_SSH_KEYGEN_PATH:-/usr/bin/ssh-keygen}"
+NODE_PATH="${CIRUJANO_NODE_PATH:-$(command -v node)}"
 WAIT_SECONDS="${CIRUJANO_INSTALL_WAIT_SECONDS:-300}"
 POLL_SECONDS="${CIRUJANO_INSTALL_POLL_SECONDS:-5}"
 RUNNER_VERSION="${CIRUJANO_ACTIONS_RUNNER_VERSION:-2.337.0}"
@@ -61,6 +62,10 @@ for required in "$STATE_DIR/config.json" "$STATE_DIR/ssh_host_ed25519_key"; do
 done
 if [ ! -d "$SOURCE_GUEST_DIR" ]; then
   echo "runner: guest helper source directory is missing: $SOURCE_GUEST_DIR" >&2
+  exit 1
+fi
+if [ ! -x "$NODE_PATH" ]; then
+  echo "runner: Node executable is missing or not executable: $NODE_PATH" >&2
   exit 1
 fi
 
@@ -114,6 +119,7 @@ sed \
   -e "s|__ENROLLMENT_ID__|$ENROLLMENT_ID|g" \
   -e "s|__WRAPPER_PATH__|$(escape "$WRAPPER")|g" \
   -e "s|__CLI_PATH__|$(escape "$CLI_PATH")|g" \
+  -e "s|__NODE_PATH__|$(escape "$NODE_PATH")|g" \
   -e "s|__STATE_DIR__|$(escape "$STATE_DIR")|g" \
   -e "s|__GUEST_DIR__|$(escape "$GUEST_DIR")|g" \
   -e "s|__CONTROLLER_KEY_PATH__|$(escape "$CONTROLLER_KEY_PATH")|g" \
@@ -129,7 +135,20 @@ mv "$WRAPPER_TEMP" "$WRAPPER"
 rm -rf "$GUEST_DIR"
 mv "$GUEST_TEMP" "$GUEST_DIR"
 mv "$RELEASE_TEMP" "$STATE_DIR/actions-runner.env"
-"$LAUNCHCTL_PATH" bootstrap "$DOMAIN" "$TARGET"
+# launchd can keep the old service teardown in flight briefly after bootout.
+# Retry only the idempotent bootstrap, before waiting for the first controller tick.
+BOOTSTRAPPED=0
+for attempt in 1 2 3 4 5; do
+  if "$LAUNCHCTL_PATH" bootstrap "$DOMAIN" "$TARGET"; then
+    BOOTSTRAPPED=1
+    break
+  fi
+  if [ "$attempt" -lt 5 ]; then sleep 2; fi
+done
+if [ "$BOOTSTRAPPED" != 1 ]; then
+  echo "runner: launchd bootstrap failed after five attempts" >&2
+  exit 1
+fi
 
 # The first tick writes a redacted event; a controller that exits before then failed to start.
 EVENTS_PATH="$STATE_DIR/events.jsonl"
