@@ -227,8 +227,13 @@ removes the offline runner registration, emits `delete-vm` under the permit's
 reconciles the absence, and creates a fresh generation on the next eligible
 demand once a renewed active permit authorizes it; start count and accounting
 continue monotonically.
-A stop before the deadline still blocks and stays manual (quarantine or a
-provider fault).
+If a VM stops before its first start reconciles, the controller waits until the
+boot window ends. With a terminal provider start operation, complete idle
+GitHub and guest observations, and cleanup authority, it journals a delete,
+reconciles VM absence, then creates a fresh generation for eligible demand.
+An incomplete provider operation or GitHub observation leaves the start pending.
+After a start reconciles, a stop before its grant deadline still blocks and
+stays manual (quarantine or a provider fault).
 
 Stop and remove an agent:
 
