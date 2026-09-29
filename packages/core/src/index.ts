@@ -61,3 +61,5 @@ export type {
 } from './optimization/contracts.js';
 export { inspectWorkflow, parseWorkflowSource, protectedWorkflowDigest } from './optimization/workflow.js';
 export type { WorkflowEligibility, WorkflowEvidence } from './optimization/workflow.js';
+export { createPnpmCachePatch, validateCacheOnlyChange } from './optimization/patch.js';
+export type { PnpmCachePatch, WorkflowInspectionOptions } from './optimization/patch.js';

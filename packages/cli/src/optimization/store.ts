@@ -48,7 +48,7 @@ export function scrubOptimizationValue(value: unknown, secrets: readonly string[
   return scrub(value);
 }
 
-export async function readPrivateJson(path: string, maximumBytes = 1024 * 1024): Promise<unknown> {
+export async function readPrivateBytes(path: string, maximumBytes = 1024 * 1024): Promise<Buffer> {
   if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 1 || maximumBytes > 32 * 1024 * 1024) throw new Error('optimization-size: invalid read bound');
   await guardPath(path);
   const handle = await open(resolve(path), constants.O_RDONLY | constants.O_NOFOLLOW);
@@ -63,8 +63,15 @@ export async function readPrivateJson(path: string, maximumBytes = 1024 * 1024):
       offset += result.bytesRead;
     }
     if (offset > maximumBytes) throw new Error('optimization-size: artifact exceeds read bound');
-    return parseStrictJson(new TextDecoder('utf8', { fatal: true }).decode(buffer.subarray(0, offset)), maximumBytes);
+    return buffer.subarray(0, offset);
   } finally { await handle.close(); }
+}
+
+export async function readPrivateText(path: string, maximumBytes = 256 * 1024): Promise<string> {
+  return new TextDecoder('utf8', { fatal: true }).decode(await readPrivateBytes(path, maximumBytes));
+}
+export async function readPrivateJson(path: string, maximumBytes = 1024 * 1024): Promise<unknown> {
+  return parseStrictJson(await readPrivateText(path, maximumBytes), maximumBytes);
 }
 
 export async function readOptimizationArtifact<K extends ArtifactKind>(kind: K, path: string): Promise<ArtifactMap[K]> {

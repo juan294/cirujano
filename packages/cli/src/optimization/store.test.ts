@@ -2,13 +2,17 @@ import { mkdtemp, readFile, stat, symlink, writeFile, rm } from 'node:fs/promise
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { withOperationStore, readPrivateJson, consumePermit, scrubOptimizationValue } from './store.js';
+import { withOperationStore, readPrivateBytes, readPrivateText, readPrivateJson, consumePermit, scrubOptimizationValue } from './store.js';
 
 const directories: string[] = [];
 async function temporary() { const value = await mkdtemp(join(tmpdir(), 'cirujano-optimizer-store-')); directories.push(value); return value; }
 afterEach(async () => { for (const path of directories.splice(0)) await rm(path, { recursive: true, force: true }); });
 
 describe('private optimization stage persistence', () => {
+  it('preserves exact patch bytes and refuses invalid UTF-8 text',async()=>{
+    const root=await temporary(),path=join(root,'candidate.yml');await writeFile(path,'name: exact\r\n');expect(await readPrivateText(path)).toBe('name: exact\r\n');
+    await writeFile(path,Buffer.from([255]));expect(await readPrivateBytes(path)).toEqual(Buffer.from([255]));await expect(readPrivateText(path)).rejects.toThrow();
+  });
   it('writes complete atomic files with private modes and rereads strict JSON', async () => {
     const path = join(await temporary(), 'operation');
     await withOperationStore(path, async store => { await store.writeJson('intent.json', { schemaVersion: 1, status: 'intent' }); });

@@ -187,5 +187,20 @@
       "providerCalls": 0
     }
   ],
-  "fixtureIdentity": "synthetic public evaluation; checkout and pnpm SHAs are placeholders, never live authority"
+  "fixtureIdentity": "synthetic public evaluation; checkout and pnpm SHAs are placeholders, never live authority",
+  "provenance": {
+    "repositoryId": 123,
+    "repository": "public-example/benchmark",
+    "baseSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "workflowBlobSha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "workflowPath": ".github/workflows/ci.yml",
+    "workflowHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "jobId": "test",
+    "stepIndex": 2,
+    "lockfileHash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "sourceTreeDigest": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "verificationProfileHash": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+    "toolSourceSha": "1111111111111111111111111111111111111111",
+    "bundleDigest": "2222222222222222222222222222222222222222222222222222222222222222"
+  }
 }

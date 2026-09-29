@@ -37,7 +37,7 @@ const artifacts:ArtifactMap={
   input,
   diagnosis:{schemaVersion:1,kind:'diagnosis',provenance,status:'proposal',reason:'cache install',uncertainty:'sample only',evidenceIds:['install:1'],operation:input.operations[0]!,promptVersion:'1',schemaVersionId:'1',inferenceReceiptDigest:'3'.repeat(64)},
   inference:{schemaVersion:1,kind:'inference',provenance,requestedModel:'nvidia/nvidia-nemotron-3-nano-30b-a3b',returnedModel:'nvidia/nvidia-nemotron-3-nano-30b-a3b',endpointHost:'api.tokenfactory.nebius.com',completionId:'completion-1',requestHash:'1'.repeat(64),responseHash:'2'.repeat(64),startedAt:timestamp,completedAt:timestamp,latencyMs:0,finishReason:'stop',usage:{promptTokens:2,completionTokens:3,totalTokens:5},quoteIdentity:null,costStatus:'unavailable',cost:null,status:'completed'},
-  proposal:{schemaVersion:1,kind:'proposal',provenance,...candidate,status:'proposed',operation:input.operations[0]!,beforeStructuralDigest:'1'.repeat(64),afterStructuralDigest:'1'.repeat(64),permittedDiff:{cache:'pnpm',cacheDependencyPath:'pnpm-lock.yaml'},preconditions:['root lockfile'],verificationProfile:profile,diagnosisDigest:'2'.repeat(64)},
+  proposal:{schemaVersion:1,kind:'proposal',provenance,...candidate,candidateWorkflowHash:'6'.repeat(64),status:'proposed',operation:input.operations[0]!,beforeStructuralDigest:'1'.repeat(64),afterStructuralDigest:'1'.repeat(64),permittedDiff:{cache:'pnpm',cacheDependencyPath:'pnpm-lock.yaml'},preconditions:['root lockfile'],verificationProfile:profile,diagnosisDigest:'2'.repeat(64)},
   sandbox:{schemaVersion:1,kind:'sandbox',provenance,...candidate,proposalDigest:'1'.repeat(64),status:'sandbox-verified',image:{uuid:'01234567-89ab-cdef-0123-456789abcdef',digest:'1'.repeat(64),recipeHash:'2'.repeat(64),manifestHash:'3'.repeat(64)},operations:[{id:'base-1',status:'SUCCESS',role:'base',exitCode:0,signal:null,timedOut:false,truncated:false},{id:'candidate-1',status:'SUCCESS',role:'candidate',exitCode:0,signal:null,timedOut:false,truncated:false}],networkEnabled:false,baseQuality:quality,candidateQuality:quality,startedAt:timestamp,completedAt:timestamp,elapsedMs:0,usage:null,truncated:false,cleanupState:'disposable-confirmed',retainedImage:true},
   measurement:{schemaVersion:1,kind:'measurement',provenance,...candidate,proposalDigest:'1'.repeat(64),sandboxDigest:'2'.repeat(64),cohortDigest:'3'.repeat(64),status:'no-improvement',samples:[],baselineMinutes:0,candidateMinutes:0,baselineMedianMs:0,candidateMedianMs:0,maximumQueueMs:0,maximumEndToEndMs:0,limits:['no live samples'],claimLevel:'none',githubListSavingUsd:0},
   report:{schemaVersion:1,kind:'report',provenance,...candidate,proposalDigest:'1'.repeat(64),sandboxDigest:'2'.repeat(64),measurementDigest:'3'.repeat(64),status:'no-improvement',markdown:'No improvement',markdownHash:sha256('No improvement'),marker:'cirujano-1',baseRef:'develop',headRef:'candidate'},
@@ -80,6 +80,10 @@ describe('all-stage decoders and recovery boundaries',()=>{
 });
 
 describe('reviewed immutable success requirements',()=>{
+  it('binds proposed candidate workflow bytes before a commit exists',()=>{
+    expect(decodeArtifact('proposal',{...artifacts.proposal,candidateWorkflowHash:'6'.repeat(64)})).toHaveProperty('candidateWorkflowHash');
+    expect(()=>decodeArtifact('proposal',{...artifacts.proposal,candidateWorkflowHash:'bad'})).toThrow();
+  });
   it('requires timed baselines, checks and exactly the provenance-bound operation for collected inputs',()=>{
     expect(()=>decodeArtifact('input',{...input,baselines:[]})).toThrow();
     expect(()=>decodeArtifact('input',{...input,requiredChecks:[]})).toThrow();

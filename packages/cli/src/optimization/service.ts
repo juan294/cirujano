@@ -3,15 +3,18 @@ import { readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import { assertSameProvenance, canonicalJson, decodeActionReceipt, decodeSourceManifest, decodeVerificationProfile, inspectWorkflow, jsonDigest, parseStrictJson, sha256, validateDiagnosisEvidence, type InputArtifact, type SourceManifest, type ActionReceipt } from '@cirujano/core';
+import { canonicalJson, jsonDigest, sha256 } from '@cirujano/core';
 import type { CliIo } from '../cli.js';
 import type { GitHubPageRunner } from '../github-api.js';
 import type { OptimizeArguments } from './arguments.js';
 export type { OptimizeArguments } from './arguments.js';
+import { readRetainedOptimizationContext, RetainedInputError } from './input-context.js';
+export { readRetainedOptimizationInput } from './input-context.js';
 import { collectGitHubInput } from './github-read.js';
+import { runPropose, readProposalStatus, readDiagnosisContext } from './propose.js';
 import { diagnoseOptimization, decodeInferencePreview } from './diagnose.js';
 import { decodeInferenceConfig, type InferenceIntent } from './nebius.js';
-import { consumePermit, readOptimizationArtifact, readPrivateJson, scrubOptimizationValue, withOperationStore } from './store.js';
+import { consumePermit, readPrivateJson, scrubOptimizationValue, withOperationStore } from './store.js';
 
 declare const CIRUJANO_TOOL_SOURCE_SHA: string | undefined;
 export interface OptimizationService { run(args: OptimizeArguments, io: CliIo): Promise<0 | 1 | 2> }
@@ -32,29 +35,6 @@ async function moduleSourceIdentity(): Promise<{ toolSourceSha: string; bundleDi
   const toolSourceSha = typeof CIRUJANO_TOOL_SOURCE_SHA !== 'undefined' && CIRUJANO_TOOL_SOURCE_SHA ? CIRUJANO_TOOL_SOURCE_SHA : (await promisify(execFileCallback)('git', ['-C', dirname(path), 'rev-parse', 'HEAD'], { encoding: 'utf8', timeout: 10000, maxBuffer: 1024 })).stdout.trim();
   return { toolSourceSha, bundleDigest: sha256(await readFile(path)) };
 }
-interface CollectionReceipt { schemaVersion: 1; kind: 'collection-receipt'; inputDigest: string; sourceManifestDigest: string; actionReceiptDigest: string }
-function decodeCollectionReceipt(value: unknown): CollectionReceipt {
-  canonicalJson(value); if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('collection-receipt-invalid');
-  const receipt = value as CollectionReceipt;
-  if (Object.keys(receipt).sort().join(',') !== ['schemaVersion', 'kind', 'inputDigest', 'sourceManifestDigest', 'actionReceiptDigest'].sort().join(',') || receipt.schemaVersion !== 1 || receipt.kind !== 'collection-receipt' || ![receipt.inputDigest, receipt.sourceManifestDigest, receipt.actionReceiptDigest].every(digest => typeof digest === 'string' && /^[a-f0-9]{64}$/.test(digest))) throw new Error('collection-receipt-invalid'); return receipt;
-}
-async function retainedInput(inputPath: string): Promise<{ input: InputArtifact; source: SourceManifest; receipt: ActionReceipt; collectionReceipt: CollectionReceipt }> {
-  try {
-    const input = await readOptimizationArtifact('input', inputPath), directory = dirname(inputPath);
-    const source = decodeSourceManifest(await readPrivateJson(join(directory, 'source.json'), 32 * 1024 * 1024)); assertSameProvenance(input.provenance, source.provenance);
-    const receipt = decodeActionReceipt(await readPrivateJson(join(directory, 'action-receipt.json')));
-    const collectionReceipt = decodeCollectionReceipt(await readPrivateJson(join(directory, 'collection-receipt.json')));
-    if (collectionReceipt.inputDigest !== jsonDigest(input) || collectionReceipt.sourceManifestDigest !== jsonDigest(source) || collectionReceipt.actionReceiptDigest !== jsonDigest(receipt)) throw new Error('collection receipt drift');
-    const profileFile = source.files.find(file => file.path === source.profilePath)!, workflow = source.files.find(file => file.path === input.provenance.workflowPath)!;
-    const profile = decodeVerificationProfile(parseStrictJson(Buffer.from(profileFile.bytesBase64, 'base64').toString('utf8')));
-    const eligibility = inspectWorkflow(Buffer.from(workflow.bytesBase64, 'base64').toString('utf8'), { provenance: input.provenance, receipt, rootLockfile: source.files.some(file => file.path === 'pnpm-lock.yaml'), timedBaseline: input.baselines.length > 0, requiredChecks: input.requiredChecks, verificationProfilePresent: true });
-    const expectedStatus = eligibility.status === 'eligible' ? 'collected' : eligibility.status;
-    if (input.status !== expectedStatus || canonicalJson(input.operations) !== canonicalJson(eligibility.operations) || Object.entries(eligibility.structuralFacts).some(([key, value]) => input.structuralFacts[key] !== value) || input.structuralFacts.reasonCode !== eligibility.reason || input.structuralFacts.actionReceiptDigest !== jsonDigest(receipt) || input.evidence['setup-node-receipt'] !== canonicalJson(receipt)) throw new Error('retained policy drift');
-    if (eligibility.status === 'eligible' && (profile.nodeVersion !== eligibility.structuralFacts.nodeVersion || profile.pnpmVersion !== eligibility.structuralFacts.pnpmVersion)) throw new Error('profile runtime drift');
-    return { input, source, receipt, collectionReceipt };
-  } catch { throw new ServiceError('retained-input-invalid'); }
-}
-export async function readRetainedOptimizationInput(inputPath: string): Promise<InputArtifact> { return (await retainedInput(inputPath)).input; }
 
 /** Commands retain private local state; all outward effects require typed permits. */
 export function createOptimizationService(options: OptimizationServiceOptions = {}): OptimizationService {
@@ -64,6 +44,7 @@ export function createOptimizationService(options: OptimizationServiceOptions = 
     io = { stdout: text => originalIo.stdout(String(scrubOptimizationValue(text, secrets))), stderr: text => originalIo.stderr(String(scrubOptimizationValue(text, secrets))) };
     const statusCommand = `cirujano optimize status --operation ${shellQuote(typeof args.flags.output === 'string' ? args.flags.output : typeof args.flags.operation === 'string' ? args.flags.operation : '<operation>')} --format ${args.format}`;
     try {
+      if (args.action === 'propose') return await runPropose(args, io);
       if (args.action === 'collect') {
         const output = flag(args, 'output'); const rawRuns = args.flags.run;
         if (!Array.isArray(rawRuns) || rawRuns.some(run => !/^[1-9]\d*$/.test(run))) throw new ServiceError('optimization-invalid-arguments', 2);
@@ -80,7 +61,7 @@ export function createOptimizationService(options: OptimizationServiceOptions = 
         }); return 0;
       }
       if (args.action === 'diagnose') {
-        const { input, source, receipt, collectionReceipt } = await retainedInput(flag(args, 'input')), output = flag(args, 'output');
+        const { input, source, receipt, collectionReceipt } = await readRetainedOptimizationContext(flag(args, 'input')), output = flag(args, 'output');
         let config: unknown;
         try { config = decodeInferenceConfig(await readPrivateJson(flag(args, 'config'))); } catch { throw new ServiceError('invalid-inference-config', 2); }
         const permitPath = optionalFlag(args, 'permit'); const permit = permitPath ? await readPrivateJson(permitPath) : undefined;
@@ -103,7 +84,7 @@ export function createOptimizationService(options: OptimizationServiceOptions = 
             if (canonicalJson(scrubOptimizationValue(result.diagnosis, secrets)) !== canonicalJson(result.diagnosis)) throw new ServiceError('diagnosis-scrubbed');
             await store.writeArtifact('diagnosis', result.diagnosis, secrets);
           }
-          if (recordedIntent) await store.writeJson('intent.json', { ...recordedIntent, status: result.status, reasonCode: result.reasonCode, inferenceReceiptDigest: result.inference ? jsonDigest(result.inference) : null }, { replaceIntent: true });
+          if (recordedIntent) await store.writeJson('intent.json', { ...recordedIntent, status: result.status, reasonCode: result.reasonCode, inferenceReceiptDigest: result.inference ? jsonDigest(result.inference) : null, diagnosisDigest: result.diagnosis ? jsonDigest(result.diagnosis) : null }, { replaceIntent: true });
           const state: OperationState = { schemaVersion: 1, kind: 'optimization-operation', action: 'diagnose', status: result.status, reasonCode: result.reasonCode, nextCommand: result.nextCommand, inputDigest: jsonDigest(input) };
           await store.writeJson('operation.json', state); emit(args, io, state.status, state.reasonCode, state.nextCommand);
           return ['failed', 'outcome-unknown', 'unsupported'].includes(result.status) ? 1 : 0;
@@ -111,11 +92,19 @@ export function createOptimizationService(options: OptimizationServiceOptions = 
       }
       if (args.action === 'status') {
         const directory = flag(args, 'operation'), intent = await optionalJson(join(directory, 'intent.json')), raw = await optionalJson(join(directory, 'operation.json'));
-        if (raw === null) { emit(args, io, intent === null ? 'failed' : 'outcome-unknown', intent === null ? 'operation-not-found' : 'incomplete-inference-intent', statusCommand); return 1; }
+        if (raw === null) {
+          const local = await optionalJson(join(directory,'local-stage.json'));
+          if(local !== null && intent === null) {
+            if(!local || typeof local!=='object' || Array.isArray(local) || canonicalJson(Object.keys(local).sort())!==canonicalJson(['schemaVersion','kind','status','inputDigest'].sort()) || (local as {schemaVersion?:unknown}).schemaVersion!==1 || (local as {kind?:unknown}).kind!=='proposal-stage' || (local as {status?:unknown}).status!=='local-only' || typeof (local as {inputDigest?:unknown}).inputDigest!=='string' || !/^[a-f0-9]{64}$/.test(String((local as {inputDigest?:unknown}).inputDigest))) throw new ServiceError('operation-state-invalid');
+            emit(args,io,'failed','interrupted-local-proposal','cirujano --help');return 1;
+          }
+          emit(args, io, intent === null ? 'failed' : 'outcome-unknown', intent === null ? 'operation-not-found' : 'incomplete-inference-intent', statusCommand); return 1;
+        }
         if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new ServiceError('operation-state-invalid');
+        if ((raw as {action?:unknown}).action === 'propose') { const state = await readProposalStatus(directory); emit(args,io,state.status,state.reasonCode,state.nextCommand); return 0; }
         const state = raw as OperationState;
         if (state.schemaVersion !== 1 || state.kind !== 'optimization-operation' || Object.keys(state).sort().join(',') !== ['action', 'inputDigest', 'kind', 'nextCommand', 'reasonCode', 'schemaVersion', 'status'].sort().join(',') || !['collect', 'diagnose'].includes(state.action) || !['collected', 'not-run', 'proposal', 'abstain', 'failed', 'outcome-unknown', 'no-change', 'unsupported'].includes(state.status) || typeof state.reasonCode !== 'string' || !/^[a-z][a-z0-9-]{0,100}$/.test(state.reasonCode) || typeof state.nextCommand !== 'string' || (state.nextCommand !== 'cirujano --help' && !state.nextCommand.startsWith('cirujano optimize ')) || state.nextCommand.length > 4096 || /[\u0000-\u001f\u007f]/.test(state.nextCommand) || (state.inputDigest !== null && !/^[a-f0-9]{64}$/.test(state.inputDigest))) throw new ServiceError('operation-state-invalid');
-        const { input } = await retainedInput(join(directory, 'input.json'));
+        const { input } = await readRetainedOptimizationContext(join(directory, 'input.json'));
         if (jsonDigest(input) !== state.inputDigest || (state.action === 'collect' && state.status !== input.status)) throw new ServiceError('operation-state-invalid');
         if ((state.status === 'no-change' && input.status !== 'no-change') || (state.status === 'unsupported' && input.status !== 'unsupported')) throw new ServiceError('operation-state-invalid');
         if (state.status === 'not-run') {
@@ -124,15 +113,14 @@ export function createOptimizationService(options: OptimizationServiceOptions = 
           if (preview.inputDigest !== state.inputDigest || !expected.preview || canonicalJson(preview) !== canonicalJson(expected.preview)) throw new ServiceError('operation-state-invalid');
         }
         if (state.status === 'proposal' || state.status === 'abstain') {
-          const inference = await readOptimizationArtifact('inference', join(directory, 'inference.json')), diagnosis = await readOptimizationArtifact('diagnosis', join(directory, 'diagnosis.json')); assertSameProvenance(inference.provenance, diagnosis.provenance);
-          assertSameProvenance(inference.provenance, input.provenance); validateDiagnosisEvidence(diagnosis, input);
-          if (diagnosis.inferenceReceiptDigest !== jsonDigest(inference) || diagnosis.status !== state.status || inference.status !== 'completed') throw new ServiceError('operation-state-invalid');
+          const diagnosisContext=await readDiagnosisContext(join(directory,'input.json'),join(directory,'diagnosis.json'));
+          if(diagnosisContext.diagnosis.status!==state.status) throw new ServiceError('operation-state-invalid');
         }
         emit(args, io, state.status, state.reasonCode, state.nextCommand); return ['failed', 'outcome-unknown', 'unsupported'].includes(state.status) ? 1 : 0;
       }
       emit(args, io, 'failed', 'optimize-stage-unavailable', 'cirujano --help'); return 1;
     } catch (error) {
-      const reasonCode = error instanceof ServiceError ? error.reasonCode : error instanceof Error && /^(?:permit-exhausted|optimization-symlink|artifact-exists|controller-lock)/.test(error.message) ? error.message.split(':')[0]! : 'optimization-operation-failed';
+      const reasonCode = error instanceof RetainedInputError ? 'retained-input-invalid' : error instanceof ServiceError ? error.reasonCode : error instanceof Error && /^(?:permit-exhausted|optimization-symlink|artifact-exists|controller-lock)/.test(error.message) ? error.message.split(':')[0]! : 'optimization-operation-failed';
       emit(args, io, 'failed', reasonCode, statusCommand); return error instanceof ServiceError ? error.code : 1;
     }
   } };
