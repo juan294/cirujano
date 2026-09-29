@@ -18,6 +18,8 @@ function parse(source:string): Record<string,unknown> {
   });
   return record(document.toJS({maxAliasCount:0}));
 }
+/** All collection and patch consumers use the same strict YAML interpretation. */
+export function parseWorkflowSource(source:string):Record<string,unknown> { return parse(source); }
 export function protectedWorkflowDigest(source:string,jobId:string,stepIndex:number):string {
   const workflow=parse(source); const job=record(record(workflow.jobs)[jobId]);
   if (!Array.isArray(job.steps) || !job.steps[stepIndex]) throw new OptimizationInputError('Missing selected workflow step');

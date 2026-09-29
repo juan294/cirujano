@@ -23,8 +23,9 @@ export function canonicalJson(value: unknown, depth = 0): string {
 }
 
 /** JSON.parse loses duplicate keys; this grammar validates every key before decoding. */
-export function parseStrictJson(text: string): unknown {
-  if (Buffer.byteLength(text, 'utf8') > 32 * 1024 * 1024) throw new OptimizationInputError('JSON exceeds 32 MiB');
+export function parseStrictJson(text: string, maximumBytes = 1024 * 1024): unknown {
+  if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 1 || maximumBytes > 32 * 1024 * 1024) throw new OptimizationInputError('Invalid JSON byte bound');
+  if (Buffer.byteLength(text, 'utf8') > maximumBytes) throw new OptimizationInputError('JSON exceeds byte bound');
   let cursor = 0;
   function whitespace() { while (/\s/.test(text[cursor] ?? '') && cursor < text.length) cursor++; }
   function string(): string {

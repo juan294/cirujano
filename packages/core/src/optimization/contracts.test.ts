@@ -80,6 +80,14 @@ describe('all-stage decoders and recovery boundaries',()=>{
 });
 
 describe('reviewed immutable success requirements',()=>{
+  it('requires timed baselines, checks and exactly the provenance-bound operation for collected inputs',()=>{
+    expect(()=>decodeArtifact('input',{...input,baselines:[]})).toThrow();
+    expect(()=>decodeArtifact('input',{...input,requiredChecks:[]})).toThrow();
+    expect(()=>decodeArtifact('input',{...input,operations:[]})).toThrow();
+    expect(()=>decodeArtifact('input',{...input,operations:[{...input.operations[0],jobId:'other'}]})).toThrow();
+    expect(()=>decodeArtifact('input',{...input,baselines:[{...baseline,requiredChecks:[]}]})).toThrow();
+    expect(decodeArtifact('input',{...input,status:'unsupported',operations:[],baselines:[]}).status).toBe('unsupported');
+  });
   it('permits an uncommitted proposal and rejects invented downstream candidate identity',()=>{
     expect(decodeArtifact('proposal',{...artifacts.proposal,candidateSha:null}).candidateSha).toBeNull();
     expect(()=>decodeArtifact('sandbox',{...artifacts.sandbox,candidateSha:null})).toThrow();
@@ -132,4 +140,7 @@ it('supports bounded real source bytes and rejects forged Git blobs and credenti
   expect(decodeSourceManifest(value).files[1]?.bytesBase64.length).toBeGreaterThan(8192);
   expect(()=>decodeSourceManifest({...value,provenance:{...value.provenance,workflowBlobSha:'f'.repeat(40)}})).toThrow();
   expect(()=>decodeSourceManifest({...value,files:[...files,{path:'.env',mode:'100644',hash:sha256('a'),bytesBase64:'YQ=='}]})).toThrow();
+  const forbidden=[...files,{path:'.git/config',mode:'100644',hash:sha256('a'),bytesBase64:'YQ=='}];
+  const forbiddenTree=forbidden.filter(file=>file.path!==provenance.workflowPath).map(({path,mode,hash})=>({path,mode,hash})).sort((a,b)=>a.path<b.path?-1:a.path>b.path?1:0);
+  expect(()=>decodeSourceManifest({...value,provenance:{...value.provenance,sourceTreeDigest:jsonDigest(forbiddenTree)},files:forbidden})).toThrow();
 });

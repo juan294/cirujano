@@ -84,6 +84,8 @@ export function decodeArtifact<K extends ArtifactKind>(kind: K, value: unknown):
   if (artifact.kind === 'measurement') artifact.samples.forEach(sample => decodeQualityEvidence(sample.quality));
   if (artifact.kind === 'publication' && artifact.status === 'published' && (!artifact.number || artifact.url !== `https://github.com/${artifact.repository}/pull/${artifact.number}`)) fail('publication.readback');
   if (artifact.kind === 'input') {
+    if (artifact.operations.some(operation=>operation.jobId!==artifact.provenance.jobId||operation.stepIndex!==artifact.provenance.stepIndex)) fail('input.operation.target');
+    if (artifact.status==='collected' && (!artifact.baselines.length || !artifact.requiredChecks.length || !Object.keys(artifact.evidence).length || artifact.operations.length!==1 || artifact.baselines.some(baseline=>!baseline.requiredChecks.length||baseline.requiredChecks.some(check=>!artifact.requiredChecks.includes(check))))) fail('input.collected.prerequisites');
     const attempts=new Set<string>();
     for (const baseline of artifact.baselines) { validateTiming(baseline.startedAt,baseline.completedAt,baseline.elapsedMs); if (baseline.headSha!==artifact.provenance.baseSha || baseline.installElapsedMs>baseline.elapsedMs) fail('input.baseline.identity'); const key=`${baseline.runId}:${baseline.attempt}:${baseline.jobId}`; if (attempts.has(key)) fail('input.baseline.duplicate'); attempts.add(key); }
   }
@@ -114,7 +116,7 @@ export function decodeSourceManifest(value:unknown):SourceManifest {
   canonicalJson(value);object({schemaVersion:literal(1),provenance:provenanceValidator,profilePath:path,files:array(object({path,mode:literal('100644','100755'),hash:digest,bytesBase64:sourceBytes}),'path')})(value,'source');
   const manifest=value as SourceManifest;
   if(manifest.files.length>5000) fail('source.files.limit'); let totalBytes=0;
-  for (const file of manifest.files) { const bytes=Buffer.from(file.bytesBase64,'base64'); totalBytes+=bytes.length; if (bytes.length>4*1024*1024 || totalBytes>16*1024*1024 || /(?:^|\/)(?:\.env(?:\..*)?|\.npmrc|\.git|credentials(?:\..*)?|id_rsa|id_ed25519|[^/]*\.(?:pem|key))$/.test(file.path)) fail('source.file.sensitive-or-size'); if(bytes.toString('base64')!==file.bytesBase64 || sha256(bytes)!==file.hash) fail('source.file.hash'); }
+  for (const file of manifest.files) { const bytes=Buffer.from(file.bytesBase64,'base64'); totalBytes+=bytes.length; if (bytes.length>4*1024*1024 || totalBytes>16*1024*1024 || file.path.split('/').includes('.git') || /(?:^|\/)(?:\.env(?:\..*)?|\.npmrc|credentials(?:\..*)?|id_rsa|id_ed25519|[^/]*\.(?:pem|key))$/.test(file.path)) fail('source.file.sensitive-or-size'); if(bytes.toString('base64')!==file.bytesBase64 || sha256(bytes)!==file.hash) fail('source.file.hash'); }
   const workflow=manifest.files.find(file=>file.path===manifest.provenance.workflowPath),lockfile=manifest.files.find(file=>file.path==='pnpm-lock.yaml'),profile=manifest.files.find(file=>file.path===manifest.profilePath);
   if (!workflow || gitBlobSha(Buffer.from(workflow.bytesBase64,'base64'))!==manifest.provenance.workflowBlobSha || workflow.hash!==manifest.provenance.workflowHash || !lockfile || lockfile.hash!==manifest.provenance.lockfileHash || !profile || profile.hash!==manifest.provenance.verificationProfileHash) fail('source.provenance');
   const tree=manifest.files.filter(file=>file.path!==manifest.provenance.workflowPath).map(({path,mode,hash})=>({path,mode,hash})).sort((a,b)=>a.path<b.path?-1:a.path>b.path?1:0);

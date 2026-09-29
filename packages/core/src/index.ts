@@ -59,5 +59,5 @@ export type {
   TestOutcome,
   VerificationProfile,
 } from './optimization/contracts.js';
-export { inspectWorkflow, protectedWorkflowDigest } from './optimization/workflow.js';
+export { inspectWorkflow, parseWorkflowSource, protectedWorkflowDigest } from './optimization/workflow.js';
 export type { WorkflowEligibility, WorkflowEvidence } from './optimization/workflow.js';
