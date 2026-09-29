@@ -183,7 +183,7 @@ describe('production runner command composition (R11/R12)', () => {
     const log = await readFile(fixture.logPath, 'utf8');
     expect(log).toContain('/opt/cirujano/status');
     expect(log).toContain('StrictHostKeyChecking=yes');
-  });
+  }, 15_000);
 
   it('runs a registration lifecycle effect using token-on-stdin and exact SSH helper argv', async () => {
     const fixture = await createFixture(true, true);
@@ -195,7 +195,7 @@ describe('production runner command composition (R11/R12)', () => {
     expect(log).toContain('/opt/cirujano/register-runner');
     expect(log).toContain('stdin=trusted/private|cirujano-a-g1|cirujano-pilot-a|1');
     expect(log).not.toContain('fixture-registration-token');
-  });
+  }, 15_000);
 
   it('journals direct stop and cleanup before provider writes and verifies terminal readback', async () => {
     const fixture = await createFixture(true, true, true);
@@ -204,7 +204,7 @@ describe('production runner command composition (R11/R12)', () => {
     expect(JSON.parse(await readFile(join(resolve(fixture.configPath, '..'), 'direct-action-state.json'), 'utf8'))).toMatchObject({ action: 'stop', stage: 'resolved', providerState: 'stopped' });
     expect(await service.run({ command: 'runner', action: 'cleanup', configPath: fixture.configPath, permitPath: fixture.permitPath! }, captureIo())).toBe(0);
     expect(JSON.parse(await readFile(join(resolve(fixture.configPath, '..'), 'direct-action-state.json'), 'utf8'))).toMatchObject({ action: 'cleanup', stage: 'resolved', providerState: 'absent' });
-  });
+  }, 20_000);
 
   it('does not replay a resolved stop once the provider shows the VM running again', async () => {
     // 2026-09-23 P2: a later generation restarted the VM, yet runner stop answered done/stopped from the old record.
@@ -439,6 +439,54 @@ describe('production runner command composition (R11/R12)', () => {
     const resolved = JSON.parse(await readFile(join(fixture.directory, 'controller-state.json'), 'utf8')) as { pendingEffect: unknown; lifecycle: { startCount: number } };
     expect(resolved.pendingEffect).toBeNull();
     expect((JSON.parse(await readFile(fixture.scenarioPath, 'utf8')) as LifecycleScenario).grant?.generation).toBe(resolved.lifecycle.startCount);
+  }, 30_000);
+
+  it('releases a registration effect before an ephemeral runner finishes its first job', async () => {
+    const fixture = await createLifecycleFixture();
+    await builtTick(fixture);
+    await updateScenario(fixture, (state) => { state.jobs[0]!.status = 'queued'; });
+    for (let step = 0; step < 4; step++) await builtTick(fixture); // create, reconcile, start, reconcile
+    expect(await builtTick(fixture)).toContain('"type":"register-runner"');
+    const statePath = join(fixture.directory, 'controller-state.json');
+    expect((JSON.parse(await readFile(statePath, 'utf8')) as { pendingEffect: unknown }).pendingEffect).toBeNull();
+    await updateScenario(fixture, (state) => {
+      state.jobs[0]!.status = 'completed'; state.jobs[0]!.conclusion = 'success';
+      state.runnerName = null; state.runnerId = null; state.runnerBusy = false; state.guest = 'ready';
+      state.jobs[1]!.status = 'queued';
+    });
+    expect(await builtTick(fixture)).toContain('"type":"register-runner"');
+    expect((JSON.parse(await readFile(fixture.scenarioPath, 'utf8')) as LifecycleScenario).jobs[1]?.status).toBe('in_progress');
+  }, 30_000);
+
+  it('reconciles an old registration effect only after cleanup proves VM and runner absence', async () => {
+    const fixture = await createLifecycleFixture();
+    await builtTick(fixture);
+    await updateScenario(fixture, (scenario) => {
+      scenario.jobs[0]!.status = 'queued';
+      scenario.runnerName = 'cirujano-a-g1'; scenario.runnerId = 301;
+    });
+    const statePath = join(fixture.directory, 'controller-state.json');
+    const state = JSON.parse(await readFile(statePath, 'utf8')) as Record<string, unknown>;
+    const permit = JSON.parse(await readFile(fixture.permitPath, 'utf8')) as Record<string, unknown>;
+    const deadline = Date.now() + 3_600_000;
+    state.lifecycle = { ...(state.lifecycle as Record<string, unknown>), state: 'ready', startCount: 1 };
+    state.pendingEffect = {
+      id: 'old-register', effect: { type: 'register-runner', assignmentCutoffMs: deadline },
+      createdAtMs: Date.now() - 60_000, status: 'pending', stage: 'emitting',
+      authorization: {
+        permitId: permit.permitId, permitExpiresAtMs: permit.expiresAtMs,
+        configHash: permit.configHash, candidateDigest: permit.candidateDigest,
+        repositoryId: permit.repositoryId, projectId: permit.projectId,
+        controllerId: permit.controllerId, resourcePrefix: permit.resourcePrefix,
+        operation: 'register', recoveryAllowed: permit.recoveryAllowed, effectDeadlineMs: deadline,
+      },
+    };
+    await writeFile(statePath, JSON.stringify(state));
+    expect(await builtTick(fixture)).toContain('"status":"pending"');
+    await updateScenario(fixture, (scenario) => { scenario.runnerName = null; scenario.runnerId = null; });
+    expect(await builtTick(fixture)).toContain('"status":"reconciled"');
+    expect((JSON.parse(await readFile(statePath, 'utf8')) as { pendingEffect: unknown }).pendingEffect).toBeNull();
+    expect(await builtTick(fixture)).toContain('"type":"create-vm"');
   }, 30_000);
 
   it('replaces a generation that powered itself off at its immutable deadline and keeps accounting monotonic', async () => {

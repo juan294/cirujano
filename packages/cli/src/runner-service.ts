@@ -570,7 +570,7 @@ async function readRepository(context: RuntimeContext) {
   return repository;
 }
 
-async function executeEffect(context: RuntimeContext, effect: Exclude<LifecycleEffect, { type: 'none' }>): Promise<{ operationId?: string }> {
+async function executeEffect(context: RuntimeContext, effect: Exclude<LifecycleEffect, { type: 'none' }>): Promise<{ operationId?: string; resolved?: boolean }> {
   if (effect.type === 'adopt-vm') return {};
   const instances = await listInstances(context);
   const instance = exactOwnedInstance(instances, expectedResource(context));
@@ -605,7 +605,10 @@ async function executeEffect(context: RuntimeContext, effect: Exclude<LifecycleE
       context.config.repository.nameWithOwner, expectedRunnerName(context, state), context.config.runnerLabel,
       String(generation), secret,
     ].join('\n') + '\n', [secret]);
-    return {};
+    // The guest helper returns only after GitHub accepts the registration and
+    // launches the ephemeral listener. It can finish a short job and remove its
+    // registration before the next controller poll, so retain this receipt.
+    return { resolved: true };
   }
   if (effect.type === 'begin-drain') {
     await runGuest(context, instance, '/opt/cirujano/drain', `${generation}\n`);
@@ -631,6 +634,17 @@ async function removeOwnedRegistration(context: RuntimeContext, state: Controlle
 
 async function reconcileEffect(context: RuntimeContext, pending: PendingEffect): Promise<{ resolved: boolean; readback?: unknown }> {
   const provider = await observeProvider(context);
+  if (pending.effect.type === 'register-runner' && provider.complete
+    && provider.vmStatus === 'absent' && provider.ownership === 'absent' && provider.ownedMatches === 0) {
+    // A direct, authorized cleanup can remove a VM while an older registration
+    // effect is pending. Both owned resources must be absent before a fresh
+    // generation may be admitted; never infer this from VM absence alone.
+    const runners = await context.github.listRunners(context.owner, context.repository);
+    if (!runners.complete) return { resolved: false, readback: provider };
+    const state = await priorState(context);
+    const ownership = classifyOwnedRunners(runners.items, { expectedName: expectedRunnerName(context, state), ownershipLabel: context.config.runnerLabel });
+    return { resolved: ownership.ownership === 'absent', readback: { provider, runnerOwnership: ownership.ownership } };
+  }
   if (pending.effect.type === 'start-vm' && provider.vmStatus === 'running') {
     const instance = exactOwnedInstance(await listInstances(context), expectedResource(context));
     if (instance === null) return { resolved: false, readback: provider };
