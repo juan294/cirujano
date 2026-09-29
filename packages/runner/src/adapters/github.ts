@@ -87,7 +87,8 @@ export interface Collection<T> {
 }
 
 export interface QueueCollectionInput {
-  repository: GitHubRepository;
+  repository: GitHubRepository | null;
+  repositoryReason?: string;
   expectedRepository: { id: number; nameWithOwner: string };
   runs: Collection<WorkflowRun>;
   jobs: Collection<WorkflowJob>;
@@ -413,10 +414,12 @@ function runAdmitted(run: WorkflowRun, admission: AdmissionPolicy, allowedBranch
 
 export function buildQueueSnapshot(input: QueueCollectionInput): GitHubQueueSnapshot {
   const incompleteSource = [input.runs, input.jobs, input.runners].find((source) => !source.complete);
-  const identityMatches = input.repository.id === input.expectedRepository.id
-    && input.repository.nameWithOwner === input.expectedRepository.nameWithOwner;
-  if (!identityMatches || incompleteSource !== undefined || !Number.isFinite(input.observedAtMs)) {
-    const reason = !identityMatches ? 'repository identity does not match configuration' : (incompleteSource?.reason ?? 'snapshot input is incomplete');
+  const repository = input.repository;
+  const identityMatches = repository !== null && repository.id === input.expectedRepository.id
+    && repository.nameWithOwner === input.expectedRepository.nameWithOwner;
+  if (repository === null || !identityMatches || incompleteSource !== undefined || !Number.isFinite(input.observedAtMs)) {
+    const reason = repository === null ? (input.repositoryReason ?? 'repository observation is incomplete')
+      : !identityMatches ? 'repository identity does not match configuration' : (incompleteSource?.reason ?? 'snapshot input is incomplete');
     return incompleteSource?.retryAfterMs === undefined
       ? { complete: false, eligibleQueuedJobs: 0, ownedBusy: null, observedAtMs: input.observedAtMs, reason }
       : { complete: false, eligibleQueuedJobs: 0, ownedBusy: null, observedAtMs: input.observedAtMs, reason, retryAfterMs: incompleteSource.retryAfterMs };
@@ -431,7 +434,7 @@ export function buildQueueSnapshot(input: QueueCollectionInput): GitHubQueueSnap
   const eligible = input.jobs.items.filter((job) => {
     const run = runByAttempt.get(`${job.runId}:${job.runAttempt}`);
     return run !== undefined
-      && run.repositoryId === input.repository.id && run.headRepositoryId === input.repository.id
+      && run.repositoryId === repository.id && run.headRepositoryId === repository.id
       && runAdmitted(run, input.admission ?? 'default-branch-pushes', input.allowedBranch)
       && input.workflowIds.includes(run.workflowId)
       && run.headSha === job.headSha && input.eligibleJobNames.includes(job.name)

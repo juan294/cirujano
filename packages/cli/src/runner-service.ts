@@ -5,6 +5,7 @@ import { dirname, join, resolve } from 'node:path';
 
 import {
   GitHubAdapter,
+  GitHubResponseError,
   GUEST_FILE_NAMES,
   GUEST_UP_STATES,
   NebiusCli,
@@ -431,15 +432,21 @@ async function report(statePath: string, io: CliIo): Promise<0 | 1> {
 
 async function observe(context: RuntimeContext): Promise<LifecycleInput> {
   const nowMs = Date.now();
-  const [repository, provider, runs, runners, state] = await Promise.all([
-    readRepository(context), observeProvider(context), context.github.listActiveRuns(context.owner, context.repository),
+  const [repositoryObservation, provider, runs, runners, state] = await Promise.all([
+    readRepository(context).then(
+      (repository) => ({ repository, reason: null }),
+      (error: unknown) => {
+        if (!(error instanceof GitHubResponseError)) throw error;
+        return { repository: null, reason: 'repository observation is incomplete: ' + error.message };
+      },
+    ), observeProvider(context), context.github.listActiveRuns(context.owner, context.repository),
     context.github.listRunners(context.owner, context.repository), priorState(context),
   ]);
   const jobs: WorkflowJob[] = [];
-  let jobsComplete = runs.complete;
-  let jobsReason = runs.reason;
+  let jobsComplete = runs.complete && repositoryObservation.repository !== null;
+  let jobsReason = repositoryObservation.reason ?? runs.reason;
   let retryAfterMs = runs.retryAfterMs;
-  if (runs.complete) {
+  if (runs.complete && repositoryObservation.repository !== null) {
     for (const run of runs.items) {
       const page = await context.github.listJobs(context.owner, context.repository, run.id, run.runAttempt);
       if (!page.complete) {
@@ -452,7 +459,7 @@ async function observe(context: RuntimeContext): Promise<LifecycleInput> {
     }
   }
   const knownAssignments = await readAssignments(context);
-  for (const known of knownAssignments.filter((entry) => entry.conclusion === null)) {
+  for (const known of knownAssignments.filter((entry) => entry.conclusion === null && repositoryObservation.repository !== null)) {
     if (jobs.some((job) => job.key === `${known.runId}:${known.runAttempt}:${known.jobId}`)) continue;
     const page = await context.github.listJobs(context.owner, context.repository, known.runId, known.runAttempt);
     if (!page.complete) {
@@ -475,7 +482,9 @@ async function observe(context: RuntimeContext): Promise<LifecycleInput> {
     await writeJournalAtomic(context.assignmentPath, { schemaVersion: 1, identity: context.identity, assignments });
   }
   let queue = buildQueueSnapshot({
-    repository, expectedRepository: context.config.repository, runs,
+    repository: repositoryObservation.repository,
+    ...(repositoryObservation.reason === null ? {} : { repositoryReason: repositoryObservation.reason }),
+    expectedRepository: context.config.repository, runs,
     jobs: collection(jobsComplete, deduplicatedJobs, jobsReason, retryAfterMs), runners,
     workflowIds: context.config.workflowIds, allowedBranch: context.config.allowedBranch, admission: context.config.admission,
     eligibleJobNames: context.config.eligibleJobNames, runnerLabel: context.config.runnerLabel,
@@ -632,7 +641,7 @@ async function removeOwnedRegistration(context: RuntimeContext, state: Controlle
   else if (ownership.ownership !== 'absent') throw new Error(`runner ownership is ${ownership.ownership} ${phase}`);
 }
 
-async function reconcileEffect(context: RuntimeContext, pending: PendingEffect): Promise<{ resolved: boolean; readback?: unknown }> {
+async function reconcileEffect(context: RuntimeContext, pending: PendingEffect): Promise<{ resolved: boolean; retireStoppedStart?: boolean; readback?: unknown }> {
   const provider = await observeProvider(context);
   if (pending.effect.type === 'register-runner' && provider.complete
     && provider.vmStatus === 'absent' && provider.ownership === 'absent' && provider.ownedMatches === 0) {
@@ -678,6 +687,22 @@ async function reconcileEffect(context: RuntimeContext, pending: PendingEffect):
     }
     const guest = await observeGuest(context, provider);
     return { resolved: guest.grant?.generation === generation, readback: { provider, guest } };
+  }
+  if (pending.effect.type === 'start-vm' && provider.complete && provider.ownership === 'owned'
+    && provider.ownedMatches === 1 && provider.vmStatus === 'stopped' && pending.operationId !== undefined) {
+    const instance = exactOwnedInstance(await listInstances(context), expectedResource(context));
+    if (instance === null || instance.state !== 'stopped') return { resolved: false, readback: provider };
+    const operations = await listOperations(context);
+    const start = operations.find((item) => item.id === pending.operationId
+      && (item.resourceId === null || item.resourceId === instance.id));
+    const inFlight = operations.some((item) => (item.resourceId === instance.id || item.resourceId === null)
+      && (item.state === 'PENDING' || item.state === 'RUNNING'));
+    return {
+      resolved: false,
+      retireStoppedStart: start !== undefined && !inFlight
+        && (start.state === 'SUCCEEDED' || start.state === 'FAILED' || start.state === 'CANCELLED'),
+      readback: { provider, startOperation: start?.state ?? 'missing', inFlight },
+    };
   }
   if (pending.effect.type === 'register-runner' || pending.effect.type === 'begin-drain' || pending.effect.type === 'resume-admission') {
     const guest = await observeGuest(context, provider);

@@ -441,6 +441,27 @@ describe('production runner command composition (R11/R12)', () => {
     expect((JSON.parse(await readFile(fixture.scenarioPath, 'utf8')) as LifecycleScenario).grant?.generation).toBe(resolved.lifecycle.startCount);
   }, 30_000);
 
+  it('arms a pending start during a GitHub repository outage without admitting queued work', async () => {
+    const fixture = await createLifecycleFixture();
+    await builtTick(fixture); // idle
+    await updateScenario(fixture, (state) => { state.jobs[0]!.status = 'queued'; });
+    await builtTick(fixture); // create
+    await builtTick(fixture); // reconcile create
+    await builtTick(fixture); // start
+    await updateScenario(fixture, (state) => { state.repositoryUnavailable = true; });
+    expect(await builtTick(fixture)).toContain('"status":"reconciled"');
+    const controller = JSON.parse(await readFile(join(fixture.directory, 'controller-state.json'), 'utf8')) as {
+      lifecycle: { startCount: number }; pendingEffect: unknown;
+    };
+    const scenario = JSON.parse(await readFile(fixture.scenarioPath, 'utf8')) as LifecycleScenario;
+    expect(controller.pendingEffect).toBeNull();
+    expect(scenario.grant?.generation).toBe(controller.lifecycle.startCount);
+    await expect(builtTick(fixture)).rejects.toThrow(/complete provider, queue and guest observations are required/u);
+    expect(await readFile(fixture.logPath, 'utf8')).not.toContain('/registration-token');
+    await updateScenario(fixture, (state) => { state.repositoryUnavailable = false; });
+    expect(await builtTick(fixture)).toContain('"type":"register-runner"');
+  }, 30_000);
+
   it('releases a registration effect before an ephemeral runner finishes its first job', async () => {
     const fixture = await createLifecycleFixture();
     await builtTick(fixture);
@@ -532,6 +553,47 @@ describe('production runner command composition (R11/R12)', () => {
     expect(log.lastIndexOf('instance create')).toBeGreaterThan(deleteIndex);
     // The offline runner registration of the spent generation was removed before the VM.
     expect(log.slice(0, deleteIndex)).toMatch(/--method DELETE [^\n]*\/actions\/runners\//u);
+  }, 60_000);
+
+  it('replaces a start that stopped before registration after its boot window', async () => {
+    const fixture = await createLifecycleFixture();
+    await builtTick(fixture);
+    await updateScenario(fixture, (scenario) => { scenario.jobs[0]!.status = 'queued'; });
+    await builtTick(fixture); // create
+    await builtTick(fixture); // reconcile create
+    await builtTick(fixture); // start
+    const statePath = join(fixture.directory, 'controller-state.json');
+    const starting = JSON.parse(await readFile(statePath, 'utf8')) as { pendingEffect: { createdAtMs: number }; lifecycle: { startCount: number } };
+    starting.pendingEffect.createdAtMs = Date.now() - validRunnerConfig.timing.bootTimeoutMs - 1;
+    await writeFile(statePath, JSON.stringify(starting));
+    await updateScenario(fixture, (scenario) => {
+      scenario.provider = 'STOPPED'; scenario.guest = 'booting'; scenario.startOperationState = 'SUCCEEDED';
+      scenario.repositoryUnavailable = true;
+    });
+    expect(await builtTick(fixture)).toContain('"status":"pending"');
+    await updateScenario(fixture, (scenario) => { scenario.repositoryUnavailable = false; });
+    expect(await builtTick(fixture)).toContain('"type":"delete-vm"');
+    expect(await builtTick(fixture)).toContain('"status":"reconciled"');
+    expect(await builtTick(fixture)).toContain('"type":"create-vm","generation":2');
+    const log = await readFile(fixture.logPath, 'utf8');
+    expect(log.split('\n').filter((line) => line.includes('instance start'))).toHaveLength(1);
+  }, 60_000);
+
+  it('waits for a pending provider start before retiring a stopped generation', async () => {
+    const fixture = await createLifecycleFixture();
+    await builtTick(fixture);
+    await updateScenario(fixture, (scenario) => { scenario.jobs[0]!.status = 'queued'; });
+    await builtTick(fixture); await builtTick(fixture); await builtTick(fixture);
+    const statePath = join(fixture.directory, 'controller-state.json');
+    const starting = JSON.parse(await readFile(statePath, 'utf8')) as { pendingEffect: { createdAtMs: number } };
+    starting.pendingEffect.createdAtMs = Date.now() - validRunnerConfig.timing.bootTimeoutMs - 1;
+    await writeFile(statePath, JSON.stringify(starting));
+    await updateScenario(fixture, (scenario) => {
+      scenario.provider = 'STOPPED'; scenario.guest = 'booting'; scenario.startOperationState = 'RUNNING';
+    });
+    expect(await builtTick(fixture)).toContain('"status":"pending"');
+    expect((JSON.parse(await readFile(statePath, 'utf8')) as { pendingEffect: unknown }).pendingEffect).not.toBeNull();
+    expect(await readFile(fixture.logPath, 'utf8')).not.toContain('instance delete');
   }, 60_000);
 
   it('still blocks a stopped guest before its journaled deadline instead of deleting it', async () => {
@@ -698,6 +760,8 @@ interface LifecycleScenario {
   /** arm-grant reports success but a concurrent writer restores the previous grant. */
   lostGrantUpdates?: number;
   registerFailure?: string;
+  repositoryUnavailable?: boolean;
+  startOperationState?: 'RUNNING' | 'SUCCEEDED';
   jobs: Array<{ runId: number; jobId: number; status: 'none' | 'queued' | 'in_progress' | 'completed'; conclusion: string | null; runnerId: number | null; runnerName: string | null }>;
 }
 
@@ -749,7 +813,7 @@ async function createLifecycleFixture(idleResourcePolicy?: 'delete-after-stop'):
   await writeFile(ghPath, `#!/usr/bin/env node
 ${sharedPrelude}
 const a=process.argv.slice(2);const endpoint=a.find(v=>v.startsWith('/repos/'))||'';const method=a[a.indexOf('--method')+1];let status=200;let body={};
-if(/^\\/repos\\/trusted\\/private$/.test(endpoint))body={id:123,full_name:'trusted/private',private:true,visibility:'private',fork:false};
+if(/^\\/repos\\/trusted\\/private$/.test(endpoint)){if(s.repositoryUnavailable)status=403;else body={id:123,full_name:'trusted/private',private:true,visibility:'private',fork:false};}
 else if(endpoint.endsWith('/actions/runs')){const active=s.jobs.filter(j=>j.status==='queued'||j.status==='in_progress');body={total_count:active.length,workflow_runs:active.map(j=>({id:j.runId,workflow_id:41,run_attempt:1,status:j.status==='queued'?'queued':'in_progress',conclusion:null,event:'push',head_branch:'develop',head_sha:'sha-'+j.runId,repository:{id:123},head_repository:{id:123},pull_requests:[]}))};}
 else if(endpoint.includes('/attempts/1/jobs')){const runId=Number(endpoint.match(/runs\\/(\\d+)/)[1]);const jobs=s.jobs.filter(j=>j.runId===runId&&j.status!=='none');body={total_count:jobs.length,jobs:jobs.map(j=>({id:j.jobId,run_id:j.runId,head_sha:'sha-'+j.runId,status:j.status,conclusion:j.conclusion,name:'e2e',labels:['self-hosted','cirujano-pilot-a'],runner_id:j.runnerId,runner_name:j.runnerName,runner_group_id:null,runner_group_name:null,started_at:j.status==='queued'?null:'2026-09-13T10:00:00Z',completed_at:j.status==='completed'?'2026-09-13T10:01:00Z':null}))};}
 else if(endpoint.endsWith('/actions/runners'))body={total_count:s.runnerName===null?0:1,runners:s.runnerName===null?[]:[{id:s.runnerId,name:s.runnerName,os:'linux',status:'online',busy:s.runnerBusy,labels:[{name:'self-hosted'},{name:'cirujano-pilot-a'}]}]};
@@ -760,7 +824,7 @@ process.stdout.write('HTTP/2 '+status+'\\n\\n'+(body===null?'':JSON.stringify(bo
   await writeFile(nebiusPath, `#!/usr/bin/env node
 ${sharedPrelude}
 const a=process.argv.slice(2);let body={};
-if(a.includes('list-operations-by-parent'))body={};
+if(a.includes('list-operations-by-parent'))body=s.startOperationState?{items:[{metadata:{id:'op-start'},spec:{resource_id:'instance-1'},status:{state:s.startOperationState}}]}:{};
 else if(a.includes('create')){s.provider='STOPPED';s.guest='booting';save();body={metadata:{id:'op-create'}};}
 else if(a.includes('start')){s.provider='RUNNING';s.guest='booting';save();body={metadata:{id:'op-start'}};}
 else if(a.includes('stop')){s.provider='STOPPED';s.guest='booting';s.runnerName=null;s.runnerId=null;s.runnerBusy=false;save();body={metadata:{id:'op-stop'}};}

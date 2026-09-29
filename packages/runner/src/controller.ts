@@ -1,5 +1,5 @@
 import type { LifecycleDecision, LifecycleEffect, LifecycleInput, LifecycleJournal, LifecycleState, PermitIdentity, PermitOperation } from './contracts.js';
-import { decideLifecycle } from './lifecycle.js';
+import { decideLifecycle, validateCleanupPermit } from './lifecycle.js';
 import { acquireControllerLock, appendRedactedEvent, assertControllerLock, type ControllerLock, readJournal, writeJournalAtomic } from './journal.js';
 
 export interface PendingEffect {
@@ -36,7 +36,7 @@ export interface TickOptions {
   dryRun?: boolean;
   secrets?: readonly string[];
   executeEffect(effect: Exclude<LifecycleEffect, { type: 'none' }>): Promise<{ operationId?: string; resolved?: boolean; readback?: unknown }>;
-  reconcileEffect(effect: PendingEffect): Promise<{ resolved: boolean; retry?: boolean; readback?: unknown }>;
+  reconcileEffect(effect: PendingEffect): Promise<{ resolved: boolean; retry?: boolean; retireStoppedStart?: boolean; readback?: unknown }>;
   boundary?(name: ControllerBoundary): Promise<void>;
 }
 
@@ -96,6 +96,17 @@ export async function tickController(options: TickOptions): Promise<TickResult> 
       return executePendingEffect(options, prior);
     }
     const reconciliation = await options.reconcileEffect(prior.pendingEffect);
+    if (reconciliation.retireStoppedStart === true && canRetireStoppedStart(prior.pendingEffect, options.input)) {
+      const lifecycle = mergeLifecycle(prior.lifecycle, options.input.journal);
+      const decision: LifecycleDecision = {
+        state: 'absent',
+        effect: { type: 'delete-vm', generation: lifecycle.startCount },
+        reason: 'start stopped before registration after its boot window; deleting the unusable generation',
+      };
+      const readbacks = reconciliation.readback === undefined
+        ? prior.readbacks : [...prior.readbacks, reconciliation.readback].slice(-100);
+      return recordAndExecuteDecision(options, decision, { ...lifecycle, outstandingIntent: null }, readbacks);
+    }
     if (!reconciliation.resolved && reconciliation.retry === true) {
       const retryState: ControllerState = {
         ...prior,
@@ -155,6 +166,13 @@ export async function tickController(options: TickOptions): Promise<TickResult> 
     return { status: 'dry-run', decision };
   }
 
+  return recordAndExecuteDecision(options, decision, authoritativeInput.journal, prior?.readbacks ?? []);
+}
+
+async function recordAndExecuteDecision(
+  options: TickOptions, decision: LifecycleDecision, lifecycle: LifecycleJournal, readbacks: unknown[],
+): Promise<TickResult> {
+  if (decision.effect.type === 'none') throw new Error('controller decision has no effect to execute');
   const pending: PendingEffect = {
     id: `${options.input.identity.controllerId}:${options.input.nowMs}:${decision.effect.type}`,
     effect: decision.effect,
@@ -166,9 +184,9 @@ export async function tickController(options: TickOptions): Promise<TickResult> 
   const state: ControllerState = {
     schemaVersion: 1,
     identity: options.input.identity,
-    lifecycle: applyDecision(authoritativeInput.journal, decision.effect, decision.state),
+    lifecycle: applyDecision(lifecycle, decision.effect, decision.state),
     pendingEffect: pending,
-    readbacks: prior?.readbacks ?? [],
+    readbacks,
   };
   assertStateInvariants(state);
   await writeJournalAtomic(options.journalPath, state);
@@ -554,7 +572,22 @@ function pendingAuthorizationProblem(pending: PendingEffect, input: LifecycleInp
 function pendingEffectIsStale(pending: PendingEffect, input: LifecycleInput): boolean {
   const saved = pending.authorization;
   const recoveryOperation = saved.operation === 'stop' || saved.operation === 'delete';
+  // A stopped start may still have a provider operation in flight. Keep its intent until
+  // reconciliation proves the operation terminal and the old generation safe to retire.
+  if (pending.effect.type === 'start-vm' && input.provider.vmStatus === 'stopped') return false;
   return !recoveryOperation && saved.effectDeadlineMs !== null && input.nowMs > saved.effectDeadlineMs;
+}
+
+function canRetireStoppedStart(pending: PendingEffect, input: LifecycleInput): boolean {
+  return pending.effect.type === 'start-vm'
+    && input.nowMs >= pending.createdAtMs + input.config.timing.bootTimeoutMs
+    && input.provider.complete && input.provider.ownership === 'owned' && input.provider.ownedMatches === 1
+    && input.provider.vmStatus === 'stopped' && input.provider.outstandingOperation === null
+    && input.queue.complete && input.queue.ownedBusy === false
+    && input.guest.complete && input.guest.status === 'offline'
+    && input.guest.runnerActive === false && input.guest.workerActive === false
+    && input.guest.grant === null
+    && validateCleanupPermit(input.permit, input.identity, input.nowMs).valid;
 }
 
 // Clearing the effect is safe because decideLifecycle rebuilds its decision from the observed
