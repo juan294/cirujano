@@ -37,3 +37,13 @@ Run focused core optimization tests, then every parent local gate sequentially. 
 ## Manual acceptance and exit
 
 No manual operation is required. Independent review verifies the invariant and fixture expectations; resolve findings, run simplify, then final gates. Preserve notes and stop for phase acceptance. Phase 2 starts only after the strict contracts and corpus are accepted.
+
+## Accepted implementation evidence
+
+- [x] Immutable schemas, exact byte/Git blob hashes and source manifest.
+- [x] Strict YAML eligibility and protected semantic digest.
+- [x] 21-case corpus and separate mutation fixtures.
+- [x] TDD, independent review, repaired findings and simplify.
+- [x] All seven local gates on `23a8cf7145a060fbbba0641e5de104e11f82ac27`, Node 22.20.0.
+
+Full receipts, deviations and next-phase boundaries are in the parent notes.
