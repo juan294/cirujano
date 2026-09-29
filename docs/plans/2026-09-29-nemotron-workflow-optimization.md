@@ -1,6 +1,6 @@
 # Nemotron workflow optimization: one verified pnpm-cache change
 
-Date: 2026-09-29. Status: implementation in progress; Phases 1-3 accepted locally, Phase 4 next. Planning baseline: `develop`, `91b7908cb8ff1a23e115f346799a1208f4da342d`, `/Users/juan/code/cirujano`. Review and validation evidence: [notes](2026-09-29-nemotron-workflow-optimization-notes.md).
+Date: 2026-09-29. Status: implementation in progress; Phases 1-4 accepted locally, Phase 5 next. Planning baseline: `develop`, `91b7908cb8ff1a23e115f346799a1208f4da342d`, `/Users/juan/code/cirujano`. Review and validation evidence: [notes](2026-09-29-nemotron-workflow-optimization-notes.md).
 
 ## Objective and authority
 
@@ -109,11 +109,13 @@ A supported patch with no measured benefit ends `no-improvement`, retains eviden
 
 Phase execution and acceptance are sequential. Independent units are identified in phase files; shared dispatch/export/package changes belong to one integration owner. `[batch-eligible]` never means remote branch publication. Every phase follows TDD, independent review, repair, simplify and sequential verification. Do not advance with unresolved review findings.
 
-Current local acceptance: Phase 1 at `23a8cf7145a060fbbba0641e5de104e11f82ac27`; Phase 2 at `0d3d7023ab0daa766e5450e57a260033de19b41c`. Phase 3 at `8ddc1fb10040292f9f1d29b310474c06f9f862f3`. All three passed their complete local gates. Phases 4-6 remain pending. The companion notes retain exact evidence and unresolved live proof.
+Current local acceptance: Phase 1 at `23a8cf7145a060fbbba0641e5de104e11f82ac27`; Phase 2 at `0d3d7023ab0daa766e5450e57a260033de19b41c`. Phase 3 at `8ddc1fb10040292f9f1d29b310474c06f9f862f3`. Phase 4 at `fe114c9980a6b5c39732dc4dbf7b0a3be301d26a`. All four passed their complete local gates. Phases 5-6 remain pending. The companion notes retain exact evidence and unresolved live proof.
 
 ## Required local gates
 
 Run every phase's focused tests first, then all of: `pnpm run typecheck`, `pnpm run lint`, `pnpm run test`, `pnpm run test:coverage`, `pnpm run build`, `node scripts/verify-bundle.mjs`, and `git diff --check`, sequentially with aggregated exit statuses. Stage/commit the rebuilt Action bundle with source before the parity check when it changed; never weaken the check to ignore a stale bundle. Capture source SHA and any uncommitted diff digest, command, exit and log path. Do not run gates that require an external permit as though they were local checks. Existing runner boot/provider code is untouched; any discovery requiring that scope adds its applicable boot/schema gates before implementation.
+
+From Phase 4 onward, also run `pnpm run verify:optimization-harness-linux`: the actual trusted harness against owned inert fixtures on the existing cached local Linux Docker image, without image pull or account calls. This proves the tested local UID/process boundary, not Token Factory isolation.
 
 From Phase 3 onward, also run the pinned `pnpm run verify:optimization-actionlint` gate after build. It checks all eligible generated fixture patches with actionlint 1.7.12. Phase 6 runs the same local gates on the final integrated candidate before any authorized external proof. Failed remote runs are evidence: diagnose locally, stop the live batch and seek new authorization only after all local repairs pass. No remote rerun/fix-and-repush loop. A prior phase's passing result cannot cover changed inputs.
 

@@ -39,3 +39,7 @@ Run the real harness locally only against owned inert test fixtures, with subpro
 ## Exit
 
 No paid execution during local implementation. Record all local gates and the concrete public proof/image-preparation request for Phase 6. Stop at acceptance; live entitlement/isolation/cleanup remain unproven until exercised.
+
+## Accepted local implementation
+
+Accepted source `fe114c9980a6b5c39732dc4dbf7b0a3be301d26a`. All nine review findings, paired verifier, installed CLI dispatch, actual Git candidate binding, immutable image/import readback and owned recovery are implemented. The parent completed independent review, repair, three simplify lenses and all nine sequential local gates. Full suite: 960 tests. Actual trusted-harness Linux checks pass with child UID/GID 65534, parent stdout and trusted asset writes denied, and a writable dependency-store clone. Native Token Factory entitlement, import, network denial, execution and cleanup remain unproven. See the companion notes for source identity, evidence and limitations.
