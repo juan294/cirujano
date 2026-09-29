@@ -1,0 +1,29 @@
+{
+  "repository": "actions/setup-node",
+  "commitSha": "820762786026740c76f36085b0efc47a31fe5020",
+  "releaseTag": "v7.0.0",
+  "releaseId": 353541365,
+  "immutable": true,
+  "actionHash": "5d765941ab5d8bef27f08e81b0b041cdb2df2050ea0261dc925d157a2bafbd2b",
+  "inputs": [
+    "node-version",
+    "node-version-file",
+    "architecture",
+    "check-latest",
+    "registry-url",
+    "scope",
+    "token",
+    "cache",
+    "package-manager-cache",
+    "cache-dependency-path",
+    "mirror",
+    "mirror-token"
+  ],
+  "outputs": [
+    "cache-hit",
+    "cache-primary-key",
+    "cache-matched-key",
+    "node-version"
+  ],
+  "retrievedAt": "2026-09-29T18:13:07Z"
+}

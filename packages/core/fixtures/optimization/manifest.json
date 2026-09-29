@@ -1,0 +1,191 @@
+{
+  "schemaVersion": 1,
+  "cases": [
+    {
+      "name": "root-pnpm",
+      "file": "root-pnpm.yml",
+      "status": "eligible",
+      "reason": "eligible",
+      "gate": "model",
+      "providerCalls": null,
+      "expectedDiagnosis": "proposal"
+    },
+    {
+      "name": "named-steps",
+      "file": "named-steps.yml",
+      "status": "eligible",
+      "reason": "eligible",
+      "gate": "model",
+      "providerCalls": null,
+      "expectedDiagnosis": "proposal"
+    },
+    {
+      "name": "job-read-permission",
+      "file": "job-read-permission.yml",
+      "status": "eligible",
+      "reason": "eligible",
+      "gate": "model",
+      "providerCalls": null,
+      "expectedDiagnosis": "proposal"
+    },
+    {
+      "name": "quoted-versions",
+      "file": "quoted-versions.yml",
+      "status": "eligible",
+      "reason": "eligible",
+      "gate": "model",
+      "providerCalls": null,
+      "expectedDiagnosis": "proposal"
+    },
+    {
+      "name": "unrelated-job",
+      "file": "unrelated-job.yml",
+      "status": "eligible",
+      "reason": "eligible",
+      "gate": "model",
+      "providerCalls": null,
+      "expectedDiagnosis": "proposal"
+    },
+    {
+      "name": "test-env",
+      "file": "test-env.yml",
+      "status": "eligible",
+      "reason": "eligible",
+      "gate": "model",
+      "providerCalls": null,
+      "expectedDiagnosis": "proposal"
+    },
+    {
+      "name": "negligible-install",
+      "file": "negligible-install.yml",
+      "status": "eligible",
+      "reason": "eligible",
+      "gate": "model",
+      "providerCalls": null,
+      "expectedDiagnosis": "abstain",
+      "installElapsedMs": 1
+    },
+    {
+      "name": "already-cached",
+      "file": "already-cached.yml",
+      "status": "no-change",
+      "reason": "already-cached",
+      "gate": "prefilter",
+      "providerCalls": 0
+    },
+    {
+      "name": "disabled-cache",
+      "file": "disabled-cache.yml",
+      "status": "unsupported",
+      "reason": "cache-disabled",
+      "gate": "prefilter",
+      "providerCalls": 0
+    },
+    {
+      "name": "no-timed-baseline",
+      "file": "no-timed-baseline.yml",
+      "status": "unsupported",
+      "reason": "no-timed-baseline",
+      "gate": "prefilter",
+      "providerCalls": 0,
+      "timedBaseline": false
+    },
+    {
+      "name": "unknown-dependency-path",
+      "file": "unknown-dependency-path.yml",
+      "status": "unsupported",
+      "reason": "unknown-dependency-path",
+      "gate": "prefilter",
+      "providerCalls": 0
+    },
+    {
+      "name": "setup-order",
+      "file": "setup-order.yml",
+      "status": "unsupported",
+      "reason": "pnpm-setup-order",
+      "gate": "prefilter",
+      "providerCalls": 0
+    },
+    {
+      "name": "matrix",
+      "file": "matrix.yml",
+      "status": "unsupported",
+      "reason": "matrix",
+      "gate": "prefilter",
+      "providerCalls": 0
+    },
+    {
+      "name": "prompt-injection",
+      "file": "prompt-injection.yml",
+      "status": "eligible",
+      "reason": "eligible",
+      "gate": "model",
+      "providerCalls": null,
+      "expectedDiagnosis": "proposal",
+      "attack": "workflow-comment"
+    },
+    {
+      "name": "unknown-evidence",
+      "file": "unknown-evidence.yml",
+      "status": "eligible",
+      "reason": "eligible",
+      "gate": "transport",
+      "providerCalls": null,
+      "expectedDiagnosis": "rejected",
+      "attack": "unknown-evidence-id"
+    },
+    {
+      "name": "changed-test",
+      "file": "changed-test.yml",
+      "status": "eligible",
+      "reason": "eligible",
+      "gate": "transport",
+      "providerCalls": null,
+      "expectedDiagnosis": "rejected",
+      "attack": "changed-test-command"
+    },
+    {
+      "name": "changed-permission",
+      "file": "changed-permission.yml",
+      "status": "eligible",
+      "reason": "eligible",
+      "gate": "transport",
+      "providerCalls": null,
+      "expectedDiagnosis": "rejected",
+      "attack": "changed-permission"
+    },
+    {
+      "name": "yaml-alias",
+      "file": "yaml-alias.yml",
+      "status": "unsupported",
+      "reason": "yaml-alias",
+      "gate": "prefilter",
+      "providerCalls": 0
+    },
+    {
+      "name": "duplicate-key",
+      "file": "duplicate-key.yml",
+      "status": "unsupported",
+      "reason": "yaml-parse",
+      "gate": "prefilter",
+      "providerCalls": 0
+    },
+    {
+      "name": "path-traversal",
+      "file": "path-traversal.yml",
+      "status": "unsupported",
+      "reason": "unsupported-install-command",
+      "gate": "prefilter",
+      "providerCalls": 0
+    },
+    {
+      "name": "secret-config",
+      "file": "secret-config.yml",
+      "status": "unsupported",
+      "reason": "secret-bearing-configuration",
+      "gate": "prefilter",
+      "providerCalls": 0
+    }
+  ],
+  "fixtureIdentity": "synthetic public evaluation; checkout and pnpm SHAs are placeholders, never live authority"
+}

@@ -15,3 +15,49 @@ export type {
   WorkflowUsage,
   WorkflowUsageInput,
 } from './billing.js';
+
+export {
+  canonicalJson,
+  gitBlobSha,
+  jsonDigest,
+  OptimizationInputError,
+  parseStrictJson,
+  safeRelativePath,
+  sha256,
+} from './optimization/canonical.js';
+export {
+  assertSameProvenance,
+  decodeActionReceipt,
+  decodeArtifact,
+  decodeProvenance,
+  decodeQualityEvidence,
+  decodeSourceManifest,
+  decodeVerificationProfile,
+  validateDiagnosisEvidence,
+} from './optimization/contracts.js';
+export type {
+  ActionReceipt,
+  ArtifactKind,
+  ArtifactMap,
+  BaselineJob,
+  CacheOperation,
+  CoverageCounters,
+  DiagnosisArtifact,
+  InferenceArtifact,
+  InputArtifact,
+  LifecycleStatus,
+  MeasurementArtifact,
+  MeasurementSample,
+  ProposalArtifact,
+  Provenance,
+  PublicationArtifact,
+  QualityEvidence,
+  ReportArtifact,
+  SandboxArtifact,
+  SandboxOperation,
+  SourceManifest,
+  TestOutcome,
+  VerificationProfile,
+} from './optimization/contracts.js';
+export { inspectWorkflow, protectedWorkflowDigest } from './optimization/workflow.js';
+export type { WorkflowEligibility, WorkflowEvidence } from './optimization/workflow.js';
