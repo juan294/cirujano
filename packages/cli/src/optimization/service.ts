@@ -15,17 +15,18 @@ import { runPropose, readProposalStatus, readDiagnosisContext } from './propose.
 import { diagnoseOptimization, decodeInferencePreview } from './diagnose.js';
 import { decodeInferenceConfig, type InferenceIntent } from './nebius.js';
 import { consumePermit, readPrivateJson, scrubOptimizationValue, withOperationStore } from './store.js';
+import { verifyPair, reconcileSandbox, cancelSandbox } from './verify.js';
 
 declare const CIRUJANO_TOOL_SOURCE_SHA: string | undefined;
 export interface OptimizationService { run(args: OptimizeArguments, io: CliIo): Promise<0 | 1 | 2> }
-export interface OptimizationServiceOptions { pageRunner?: GitHubPageRunner; ghPath?: string; fetch?: typeof fetch; apiKey?: string; toolSourceSha?: string; bundleDigest?: string; sourceIdentity?: () => Promise<{ toolSourceSha: string; bundleDigest: string }>; permitLedger?: string }
+export interface OptimizationServiceOptions { pageRunner?: GitHubPageRunner; ghPath?: string; fetch?: typeof fetch; apiKey?: string; iamToken?: string; toolSourceSha?: string; bundleDigest?: string; sourceIdentity?: () => Promise<{ toolSourceSha: string; bundleDigest: string }>; permitLedger?: string }
 interface OperationState { schemaVersion: 1; kind: 'optimization-operation'; action: string; status: string; reasonCode: string; nextCommand: string; inputDigest: string | null }
 class ServiceError extends Error { constructor(readonly reasonCode: string, readonly code: 1 | 2 = 1) { super(reasonCode); } }
 function flag(args: OptimizeArguments, key: string): string { const value = args.flags[key]; if (typeof value !== 'string' || !value) throw new ServiceError('optimization-invalid-arguments', 2); return value; }
 function optionalFlag(args: OptimizeArguments, key: string): string | undefined { return args.flags[key] === undefined ? undefined : flag(args, key); }
-function emit(args: OptimizeArguments, io: CliIo, status: string, reasonCode: string, nextCommand: string): void {
-  const result = { status, reasonCode, nextCommand };
-  io.stdout(args.format === 'json' ? `${JSON.stringify(result)}\n` : `${status}: ${reasonCode}\nNext: ${nextCommand}\n`);
+function emit(args: OptimizeArguments, io: CliIo, status: string, reasonCode: string, nextCommand: string, recovery?:string): void {
+  const result = { status, reasonCode, nextCommand,...(recovery?{recovery}:{}) };
+  io.stdout(args.format === 'json' ? `${JSON.stringify(result)}\n` : `${status}: ${reasonCode}\nNext: ${nextCommand}\n${recovery?`Recovery: ${recovery}\n`:''}`);
 }
 function missing(error: unknown): boolean { return (error as NodeJS.ErrnoException).code === 'ENOENT'; }
 function shellQuote(value: string): string { return `'${value.replace(/'/g, "'\\''")}'`; }
@@ -39,12 +40,21 @@ async function moduleSourceIdentity(): Promise<{ toolSourceSha: string; bundleDi
 /** Commands retain private local state; all outward effects require typed permits. */
 export function createOptimizationService(options: OptimizationServiceOptions = {}): OptimizationService {
   return { async run(args, io) {
-    const apiKey = options.apiKey ?? process.env['NEBIUS_API_KEY']; const secrets = apiKey ? [apiKey] : [];
+    const apiKey = options.apiKey ?? process.env['NEBIUS_API_KEY'],iamToken=options.iamToken??process.env['NEBIUS_IAM_TOKEN']; const secrets = [apiKey,iamToken].filter((secret):secret is string=>!!secret);
     const originalIo = io;
     io = { stdout: text => originalIo.stdout(String(scrubOptimizationValue(text, secrets))), stderr: text => originalIo.stderr(String(scrubOptimizationValue(text, secrets))) };
     const statusCommand = `cirujano optimize status --operation ${shellQuote(typeof args.flags.output === 'string' ? args.flags.output : typeof args.flags.operation === 'string' ? args.flags.operation : '<operation>')} --format ${args.format}`;
     try {
       if (args.action === 'propose') return await runPropose(args, io);
+      if(args.action==='verify'||args.action==='cancel'||args.action==='status'){
+        const directory=args.action==='verify'?null:flag(args,'operation'),intent=directory?await optionalJson(join(directory,'intent.json')):null;
+        if(args.action!=='status'||(intent&&typeof intent==='object'&&(intent as {kind?:unknown}).kind==='sandbox-pair')){
+          if(!iamToken)throw new ServiceError('sandbox-credential-required');
+          const sandboxOptions={iamToken,...(options.fetch?{fetch:options.fetch}:{}),...(options.permitLedger?{permitLedger:options.permitLedger}:{})};
+          const result=args.action==='verify'?await verifyPair(flag(args,'proposal'),await readPrivateJson(flag(args,'profile')),await readPrivateJson(flag(args,'permit')),flag(args,'output'),sandboxOptions):args.action==='cancel'?await cancelSandbox(directory!,await readPrivateJson(flag(args,'permit')),sandboxOptions):await reconcileSandbox(directory!,sandboxOptions);
+          emit(args,io,result.status,result.reasonCode,result.artifactPath?`cirujano optimize status --operation ${shellQuote(directory??flag(args,'output'))}`:statusCommand,result.recovery);return result.status==='sandbox-verified'?0:1;
+        }
+      }
       if (args.action === 'collect') {
         const output = flag(args, 'output'); const rawRuns = args.flags.run;
         if (!Array.isArray(rawRuns) || rawRuns.some(run => !/^[1-9]\d*$/.test(run))) throw new ServiceError('optimization-invalid-arguments', 2);

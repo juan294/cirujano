@@ -47,6 +47,9 @@ export async function copyInputContext(store:OperationStore,context:InputContext
 async function copyDiagnosisContext(store:OperationStore,context:DiagnosisContext):Promise<void> {
   await copyInputContext(store,context);await store.writeJson('config.json',context.config);await store.writeArtifact('diagnosis',context.diagnosis);await store.writeArtifact('inference',context.inference);await store.writeJson('diagnosis-intent.json',context.intent);await store.writeJson('diagnosis-state.json',context.diagnosisState);
 }
+export async function copyProposalContext(store:OperationStore,context:ProposalContext):Promise<void> {
+  await copyDiagnosisContext(store,context);await store.writeArtifact('proposal',context.proposal);await store.writeText('candidate.yml',context.candidate);await store.writeText('workflow.patch',context.patch);await store.writeJson('patch-receipt.json',patchReceipt(context,context.proposal,editor(context)));
+}
 async function readCopiedDiagnosisContext(directory:string):Promise<DiagnosisContext> {
   return readDiagnosisContext(join(directory,'input.json'),join(directory,'diagnosis.json'),'diagnosis-state.json','diagnosis-intent.json');
 }
