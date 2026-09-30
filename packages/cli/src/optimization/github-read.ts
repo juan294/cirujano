@@ -32,16 +32,19 @@ function validateTree(tree:Record<string,unknown>[],rootSha:string):void {
 }
 
 /** Fixed GitHub origin, explicit GET, one bounded response, no retries or raw logs. */
-export async function githubGet(endpoint:string, options:GitHubReadOptions={}):Promise<Record<string,unknown>> {
- if(!/^repos\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\//.test(`${endpoint}/`)||endpoint.includes('..')||endpoint.includes('/logs')||/[\s#\\]/.test(endpoint)) refuse('github-unsafe-endpoint');
+export async function githubReadJson(endpoint:string, options:GitHubReadOptions={}):Promise<unknown> {
+ const comparison=/^repos\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/compare\/[a-f0-9]{40}\.\.\.[a-f0-9]{40}$/.exec(endpoint);
+ const immutableComparison=comparison!==null&&!comparison[1]!.includes('..')&&comparison[1]!.split('/').every(part=>part!=='.');
+ if(!/^repos\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\//.test(`${endpoint}/`)||(endpoint.includes('..')&&!immutableComparison)||endpoint.includes('/logs')||/[\s#\\]/.test(endpoint)) refuse('github-unsafe-endpoint');
  const runner=options.pageRunner??defaultGitHubPageRunner;
  let stdout:string;
  try { ({stdout}=await runner(options.ghPath??process.env['CIRUJANO_GH_PATH']??'gh',['api','--method','GET','--hostname','github.com',endpoint,'-H','Accept: application/vnd.github+json','-H','X-GitHub-Api-Version: 2022-11-28'],{encoding:'utf8',maxBuffer:8*1024*1024,timeout:60_000})); }
  catch { return refuse('github-read-failed'); }
  if(Buffer.byteLength(stdout)>8*1024*1024) refuse('github-response-too-large');
- return record(parseStrictJson(stdout,8*1024*1024),'GitHub response');
+ return parseStrictJson(stdout,8*1024*1024);
 }
-async function paged(endpoint:string,key:string,options:GitHubReadOptions):Promise<Record<string,unknown>[]> {
+export async function githubGet(endpoint:string, options:GitHubReadOptions={}):Promise<Record<string,unknown>> {return record(await githubReadJson(endpoint,options),'GitHub response');}
+export async function githubPaged(endpoint:string,key:string,options:GitHubReadOptions):Promise<Record<string,unknown>[]> {
  const result:Record<string,unknown>[]=[];let total:number|undefined;
  for(let page=1;page<=50;page++) {
   const response=await githubGet(`${endpoint}${endpoint.includes('?')?'&':'?'}per_page=100&page=${page}`,options);
@@ -132,7 +135,7 @@ export async function collectGitHubInput(request:CollectionRequest,options:Colle
  for(const runId of request.runs) {
   const latest=await githubGet(`repos/${request.repository}/actions/runs/${runId}`,options);const attempt=assertRun(latest,request,retained.repositoryId,runId);
   assertRun(await githubGet(`repos/${request.repository}/actions/runs/${runId}/attempts/${attempt}`,options),request,retained.repositoryId,runId,attempt);
-  const jobs=await paged(`repos/${request.repository}/actions/runs/${runId}/attempts/${attempt}/jobs`,'jobs',options);const names=new Set<string>();
+  const jobs=await githubPaged(`repos/${request.repository}/actions/runs/${runId}/attempts/${attempt}/jobs`,'jobs',options);const names=new Set<string>();
   for(const item of jobs) { const name=text(item.name,'job.name');if(names.has(name)||item.run_id!==runId||item.run_attempt!==attempt||item.head_sha!==request.ref||item.status!=='completed'||item.conclusion!=='success') refuse('github-job-inventory');names.add(name);required.add(name); }
   const observedInventory=canonicalJson([...names].sort());if(jobInventory!==undefined&&jobInventory!==observedInventory) refuse('github-job-inventory-drift');jobInventory=observedInventory;
   const targets=jobs.filter(item=>item.name===jobName);if(targets.length!==1) refuse('github-selected-job-identity');const target=targets[0]!;
@@ -140,7 +143,7 @@ export async function collectGitHubInput(request:CollectionRequest,options:Colle
   inventories[`run-${runId}-jobs`]=canonicalJson(jobs.map(item=>({id:positiveInteger(item.id,'job.id'),name:item.name,conclusion:item.conclusion})));
   baselines.push({runId,attempt,jobId:positiveInteger(target.id,'job.id'),headSha:request.ref,conclusion:'success',startedAt,completedAt,elapsedMs,installStepNumber:timing.number,installElapsedMs:timing.elapsedMs,runnerLabels:array(target.labels,'job.labels').map(label=>text(label,'runner label')),runnerImage:null,requiredChecks:[...names].sort()});
  }
- const checks=await paged(`repos/${request.repository}/commits/${request.ref}/check-runs?filter=latest`,'check_runs',options);
+ const checks=await githubPaged(`repos/${request.repository}/commits/${request.ref}/check-runs?filter=latest`,'check_runs',options);
  for(const check of checks) { if(check.head_sha!==request.ref||check.status!=='completed'||check.conclusion!=='success') refuse('github-required-check-incomplete');required.add(text(check.name,'check.name')); }
  if(!checks.length) refuse('github-missing-check-inventory');
  const requiredChecks=[...required].sort();inventories['required-checks']=canonicalJson(checks.map(check=>({name:check.name,conclusion:check.conclusion,headSha:check.head_sha})));

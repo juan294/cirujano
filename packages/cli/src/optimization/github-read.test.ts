@@ -1,10 +1,31 @@
 import { describe, expect, it } from 'vitest';
 import { createHash } from 'node:crypto';
 import { decodeActionReceipt, decodeArtifact, decodeSourceManifest, gitBlobSha, jsonDigest, sha256 } from '@cirujano/core';
-import { collectGitHubInput, readGitHubSource } from './github-read.js';
+import { collectGitHubInput, githubReadJson, readGitHubSource } from './github-read.js';
 import { baseSha, githubFixture, repository } from './github-read.test-helper.js';
 const request={repository,ref:baseSha,workflow:'.github/workflows/ci.yml',job:'test',runs:[99]};
 const identity={toolSourceSha:'1'.repeat(40),bundleDigest:'2'.repeat(64)};
+describe('bounded GitHub comparison routes',()=>{
+ it('accepts only an immutable SHA comparison at the fixed read-only origin',async()=>{
+  const endpoint=`repos/${repository}/compare/${baseSha}...${'c'.repeat(40)}`,calls:string[][]=[];
+  const result=await githubReadJson(endpoint,{pageRunner:async(_command,args)=>{calls.push(args);return{stdout:JSON.stringify({status:'ahead'})};}});
+  expect(result).toEqual({status:'ahead'});expect(calls).toHaveLength(1);expect(calls[0]).toContain(endpoint);
+  expect(calls[0]?.slice(0,5)).toEqual(['api','--method','GET','--hostname','github.com']);
+ });
+ it.each([
+  `repos/${repository}/compare/develop...main`,
+  `repos/${repository}/compare/${baseSha.slice(1)}...${'c'.repeat(40)}`,
+  `repos/${repository}/compare/${baseSha}..${'c'.repeat(40)}`,
+  `repos/${repository}/compare/${baseSha}....${'c'.repeat(40)}`,
+  `repos/${repository}/compare/${baseSha}...${'c'.repeat(40)}?page=1`,
+  `repos/${repository}/compare/${baseSha}...${'c'.repeat(40)}/../pulls`,
+  `repos/../proof/compare/${baseSha}...${'c'.repeat(40)}`,
+  `repos/./proof/compare/${baseSha}...${'c'.repeat(40)}`,
+  `repos/${repository}/git/../pulls`,
+ ])('rejects malformed or traversal endpoint %s before transport',async endpoint=>{
+  const calls:string[][]=[];await expect(githubReadJson(endpoint,{pageRunner:async(_command,args)=>{calls.push(args);return{stdout:'{}'};}})).rejects.toThrow('github-unsafe-endpoint');expect(calls).toEqual([]);
+ });
+});
 describe('immutable read-only GitHub collection',()=>{
  it('retains a real source blob above 1 MiB within the documented file and response limits',async()=>{
   const bytes=Buffer.alloc(2*1024*1024,0x61),blobSha=gitBlobSha(bytes);

@@ -11,7 +11,7 @@ export interface VerificationOptions extends Omit<SandboxClientOptions,'project'
 export interface VerificationDisposition {status:'sandbox-verified'|'failed'|'rejected'|'outcome-unknown';reasonCode:string;artifactPath:string|null;recovery?:string}
 interface RoleJournal {createStatus:'intent'|'created'|'failed'|'outcome-unknown';role:'base'|'candidate';payloadDigest:string;intent:SandboxCreateIntent|null;record:SandboxRecord|null;receipt:SandboxObservedOperation|null;envelope:HarnessEnvelope|null;cancelRequested:boolean}
 interface PairJournal {schemaVersion:1;kind:'sandbox-pair';proposalDigest:string;profileDigest:string;permitDigest:string;status:'running'|'failed'|'outcome-unknown'|'sandbox-verified';roles:RoleJournal[];startedAt:string;completedAt:string|null;latestArtifact:string|null;artifactDigest:string|null}
-interface PairContext {context:ProposalContext;profile:ExecutionProfile;permit:SandboxPermit;payloads:SandboxPayload[];journal:PairJournal}
+export interface PairContext {context:ProposalContext;profile:ExecutionProfile;permit:SandboxPermit;payloads:SandboxPayload[];journal:PairJournal}
 const terminal=(status:string)=>['SUCCESS','FAILED','CANCELLED'].includes(status);
 function exact(value:unknown,keys:string[]):Record<string,unknown>{canonicalJson(value);if(!value||typeof value!=='object'||Array.isArray(value)||Object.keys(value).sort().join(',')!==keys.sort().join(','))throw new Error('sandbox-journal-invalid');return value as Record<string,unknown>;}
 function reject(reasonCode='sandbox-evidence-rejected'):VerificationDisposition{return{status:'rejected',reasonCode,artifactPath:null};}

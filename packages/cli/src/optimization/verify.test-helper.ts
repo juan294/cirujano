@@ -10,9 +10,11 @@ import { readPrivateJson } from './store.js';
 import { decodeExecutionProfile,completeCommands,type ExecutionProfile,type SandboxPayload } from './execution-profile.js';
 import type { OptimizeArguments } from './arguments.js';
 export const optimizationCommand=(action:OptimizeArguments['action'],flags:Record<string,string|string[]>):OptimizeArguments=>({command:'optimize',action,flags,format:'json'});
-export async function verificationFixture(){
+export async function verificationFixture(options:{singleJob?:boolean}={}){
  const directory=await realpath(await mkdtemp(join(tmpdir(),'optimization-verify-'))),repositoryPath=join(directory,'repository');await mkdir(repositoryPath);
- const fixture=githubFixture(),git=(...args:string[])=>execFileSync('git',['-C',repositoryPath,'-c','core.hooksPath=/dev/null','-c','core.fsmonitor=false','-c','user.name=Owned Fixture','-c','user.email=fixture@invalid','-c','commit.gpgsign=false',...args],{encoding:'utf8'}).trim();
+ const fixture=githubFixture();
+ if(options.singleJob)for(const response of Object.values(fixture.responses)){if(response&&typeof response==='object'&&'jobs'in response){const page=response as {total_count:number;jobs:{name:string}[]};page.jobs=page.jobs.filter(job=>job.name==='test');page.total_count=page.jobs.length;}else if(response&&typeof response==='object'&&'check_runs'in response){const page=response as {total_count:number;check_runs:{name:string}[]};page.check_runs=page.check_runs.filter(check=>check.name==='test');page.total_count=page.check_runs.length;}}
+ const git=(...args:string[])=>execFileSync('git',['-C',repositoryPath,'-c','core.hooksPath=/dev/null','-c','core.fsmonitor=false','-c','user.name=Owned Fixture','-c','user.email=fixture@invalid','-c','commit.gpgsign=false',...args],{encoding:'utf8'}).trim();
  for(const [path,bytes]of Object.entries(fixture.files)){await mkdir(dirname(join(repositoryPath,path)),{recursive:true});await writeFile(join(repositoryPath,path),bytes);}
  git('init','--initial-branch=develop');git('add','.');git('commit','-m','Owned baseline');const realBase=git('rev-parse','HEAD');
  const pageRunner:typeof fixture.pageRunner=async(command,args,options)=>{const reply=await fixture.pageRunner(command,args.map(arg=>arg.replace(realBase,baseSha)),options);const parsed=JSON.parse(reply.stdout);function rewrite(value:unknown):unknown{if(Array.isArray(value))return value.map(rewrite);if(value&&typeof value==='object')return Object.fromEntries(Object.entries(value).map(([key,item])=>[key,(key==='head_sha'||key==='sha')&&item===baseSha?realBase:rewrite(item)]));return value;}return{stdout:JSON.stringify(rewrite(parsed))};};

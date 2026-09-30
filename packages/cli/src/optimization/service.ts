@@ -16,17 +16,20 @@ import { diagnoseOptimization, decodeInferencePreview } from './diagnose.js';
 import { decodeInferenceConfig, type InferenceIntent } from './nebius.js';
 import { consumePermit, readPrivateJson, scrubOptimizationValue, withOperationStore } from './store.js';
 import { verifyPair, reconcileSandbox, cancelSandbox } from './verify.js';
+import {runMeasure,readMeasurementContext,type GitHubBinaryRunner} from './measure.js';
+import {runReport,readReportContext} from './report-service.js';
+import {runPublish,reconcilePublication,type GitHubMutationRunner} from './publish.js';
 
 declare const CIRUJANO_TOOL_SOURCE_SHA: string | undefined;
 export interface OptimizationService { run(args: OptimizeArguments, io: CliIo): Promise<0 | 1 | 2> }
-export interface OptimizationServiceOptions { pageRunner?: GitHubPageRunner; ghPath?: string; fetch?: typeof fetch; apiKey?: string; iamToken?: string; toolSourceSha?: string; bundleDigest?: string; sourceIdentity?: () => Promise<{ toolSourceSha: string; bundleDigest: string }>; permitLedger?: string }
+export interface OptimizationServiceOptions { pageRunner?: GitHubPageRunner; ghPath?: string; fetch?: typeof fetch; apiKey?: string; iamToken?: string; toolSourceSha?: string; bundleDigest?: string; sourceIdentity?: () => Promise<{ toolSourceSha: string; bundleDigest: string }>; permitLedger?: string; binaryRunner?: GitHubBinaryRunner; mutationRunner?: GitHubMutationRunner; now?:()=>number }
 interface OperationState { schemaVersion: 1; kind: 'optimization-operation'; action: string; status: string; reasonCode: string; nextCommand: string; inputDigest: string | null }
 class ServiceError extends Error { constructor(readonly reasonCode: string, readonly code: 1 | 2 = 1) { super(reasonCode); } }
 function flag(args: OptimizeArguments, key: string): string { const value = args.flags[key]; if (typeof value !== 'string' || !value) throw new ServiceError('optimization-invalid-arguments', 2); return value; }
 function optionalFlag(args: OptimizeArguments, key: string): string | undefined { return args.flags[key] === undefined ? undefined : flag(args, key); }
-function emit(args: OptimizeArguments, io: CliIo, status: string, reasonCode: string, nextCommand: string, recovery?:string): void {
-  const result = { status, reasonCode, nextCommand,...(recovery?{recovery}:{}) };
-  io.stdout(args.format === 'json' ? `${JSON.stringify(result)}\n` : `${status}: ${reasonCode}\nNext: ${nextCommand}\n${recovery?`Recovery: ${recovery}\n`:''}`);
+function emit(args: OptimizeArguments, io: CliIo, status: string, reasonCode: string, nextCommand: string, recovery?:string,details?:{artifactPath:string|null;url?:string}): void {
+  const result = { status, reasonCode, nextCommand,...(recovery?{recovery}:{}),...details };
+  io.stdout(args.format === 'json' ? `${JSON.stringify(result)}\n` : `${status}: ${reasonCode}\nNext: ${nextCommand}\n${recovery?`Recovery: ${recovery}\n`:''}${details?.artifactPath?`Artifact: ${details.artifactPath}\n`:''}${details?.url?`Pull request: ${details.url}\n`:''}`);
 }
 function missing(error: unknown): boolean { return (error as NodeJS.ErrnoException).code === 'ENOENT'; }
 function shellQuote(value: string): string { return `'${value.replace(/'/g, "'\\''")}'`; }
@@ -46,6 +49,32 @@ export function createOptimizationService(options: OptimizationServiceOptions = 
     const statusCommand = `cirujano optimize status --operation ${shellQuote(typeof args.flags.output === 'string' ? args.flags.output : typeof args.flags.operation === 'string' ? args.flags.operation : '<operation>')} --format ${args.format}`;
     try {
       if (args.action === 'propose') return await runPropose(args, io);
+      if(args.action==='measure'){
+        const result=await runMeasure(flag(args,'proposal'),flag(args,'sandbox'),await readPrivateJson(flag(args,'cohort')),flag(args,'output'),options);
+        emit(args,io,result.status,result.reasonCode,result.artifactPath?`cirujano optimize status --operation ${shellQuote(dirname(result.artifactPath))}`:statusCommand);return ['measured-improvement','no-improvement'].includes(result.status)?0:1;
+      }
+      if(args.action==='report'){
+        const result=await runReport(flag(args,'proposal'),flag(args,'sandbox'),flag(args,'measurement'),flag(args,'output'));
+        emit(args,io,result.status,result.reasonCode,result.artifactPath?`cirujano optimize status --operation ${shellQuote(dirname(result.artifactPath))}`:statusCommand);return ['ready-to-publish','no-improvement'].includes(result.status)?0:1;
+      }
+      if(args.action==='publish'){
+        const result=await runPublish(flag(args,'report'),await readPrivateJson(flag(args,'permit')),options);
+        emit(args,io,result.status,result.reasonCode,`cirujano optimize status --operation ${shellQuote(join(dirname(flag(args,'report')),'publication'))}`,undefined,result);return result.status==='published'?0:1;
+      }
+      if(args.action==='status'){
+        const directory=flag(args,'operation'),intent=await optionalJson(join(directory,'intent.json'));
+        if(intent&&typeof intent==='object'&&(intent as {kind?:unknown}).kind==='publication-intent'){
+          const result=await reconcilePublication(directory,options);emit(args,io,result.status,result.reasonCode,statusCommand,undefined,result);return result.status==='published'?0:1;
+        }
+        if(intent&&typeof intent==='object'&&(intent as {kind?:unknown}).kind==='measurement-intent'){
+          const context=await readMeasurementContext(join(directory,'measurement.json'));emit(args,io,context.measurement.status,context.measurement.status,statusCommand);return context.measurement.status==='rejected'?1:0;
+        }
+        const operation=await optionalJson(join(directory,'operation.json'));
+        if(operation&&typeof operation==='object'&&(operation as {action?:unknown}).action==='report'){
+          const context=await readReportContext(join(directory,'report.json'));emit(args,io,context.report.status,context.report.status,statusCommand);return context.report.status==='rejected'?1:0;
+        }
+      }
+
       if(args.action==='verify'||args.action==='cancel'||args.action==='status'){
         const directory=args.action==='verify'?null:flag(args,'operation'),intent=directory?await optionalJson(join(directory,'intent.json')):null;
         if(args.action!=='status'||(intent&&typeof intent==='object'&&(intent as {kind?:unknown}).kind==='sandbox-pair')){

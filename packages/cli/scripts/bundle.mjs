@@ -23,3 +23,18 @@ await build({
 });
 
 await chmod('dist/bin.js', 0o755);
+
+// The same owned reporter runs unchanged in baseline/candidate verification.
+await build({
+  entryPoints: ['src/optimization/quality-reporter-entry.ts'],
+  bundle: true,
+  platform: 'node',
+  target: 'node22',
+  format: 'esm',
+  banner: { js: "import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);" },
+  outfile: 'dist/quality-reporter.mjs',
+  sourcemap: false,
+  legalComments: 'eof',
+  define: { CIRUJANO_TOOL_SOURCE_SHA: JSON.stringify(toolSourceSha) },
+});
+await chmod('dist/quality-reporter.mjs', 0o755);

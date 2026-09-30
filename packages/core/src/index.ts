@@ -63,3 +63,8 @@ export { inspectWorkflow, parseWorkflowSource, protectedWorkflowDigest } from '.
 export type { WorkflowEligibility, WorkflowEvidence } from './optimization/workflow.js';
 export { createPnpmCachePatch, validateCacheOnlyChange } from './optimization/patch.js';
 export type { PnpmCachePatch, WorkflowInspectionOptions } from './optimization/patch.js';
+export { compareMeasurement, assertMeasuredEvidence, decodeCohortManifest } from './optimization/measurement.js';
+export type { ComparisonInputs, CohortManifest, GitHubPricing } from './optimization/measurement.js';
+export { renderOptimizationReport } from './optimization/report.js';
+export type { ReportRenderInputs } from './optimization/report.js';
+export { normalizeQualityReports } from './optimization/quality-reporter.js';
