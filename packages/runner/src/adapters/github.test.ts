@@ -300,3 +300,146 @@ describe('runner ownership and sensitive responses (R06)', () => {
     expect(() => new GitHubAdapter(process, { ghPath: 'gh', timeoutMs: 5_000 })).toThrow('absolute');
   });
 });
+
+describe('GitHub conditional reads and quota guard', () => {
+  const repository = { id: 123, full_name: 'trusted/private', private: true, visibility: 'private', fork: false };
+  function reply(status: number, body: unknown = null, headers: Record<string, string> = {}, exitCode = 0): ProcessResult {
+    return { exitCode, stderr: '', stdout: `HTTP/2 ${status}\n${Object.entries(headers).map(([key, value]) => `${key}: ${value}`).join('\n')}\n\n${body === null ? '' : JSON.stringify(body)}`.replace('\n\n\n', '\n\n') };
+  }
+  function fixture(results: ProcessResult[]) {
+    const calls: string[][] = [];
+    let now = NOW;
+    const adapter = new GitHubAdapter({ run: async (_command, args) => { calls.push([...args]); const result = results.shift(); if (!result) throw new Error('unexpected dispatch'); return result; } }, { ghPath: '/bin/gh', timeoutMs: 1000, now: () => now });
+    return { adapter, calls, advance: (ms: number) => { now += ms; } };
+  }
+  it('revalidates repository identity with a matched exit-1 304', async () => {
+    const { adapter, calls } = fixture([reply(200, repository, { etag: '"one"' }), reply(304, null, {}, 1)]);
+    await adapter.repository('trusted', 'private');
+    expect(await adapter.repository('trusted', 'private')).toMatchObject({ id: 123 });
+    expect(calls[1]).toContain('If-None-Match: "one"');
+  });
+  it('revalidates every pagination page and preserves omitted Link on 304', async () => {
+    const first = { total_count: 2, workflow_runs: [run()] };
+    const second = { total_count: 2, workflow_runs: [run({ id: 1002 })] };
+    const { adapter, calls } = fixture([reply(200, first, { etag: '"p1"', link: '<https://api.github.test/runs?page=2>; rel="next"' }), reply(200, second, { etag: '"p2"' }), reply(304), reply(304)]);
+    expect((await adapter.listRuns('trusted', 'private', 'queued')).complete).toBe(true);
+    expect((await adapter.listRuns('trusted', 'private', 'queued')).items).toHaveLength(2);
+    expect(calls[2]).toContain('If-None-Match: "p1"');
+    expect(calls[3]).toContain('If-None-Match: "p2"');
+  });
+  it('replaces pagination and validator metadata on a new 200', async () => {
+    const empty = { total_count: 0, workflow_runs: [] };
+    const { adapter, calls } = fixture([reply(200, empty, { etag: '"old"' }), reply(200, empty), reply(200, empty)]);
+    for (let i = 0; i < 3; i++) expect((await adapter.listRuns('trusted', 'private', 'queued')).complete).toBe(true);
+    expect(calls[1]).toContain('If-None-Match: "old"');
+    expect(calls[2]!.some((arg) => arg.startsWith('If-None-Match:'))).toBe(false);
+  });
+  it.each([reply(304), reply(200, repository, { etag: '"bad"' }, 1), reply(500, { message: 'failed' }), { exitCode: 1, stdout: '', stderr: 'failed' }])('never returns stale success for invalid responses', async (failure) => {
+    const { adapter } = fixture([reply(200, repository), failure]);
+    await adapter.repository('trusted', 'private');
+    await expect(adapter.repository('trusted', 'private')).rejects.toThrow();
+  });
+  it('uses only fresh quota headers on 304 and blocks reads until reset', async () => {
+    const { adapter, calls, advance } = fixture([reply(200, repository, { etag: '"one"', 'x-ratelimit-resource': 'core', 'x-ratelimit-remaining': '4000' }), reply(304, null, { 'x-ratelimit-resource': 'core', 'x-ratelimit-remaining': '2000', 'x-ratelimit-reset': String(NOW / 1000 + 120) }), reply(304)]);
+    await adapter.repository('trusted', 'private'); await adapter.repository('trusted', 'private');
+    expect(adapter.readHold()).toMatchObject({ retryAfterMs: 120_000, retryAtMs: NOW + 120_000 });
+    expect(await adapter.listRuns('trusted', 'private', 'queued')).toMatchObject({ complete: false, items: [], retryAfterMs: 120_000 });
+    expect(calls).toHaveLength(2);
+    advance(120_000);
+    await adapter.repository('trusted', 'private');
+    expect(adapter.readHold()).toBeNull();
+  });
+  it('ignores unrelated resources, uses reserve fallback, and escalates repeated unhinted throttles', async () => {
+    const { adapter, advance } = fixture([reply(200, repository, { 'x-ratelimit-resource': 'search', 'x-ratelimit-remaining': '0' }), reply(200, repository, { 'x-ratelimit-resource': 'core', 'x-ratelimit-remaining': '1' }), reply(429, {}), reply(429, {})]);
+    await adapter.repository('trusted', 'private'); expect(adapter.readHold()).toBeNull();
+    await adapter.repository('trusted', 'private'); expect(adapter.readHold()?.retryAfterMs).toBe(60_000);
+    advance(60_000); await expect(adapter.repository('trusted', 'private')).rejects.toThrow(); expect(adapter.readHold()?.retryAfterMs).toBe(60_000);
+    advance(60_000); await expect(adapter.repository('trusted', 'private')).rejects.toThrow(); expect(adapter.readHold()?.retryAfterMs).toBe(120_000);
+  });
+  it('separates status and attempt identities and revalidates jobs and runners', async () => {
+    const jobs = { total_count: 1, jobs: [job()] }; const runners = { total_count: 0, runners: [] }; const runs = { total_count: 0, workflow_runs: [] };
+    const { adapter, calls } = fixture([reply(200, runs, { etag: '"queued"' }), reply(200, runs), reply(200, jobs, { etag: '"jobs"' }), reply(200, jobs), reply(304), reply(200, runners, { etag: '"runners"' }), reply(304)]);
+    await adapter.listRuns('trusted', 'private', 'queued'); await adapter.listRuns('trusted', 'private', 'pending');
+    await adapter.listJobs('trusted', 'private', 1001, 2); await adapter.listJobs('trusted', 'private', 1001, 3);
+    expect((await adapter.listJobs('trusted', 'private', 1001, 2)).items).toHaveLength(1);
+    await adapter.listRunners('trusted', 'private'); expect((await adapter.listRunners('trusted', 'private')).complete).toBe(true);
+    for (const i of [1, 3]) expect(calls[i]!.some((arg) => arg.startsWith('If-None-Match:'))).toBe(false);
+    expect(calls[4]).toContain('If-None-Match: "jobs"'); expect(calls[6]).toContain('If-None-Match: "runners"');
+  });
+  it('evicts oldest entries and never retains an oversized representation', async () => {
+    const results = Array.from({ length: 130 }, () => reply(200, repository, { etag: '"one"' }));
+    results.push(reply(200, { ...repository, padding: 'x'.repeat(8 * 1024 * 1024) }, { etag: '"large"' }), reply(200, repository));
+    const { adapter, calls } = fixture(results);
+    for (let i = 0; i < 129; i++) await adapter.repository('trusted', `repo${i}`);
+    await adapter.repository('trusted', 'repo0'); await adapter.repository('trusted', 'large'); await adapter.repository('trusted', 'large');
+    expect(calls[129]!.some((arg) => arg.startsWith('If-None-Match:'))).toBe(false);
+    expect(calls[131]!.some((arg) => arg.startsWith('If-None-Match:'))).toBe(false);
+  });
+  it('does not shorten a hold when concurrent responses arrive out of order', async () => {
+    const pending: Array<(value: ProcessResult) => void> = [];
+    const adapter = new GitHubAdapter({ run: async () => new Promise((resolve) => { pending.push(resolve); }) }, { ghPath: '/bin/gh', timeoutMs: 1000, now: () => NOW });
+    const first = adapter.repository('trusted', 'first'); const second = adapter.repository('trusted', 'second');
+    pending[0]!(reply(200, repository, { 'x-ratelimit-resource': 'core', 'x-ratelimit-remaining': '1', 'x-ratelimit-reset': String(NOW / 1000 + 120) })); await first;
+    pending[1]!(reply(200, repository, { 'x-ratelimit-resource': 'core', 'x-ratelimit-remaining': '1000' })); await second;
+    expect(adapter.readHold()?.retryAfterMs).toBe(120_000);
+  });
+  it('does not cache mutations and invalidates cached runner lists after registration', async () => {
+    const { adapter, calls } = fixture([reply(200, { total_count: 0, runners: [] }, { etag: '"runners"' }), reply(201, { token: 'secret', expires_at: '2026-10-01T00:00:00Z' }, { etag: '"token"' }), reply(201, { token: 'secret', expires_at: '2026-10-01T00:00:00Z' }), reply(200, { total_count: 0, runners: [] })]);
+    await adapter.listRunners('trusted', 'private'); await adapter.createRegistrationToken('trusted', 'private'); await adapter.createRegistrationToken('trusted', 'private'); await adapter.listRunners('trusted', 'private');
+    for (const i of [1, 2, 3]) expect(calls[i]!.some((arg) => arg.startsWith('If-None-Match:'))).toBe(false);
+  });
+  it.each([reply(500, {}), reply(403, {}, { 'retry-after': '9' }, 1), { exitCode: 0, stdout: 'HTTP/2 200\n\n{broken', stderr: '' }])('refuses cached evidence after a failed revalidation', async (failure) => {
+    const { adapter } = fixture([reply(200, repository, { etag: '"old"' }), failure]);
+    await adapter.repository('trusted', 'private');
+    await expect(adapter.repository('trusted', 'private')).rejects.toThrow();
+  });
+  it('replaces an old pagination Link and changed ETag after a new 200', async () => {
+    const { adapter, calls } = fixture([
+      reply(200, { total_count: 2, workflow_runs: [run()] }, { etag: '"old"', link: '<https://api.github.test/runs?page=2>; rel="next"' }),
+      reply(200, { total_count: 2, workflow_runs: [run({ id: 1002 })] }),
+      reply(200, { total_count: 0, workflow_runs: [] }, { etag: '"new"' }), reply(304),
+    ]);
+    await adapter.listRuns('trusted', 'private', 'queued');
+    expect((await adapter.listRuns('trusted', 'private', 'queued')).items).toHaveLength(0);
+    expect((await adapter.listRuns('trusted', 'private', 'queued')).complete).toBe(true);
+    expect(calls).toHaveLength(4); expect(calls[3]).toContain('If-None-Match: "new"');
+  });
+  it('enforces the total cache byte bound independently of entry count', async () => {
+    const large = { ...repository, padding: 'x'.repeat(3 * 1024 * 1024) };
+    const { adapter, calls } = fixture([reply(200, large, { etag: '"a"' }), reply(200, large, { etag: '"b"' }), reply(200, large, { etag: '"c"' }), reply(200, repository)]);
+    for (const name of ['a', 'b', 'c', 'a']) await adapter.repository('trusted', name);
+    expect(calls[3]!.some((arg) => arg.startsWith('If-None-Match:'))).toBe(false);
+  });
+  it('invalidates runner listings after guarded removal and leaves mutations unblocked', async () => {
+    const runner = { id: 9, name: 'owned', os: 'linux', status: 'online' as const, busy: false, labels: ['owned'] };
+    const { adapter, calls, advance } = fixture([reply(200, { total_count: 0, runners: [] }, { etag: '"runners"', 'x-ratelimit-resource': 'core', 'x-ratelimit-remaining': '1' }), reply(204), reply(200, { total_count: 0, runners: [] })]);
+    await adapter.listRunners('trusted', 'private');
+    await adapter.removeOwnedRunner('trusted', 'private', { ownership: 'owned', matches: [runner], runner });
+    expect(calls[1]).toContain('DELETE');
+    advance(60_000); await adapter.listRunners('trusted', 'private');
+    expect(calls[2]!.some((arg) => arg.startsWith('If-None-Match:'))).toBe(false);
+  });
+  it('does not mark changing pagination totals complete during mixed revalidation', async () => {
+    const first = { total_count: 2, workflow_runs: [run()] };
+    const { adapter } = fixture([
+      reply(200, first, { etag: '"first"', link: '<https://api.github.test/runs?page=2>; rel="next"' }), reply(200, { total_count: 2, workflow_runs: [run({ id: 1002 })] }),
+      reply(304), reply(200, { total_count: 3, workflow_runs: [run({ id: 1002 })] }),
+    ]);
+    await adapter.listRuns('trusted', 'private', 'queued');
+    expect(await adapter.listRuns('trusted', 'private', 'queued')).toMatchObject({ complete: false, items: [], reason: 'pagination total_count changed between pages' });
+  });
+
+  it.each([403, 429, 200])('records trustworthy quota headers before rejecting malformed HTTP %s bodies', async (status) => {
+    const { adapter, calls } = fixture([{ exitCode: status === 200 ? 0 : 1, stderr: '', stdout: `HTTP/2 ${status}\nretry-after: 120\nx-ratelimit-resource: core\nx-ratelimit-remaining: 1000\nx-ratelimit-reset: ${NOW / 1000 + 120}\n\n<html>not JSON</html>` }]);
+    await expect(adapter.repository('trusted', 'private')).rejects.toThrow('not valid JSON');
+    expect(adapter.readHold()).toMatchObject({ retryAfterMs: 120_000 });
+    expect(await adapter.listRuns('trusted', 'private', 'queued')).toMatchObject({ complete: false, retryAfterMs: 120_000 });
+    expect(calls).toHaveLength(1);
+  });
+  it('rejects a nonempty 304 response even with a matching cached representation', async () => {
+    const { adapter } = fixture([reply(200, repository, { etag: '"one"' }), reply(304, { ignored: true })]);
+    await adapter.repository('trusted', 'private');
+    await expect(adapter.repository('trusted', 'private')).rejects.toThrow('304 response body must be empty');
+  });
+
+});
