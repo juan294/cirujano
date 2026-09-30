@@ -249,7 +249,7 @@ async function watch(context: RuntimeContext, dryRun: boolean, io: CliIo): Promi
         executeEffect: (effect) => executeEffect(context, effect),
         reconcileEffect: (effect) => reconcileEffect(context, effect),
       });
-      io.stdout(`${JSON.stringify({ schemaVersion: 1, type: 'tick', status: result.status, decision: result.decision })}\n`);
+      io.stdout(`${JSON.stringify({ schemaVersion: 1, type: 'tick', status: result.status, decision: result.decision, queue: input.queue, githubReadHold: context.github.readHold() })}\n`);
       if (interrupted) {
         const recovery = await interruptRecovery(context);
         io.stdout(`${JSON.stringify({ schemaVersion: 1, type: 'interrupt-recovery', ...recovery })}\n`);
@@ -490,6 +490,10 @@ async function observe(context: RuntimeContext): Promise<LifecycleInput> {
     eligibleJobNames: context.config.eligibleJobNames, runnerLabel: context.config.runnerLabel,
     expectedRunnerName: expectedRunnerName(context, state), observedAtMs: nowMs,
   });
+  const githubReadHold = context.github.readHold();
+  if (githubReadHold !== null) {
+    queue = { ...queue, complete: false, eligibleQueuedJobs: 0, reason: githubReadHold.reason, retryAfterMs: githubReadHold.retryAfterMs };
+  }
   let journal = state?.lifecycle ?? {
     state: provider.vmStatus === 'absent' ? 'absent' as const : provider.vmStatus === 'stopped' ? 'stopped' as const : 'blocked' as const,
     startCount: 0, cumulativeRuntimeMs: 0, cumulativeCostUsd: 0, outstandingIntent: null, idleObservations: [], grantDeadlineMs: null,
