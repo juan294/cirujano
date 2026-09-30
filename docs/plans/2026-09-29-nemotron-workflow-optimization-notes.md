@@ -57,6 +57,14 @@ On September 29 the owner authorized `/rpi-implement` for all six phases, follow
 
 ## Deviations
 
+### Phase 6 proof-repository prerequisite
+
+Plan said: bind the concrete image/execution request to an owner-controlled public proof repository and its existing documented refs before external execution. Found: authenticated owner `juan294` can read GitHub, but `GET repos/juan294/cirujano-optimization-proof` returned HTTP 404; no existing owned non-production proof target was found. Chose: prepare the exact public benchmark locally and request repository creation plus baseline publication to `main` first, with zero expected workflow attempts and no provider action. Why: this establishes a real repository ID and baseline ref without inventing identity, publishing an implementation branch or changing a fleet target. After authorized bootstrap/readback, prepare the image request from the actual source manifest and bind later `develop` baseline/candidate publications and cohort attempts separately. This is a sequencing adjustment. Full Phase 6 preparation and H1 acceptance remain pending.
+
+The benchmark uses the pinned pnpm/action-setup v4 default executable path in its reporter configuration. The reviewed source-free Sandbox image must supply a trusted read-only alias at that path for the same pinned pnpm executable. Changing the command list, configuration, runtime or source between GitHub and Sandbox is not an alternative. The current cached Linux harness remains partial local isolation evidence.
+
+Read-only account checks on 2026-09-30 refreshed the existing Cloud CLI login and read its active project; they did not create resources. The actual Token Factory project was obtained through the existing browser session. The Cloud credential returned HTTP 401 from that project's Sandbox image API, and the process has no inference key. The authenticated official price table lists the selected model at USD 0.06 input and 0.24 output per million tokens, valid from 2026-01-01, excluding tax. Eight maximum-size inference requests reserve USD 0.03538944; a proposed USD 0.04 inference allowance is not spending authority or a total batch cap. Sandbox/image prices and correct API credential availability remain unverified. Private account identifiers and receipts stay in the ignored operational evidence directory.
+
 ### DEV-01: candidate identity before a Git commit exists
 
 Plan said: proposed artifacts include the exact candidate SHA. Found: proposal generation precedes applying the local patch or creating that commit. Chose: `proposal.candidateSha` may be null while uncommitted; downstream Sandbox, measurement and publication artifacts require a complete SHA. Why: a file digest or fabricated SHA must not stand in for an actual candidate commit. Later binding must independently validate the exact allowed workflow change and unchanged source.

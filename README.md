@@ -30,12 +30,23 @@ reused the stopped VM with a fresh registration, the controller drained and
 stopped the VM after the idle grace, survived being killed mid-job, and cleaned
 up every resource. The full matrix and its limits are in
 [docs/research/2026-09-15-nebius-runner-pilot-r14.md](docs/research/2026-09-15-nebius-runner-pilot-r14.md).
-Fleet enrollment and the 45-day savings evidence come next. Workflow patch
-proposal and verification remain future work. The measured starting point that
+Fleet enrollment and the 45-day savings evidence come next. The bounded pnpm
+cache optimizer is implemented locally: collection, NVIDIA inference transport,
+two-field patch validation, paired Sandbox verification, six-attempt GitHub
+measurement, reporting and authorized unmerged PR delivery. Its local tests use
+synthetic provider transports. The complete live model-to-Sandbox-to-GitHub-to-PR
+proof remains pending, and no optimizer savings are claimed. Setup, limits and
+the reproducible evaluation are in
+[the optimization demo](docs/demo/nemotron-optimization.md). Broader workflow
+patch families remain future work. The measured starting point that
 motivates the project is in
 [docs/research/2026-09-08-github-actions-cost-baseline.md](docs/research/2026-09-08-github-actions-cost-baseline.md).
 
 ## How it works
+
+The implemented workflow optimizer supports only the two-field pnpm cache
+change described in the demo. The diagnosis and prescription examples below
+describe intended broader capabilities that remain future work.
 
 ```mermaid
 flowchart LR
@@ -75,8 +86,8 @@ Three movements:
 
 | Service | Runtime role |
 | --- | --- |
-| NVIDIA Nemotron on Nebius Token Factory | Explains each waste pattern from workflow YAML and run history and drafts the patch. |
-| Nebius AI Cloud | Hosts the on-demand runner VMs. |
+| NVIDIA Nemotron on Nebius Token Factory | Selects the supported pnpm cache operation or abstains from bounded structural facts and collected evidence. The live optimizer proof is pending. |
+| Nebius AI Cloud / Token Factory Sandboxes | Hosts on-demand runners; the optimizer uses separately authorized paired offline Sandboxes. |
 | GitHub Actions API | Source of runs, jobs, and timings; target of the verified PRs. |
 
 ## Security boundary

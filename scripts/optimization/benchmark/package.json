@@ -1,0 +1,10 @@
+{
+  "name": "cirujano-public-optimization-benchmark",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.11.0",
+  "engines": { "node": "22.20.0" },
+  "scripts": { "test": "vitest run --coverage" },
+  "devDependencies": { "vitest": "4.1.11", "@vitest/coverage-v8": "4.1.11" }
+}
