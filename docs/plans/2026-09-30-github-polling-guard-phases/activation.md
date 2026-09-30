@@ -1,6 +1,6 @@
 # Activation proposal: GitHub polling guard
 
-Status: bounded canary accepted; six of nine controllers updated under the owner's conditional rollout authorization. The remaining three await natural absence and fresh identity/provider checks. See [canary validation](canary-validation.md). Local gates passed. Tested bundle SHA-256: `72789ce149f92c311f0d20b6055a75728f14efd0f5bdf1bb3d81a11a5d5604c5`.
+Status: bounded canary accepted; all nine controllers updated and individually verified under the owner's conditional rollout authorization. Five installed launchd policies were reconciled to the existing Standard template after a separately accepted recovery canary. See [canary validation](canary-validation.md). Local gates passed. Tested bundle SHA-256: `72789ce149f92c311f0d20b6055a75728f14efd0f5bdf1bb3d81a11a5d5604c5`.
 
 ## Entry conditions
 
