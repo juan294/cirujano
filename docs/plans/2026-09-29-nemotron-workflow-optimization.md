@@ -1,6 +1,6 @@
 # Nemotron workflow optimization: one verified pnpm-cache change
 
-Date: 2026-09-29. Status: implementation in progress; Phases 1-4 accepted locally; Phase 5 review repairs complete, final verification pending. Planning baseline: `develop`, `91b7908cb8ff1a23e115f346799a1208f4da342d`, `/Users/juan/code/cirujano`. Review and validation evidence: [notes](2026-09-29-nemotron-workflow-optimization-notes.md).
+Date: 2026-09-29. Status: implementation in progress; Phases 1-5 accepted locally; Phase 6 local preparation pending. Planning baseline: `develop`, `91b7908cb8ff1a23e115f346799a1208f4da342d`, `/Users/juan/code/cirujano`. Review and validation evidence: [notes](2026-09-29-nemotron-workflow-optimization-notes.md).
 
 ## Objective and authority
 
@@ -109,7 +109,7 @@ A supported patch with no measured benefit ends `no-improvement`, retains eviden
 
 Phase execution and acceptance are sequential. Independent units are identified in phase files; shared dispatch/export/package changes belong to one integration owner. `[batch-eligible]` never means remote branch publication. Every phase follows TDD, independent review, repair, simplify and sequential verification. Do not advance with unresolved review findings.
 
-Current local acceptance: Phase 1 at `23a8cf7145a060fbbba0641e5de104e11f82ac27`; Phase 2 at `0d3d7023ab0daa766e5450e57a260033de19b41c`. Phase 3 at `8ddc1fb10040292f9f1d29b310474c06f9f862f3`. Phase 4 at `fe114c9980a6b5c39732dc4dbf7b0a3be301d26a`. All four passed their complete local gates. Phases 5-6 remain pending. The companion notes retain exact evidence and unresolved live proof.
+Current local acceptance: Phase 1 at `23a8cf7145a060fbbba0641e5de104e11f82ac27`; Phase 2 at `0d3d7023ab0daa766e5450e57a260033de19b41c`. Phase 3 at `8ddc1fb10040292f9f1d29b310474c06f9f862f3`. Phase 4 at `fe114c9980a6b5c39732dc4dbf7b0a3be301d26a`. Phase 5 at `a1e38d775b0799064eac0d28c97d2db780ad053f`. All five passed their complete local gates. Phase 6 remains pending. The companion notes retain exact evidence and unresolved live proof.
 
 ## Required local gates
 
