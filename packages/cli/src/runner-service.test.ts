@@ -242,6 +242,44 @@ describe('production runner command composition (R11/R12)', () => {
     expect(await readFile(fixture.logPath, 'utf8')).not.toMatch(/instance (?:create|start|stop|delete)/u);
   });
 
+  it('blocks creation when the final successful job response reaches the quota reserve', async () => {
+    const fixture = await createFixture(false, true);
+    const io = captureIo();
+    const service = createRunnerCommandService({ ...fixture.env, CIRUJANO_FIXTURE_JOB_RESERVE: '1', CIRUJANO_NETWORK_EGRESS_LIMIT_GIB: '1', CIRUJANO_RUNNER_ONCE: '1' });
+    await runCli(['runner', 'watch', '--config', fixture.configPath, '--permit', fixture.permitPath!, '--dry-run'], io, service);
+    const tick = JSON.parse(io.out.join('').trim()) as { queue: { complete: boolean; eligibleQueuedJobs: number }; githubReadHold: unknown };
+    expect(tick.queue).toMatchObject({ complete: false, eligibleQueuedJobs: 0 });
+    expect(tick.githubReadHold).not.toBeNull();
+    const log = await readFile(fixture.logPath, 'utf8');
+    expect(log).toContain('/attempts/1/jobs');
+    expect(log).not.toMatch(/--method (?:POST|DELETE)| instance (?:create|start|stop|delete)/u);
+  });
+
+  it.each(['reserve', 'rate-limit'] as const)('discloses a GitHub %s hold while preserving busy evidence and accounting', async (mode) => {
+    const fixture = await createFixture(true, true, true);
+    const directory = resolve(fixture.configPath, '..');
+    const state = JSON.parse(await readFile(join(directory, 'controller-state.json'), 'utf8')) as { identity: unknown };
+    await writeFile(join(directory, 'active-job-state.json'), JSON.stringify({ schemaVersion: 1, identity: state.identity, activeJobKnown: true, observedAtMs: Date.now() }));
+    const io = captureIo();
+    const before = Date.now();
+    await writeFile(join(directory, 'accounting-state.json'), JSON.stringify({ schemaVersion: 1, identity: state.identity, diskStartedAtMs: before - 10_000, diskRetainedMs: 100, runtimeBaselineMs: 0, generation: 1, networkEgressBytes: 0 }));
+    const service = createRunnerCommandService({ ...fixture.env, CIRUJANO_FIXTURE_REPOSITORY_HOLD: mode, CIRUJANO_RUNNER_ONCE: '1' });
+    await runCli(['runner', 'watch', '--config', fixture.configPath, '--permit', fixture.permitPath!], io, service);
+    const tick = JSON.parse(io.out.join('').trim()) as { githubReadHold: { reason: string; retryAfterMs: number; retryAtMs: number }; queue: { complete: boolean; eligibleQueuedJobs: number; ownedBusy: boolean; retryAfterMs: number } };
+    expect(tick.githubReadHold).toMatchObject({ reason: expect.any(String) });
+    expect(tick.githubReadHold.retryAfterMs).toBeGreaterThan(0);
+    expect(tick.githubReadHold.retryAtMs).toBeGreaterThan(before);
+    expect(tick.queue).toMatchObject({ complete: false, eligibleQueuedJobs: 0, ownedBusy: true });
+    expect(tick.queue.retryAfterMs).toBeGreaterThan(0);
+    const log = await readFile(fixture.logPath, 'utf8');
+    expect(log).toContain('instance list');
+    expect(log).toContain('/opt/cirujano/status');
+    expect(log).not.toMatch(/--method (?:POST|DELETE)| instance (?:create|start|stop|delete)/u);
+    const accounting = JSON.parse(await readFile(join(directory, 'accounting-state.json'), 'utf8')) as { diskRetainedMs: number };
+    expect(accounting.diskRetainedMs).toBeGreaterThan(100);
+    expect(JSON.parse(await readFile(join(directory, 'active-job-state.json'), 'utf8'))).toMatchObject({ activeJobKnown: true });
+  });
+
   it.each([
     ['direct-prepared', 'intent', 0, 1],
     ['direct-emitting', 'emitting', 0, 1],
@@ -897,6 +935,12 @@ fs.appendFileSync(process.env.CIRUJANO_FIXTURE_LOG, process.argv.slice(2).join('
 const endpoint = process.argv.find((value) => value.startsWith('/repos/')) || '';
 let body = {};
 let status = 200;
+if (process.env.CIRUJANO_FIXTURE_REPOSITORY_HOLD && endpoint === '/repos/trusted/private') {
+  const headers = 'x-ratelimit-resource: core\\nx-ratelimit-remaining: 2000\\nx-ratelimit-reset: ' + Math.ceil(Date.now()/1000 + 60);
+  const limited = process.env.CIRUJANO_FIXTURE_REPOSITORY_HOLD === 'rate-limit';
+  process.stdout.write('HTTP/2 ' + (limited ? '429' : '200') + '\\n' + headers + '\\nretry-after: 60\\n\\n' + JSON.stringify(limited ? {} : {id:123,full_name:'trusted/private',private:true,visibility:'private',fork:false}));
+  process.exit(0);
+}
 if (process.env.CIRUJANO_FIXTURE_AUTH_FAIL === '1') { process.stdout.write('HTTP/2 401\\n\\n{}'); process.exit(0); }
 if (process.env.CIRUJANO_FIXTURE_RATE_LIMIT === '1' && endpoint.endsWith('/actions/runs')) { process.stdout.write('HTTP/2 429\\nretry-after: 1\\n\\n{}'); process.exit(0); }
 if (/^\\/repos\\/trusted\\/private$/.test(endpoint)) body = { id: 123, full_name: 'trusted/private', private: true, visibility: 'private', fork: false };
@@ -905,7 +949,8 @@ else if (endpoint.endsWith('/actions/runners')) { const owned=process.env.CIRUJA
 else if (endpoint.endsWith('/actions/runs')) body = process.env.CIRUJANO_FIXTURE_DEMAND === '1' ? { total_count: 1, workflow_runs: [{id:1001,workflow_id:41,run_attempt:1,status:'queued',conclusion:null,event:'push',head_branch:'develop',head_sha:'abc',repository:{id:123},head_repository:{id:123},pull_requests:[]}] } : { total_count: 0, workflow_runs: [] };
 else if (endpoint.includes('/attempts/1/jobs')) body = { total_count: 1, jobs: [{id:2001,run_id:1001,head_sha:'abc',status:'queued',conclusion:null,name:'e2e',labels:['self-hosted','cirujano-pilot-a'],runner_id:null,runner_name:null,runner_group_id:null,runner_group_name:null,started_at:null,completed_at:null}] };
 else if (endpoint.endsWith('/registration-token')) { status = 201; body = { token: 'fixture-registration-token', expires_at: '2099-01-01T00:00:00Z' }; }
-process.stdout.write('HTTP/2 ' + status + '\\n\\n' + JSON.stringify(body));
+const quotaHeaders = process.env.CIRUJANO_FIXTURE_JOB_RESERVE === '1' && endpoint.includes('/attempts/1/jobs') ? '\\nx-ratelimit-resource: core\\nx-ratelimit-remaining: 2000\\nx-ratelimit-reset: ' + Math.ceil(Date.now()/1000 + 60) : '';
+process.stdout.write('HTTP/2 ' + status + quotaHeaders + '\\n\\n' + JSON.stringify(body));
 `);
   await writeFile(nebiusPath, `#!/usr/bin/env node
 const fs = require('node:fs');

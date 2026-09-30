@@ -2,6 +2,11 @@ import type { OwnershipStatus, QueueSnapshot, AdmissionPolicy } from '../contrac
 import { redactCredentialShapes } from '../journal.js';
 
 const API_VERSION = '2026-03-10';
+const CACHE_ENTRY_LIMIT = 128;
+const CACHE_BYTE_LIMIT = 8 * 1024 * 1024;
+const CORE_RESERVE = 2_000;
+const BACKOFF_FALLBACK_MS = 60_000;
+const BACKOFF_MAX_MS = 15 * 60_000;
 const ACTIVE_RUN_STATUS_LIST = ['queued', 'in_progress', 'waiting', 'requested', 'pending'] as const;
 const ACTIVE_RUN_STATUSES = new Set<string>(ACTIVE_RUN_STATUS_LIST);
 const RUN_STATUSES = new Set([...ACTIVE_RUN_STATUSES, 'completed']);
@@ -175,7 +180,13 @@ function parseConclusion(value: unknown, context: string): string | null {
   return value as string | null;
 }
 
-export function parseIncludedResponse(stdout: string): IncludedResponse {
+interface ResponseHead {
+  status: number;
+  headers: Record<string, string>;
+  rawBody: string;
+}
+
+function parseResponseHead(stdout: string): ResponseHead {
   const normalized = stdout.replaceAll('\r\n', '\n');
   const boundary = normalized.indexOf('\n\n');
   if (boundary < 0) throw new GitHubResponseError('GitHub response is missing its header boundary');
@@ -191,18 +202,23 @@ export function parseIncludedResponse(stdout: string): IncludedResponse {
     if (name.length === 0) throw new GitHubResponseError('GitHub response contains an empty header name');
     headers[name] = headers[name] === undefined ? value : `${headers[name]}, ${value}`;
   }
-  const rawBody = normalized.slice(boundary + 2);
+  return { status: Number(statusMatch[1]), headers, rawBody: normalized.slice(boundary + 2) };
+}
+
+function parseResponseBody({ status, headers, rawBody }: ResponseHead): IncludedResponse {
+  if (status === 304 && rawBody.length !== 0) throw new GitHubResponseError('GitHub 304 response body must be empty');
   let body: unknown;
-  if (rawBody.length === 0 && statusMatch[1] === '204') {
-    body = null;
-    return { status: 204, headers, body };
-  }
+  if (rawBody.length === 0 && (status === 204 || status === 304)) return { status, headers, body: null };
   try {
     body = JSON.parse(rawBody);
   } catch {
     throw new GitHubResponseError('GitHub response body is not valid JSON');
   }
-  return { status: Number(statusMatch[1]), headers, body };
+  return { status, headers, body };
+}
+
+export function parseIncludedResponse(stdout: string): IncludedResponse {
+  return parseResponseBody(parseResponseHead(stdout));
 }
 
 export function parseRepositoryResponse(value: unknown): GitHubRepository {
@@ -455,11 +471,21 @@ export function buildQueueSnapshot(input: QueueCollectionInput): GitHubQueueSnap
   return { complete: true, eligibleQueuedJobs, ownedBusy, observedAtMs: input.observedAtMs };
 }
 
+interface CachedRead {
+  endpoint: string;
+  response: IncludedResponse;
+  bytes: number;
+}
+
 export class GitHubAdapter {
   readonly #process: ExternalProcess;
   readonly #ghPath: string;
   readonly #timeoutMs: number;
   readonly #now: () => number;
+  readonly #cache = new Map<string, CachedRead>();
+  #cacheBytes = 0;
+  #hold: { reason: string; retryAtMs: number } | null = null;
+  #throttledResponses = 0;
 
   constructor(process: ExternalProcess, options: { ghPath: string; timeoutMs: number; now?: () => number }) {
     if (!options.ghPath.startsWith('/')) throw new GitHubResponseError('ghPath must be absolute');
@@ -468,6 +494,16 @@ export class GitHubAdapter {
     this.#ghPath = options.ghPath;
     this.#timeoutMs = options.timeoutMs;
     this.#now = options.now ?? Date.now;
+  }
+
+  readHold(): { reason: string; retryAfterMs: number; retryAtMs: number } | null {
+    if (this.#hold === null) return null;
+    const retryAfterMs = this.#hold.retryAtMs - this.#now();
+    if (retryAfterMs <= 0) {
+      this.#hold = null;
+      return null;
+    }
+    return { ...this.#hold, retryAfterMs };
   }
 
   async listRuns(owner: string, repository: string, status: string): Promise<Collection<WorkflowRun>> {
@@ -528,7 +564,8 @@ export class GitHubAdapter {
       try {
         response = await this.#call('GET', endpoint, { ...fields, per_page: '100', page: String(page) });
       } catch (error) {
-        return [{ page, response: { status: 0, headers: {}, body: { error: error instanceof Error ? error.name : 'unknown' } } }];
+        const hold = this.readHold();
+        return [...pages, { page, response: { status: hold === null ? 0 : 429, headers: hold === null ? {} : { 'retry-after': String(hold.retryAfterMs / 1_000) }, body: { error: error instanceof Error ? error.name : 'unknown' } } }];
       }
       pages.push({ page, response });
       if (response.status !== 200 || nextPage(response.headers) === null) return pages;
@@ -537,7 +574,12 @@ export class GitHubAdapter {
   }
 
   async #call(method: 'GET' | 'POST' | 'DELETE', endpoint: string, fields: Readonly<Record<string, string>> = {}): Promise<IncludedResponse> {
+    const hold = this.readHold();
+    if (method === 'GET' && hold !== null) throw new GitHubResponseError(hold.reason);
+    const key = JSON.stringify([endpoint, Object.entries(fields).sort(([a], [b]) => a.localeCompare(b))]);
+    const cached = method === 'GET' ? this.#cache.get(key) : undefined;
     const args = ['api', '--include', '--method', method, '-H', `X-GitHub-Api-Version: ${API_VERSION}`, endpoint];
+    if (cached !== undefined) args.push('-H', `If-None-Match: ${cached.response.headers.etag!}`);
     for (const [name, value] of Object.entries(fields)) args.push('-f', `${name}=${value}`);
     const result = await this.#process.run(this.#ghPath, args, { timeoutMs: this.#timeoutMs });
     if (result.stdout.length === 0) {
@@ -545,7 +587,65 @@ export class GitHubAdapter {
       const tail = redactCredentialShapes(result.stderr.trim()).slice(-300);
       throw new GitHubResponseError(`gh exited ${result.exitCode} without a parseable response${tail.length === 0 ? ' (no stderr)' : `: ${tail}`}`);
     }
-    return parseIncludedResponse(result.stdout);
+    const head = parseResponseHead(result.stdout);
+    this.#observeQuota(head);
+    const response = parseResponseBody(head);
+    const matched304 = response.status === 304 && cached !== undefined;
+    if (result.exitCode !== 0 && !(result.exitCode === 1 && matched304)) {
+      throw new GitHubResponseError(`gh exited ${result.exitCode} while reading HTTP ${response.status}`);
+    }
+    if (response.status === 304) {
+      if (!matched304) throw new GitHubResponseError('GitHub returned 304 without a matching cached representation');
+      const revalidated = { status: 200, headers: { ...cached.response.headers, ...response.headers }, body: cached.response.body };
+      this.#remember(key, endpoint, revalidated);
+      this.#throttledResponses = 0;
+      return revalidated;
+    }
+    if (response.status >= 200 && response.status < 300) this.#throttledResponses = 0;
+    if (method === 'GET' && response.status === 200) this.#remember(key, endpoint, response);
+    if (method !== 'GET' && (response.status >= 200 && response.status < 300 || method === 'DELETE' && response.status === 404)) {
+      const runnerList = endpoint.replace(/\/actions\/runners\/.*$/u, '/actions/runners');
+      for (const [cacheKey, entry] of this.#cache) if (entry.endpoint === runnerList) this.#forget(cacheKey);
+    }
+    return response;
+  }
+
+  #forget(key: string): void {
+    const prior = this.#cache.get(key);
+    if (prior !== undefined) this.#cacheBytes -= prior.bytes;
+    this.#cache.delete(key);
+  }
+
+  #remember(key: string, endpoint: string, response: IncludedResponse): void {
+    this.#forget(key);
+    if (!response.headers.etag) return;
+    const bytes = Buffer.byteLength(JSON.stringify(response), 'utf8');
+    if (bytes > CACHE_BYTE_LIMIT) return;
+    while (this.#cache.size >= CACHE_ENTRY_LIMIT || this.#cacheBytes + bytes > CACHE_BYTE_LIMIT) {
+      this.#forget(this.#cache.keys().next().value!);
+    }
+    this.#cache.set(key, { endpoint, response, bytes });
+    this.#cacheBytes += bytes;
+  }
+
+  #observeQuota(response: Pick<IncludedResponse, 'status' | 'headers'>): void {
+    const now = this.#now();
+    const holdFor = (delay: number, reason: string) => {
+      const retryAtMs = now + delay;
+      if (this.#hold === null || retryAtMs > this.#hold.retryAtMs) this.#hold = { reason, retryAtMs };
+    };
+    if (response.status === 403 || response.status === 429) {
+      const backoff = rateLimitBackoffMs(response.status, response.headers, now);
+      const fallback = Math.min(BACKOFF_MAX_MS, BACKOFF_FALLBACK_MS * 2 ** Math.min(this.#throttledResponses, 4));
+      this.#throttledResponses += 1;
+      holdFor(backoff !== null && backoff > 0 ? backoff : fallback, `GitHub HTTP ${response.status} read backoff`);
+    }
+    const remaining = Number(response.headers['x-ratelimit-remaining']);
+    if (response.headers['x-ratelimit-resource'] === 'core' && response.headers['x-ratelimit-remaining']?.trim()
+      && Number.isSafeInteger(remaining) && remaining >= 0 && remaining <= CORE_RESERVE) {
+      const reset = Number(response.headers['x-ratelimit-reset']) * 1_000;
+      holdFor(Number.isFinite(reset) && reset > now ? Math.ceil(reset - now) : BACKOFF_FALLBACK_MS, 'GitHub Core quota reserve reached');
+    }
   }
 }
 
