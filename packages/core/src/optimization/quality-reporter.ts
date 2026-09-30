@@ -15,9 +15,10 @@ function reportPath(value: unknown, workspace: string): string {
   if (!isAbsolute(path) || path.includes('\\') || path.split('/').some(part => part === '.' || part === '..') || resolve(path) !== path) fail('noncanonical absolute report path');
   return safeSource(relative(workspace, path));
 }
-function location(value: unknown, unknownEndColumn = false): number {
+// Istanbul source-map locations can serialize an infinite end column as null.
+function location(value: unknown): number {
   const loc = object(value), start = object(loc.start), end = object(loc.end);
-  const line = count(start.line), column = count(start.column), endLine = count(end.line), endColumn = unknownEndColumn && end.column === null ? null : count(end.column);
+  const line = count(start.line), column = count(start.column), endLine = count(end.line), endColumn = end.column === null ? null : count(end.column);
   if (!line || !endLine || endLine < line || (endLine === line && endColumn !== null && endColumn < column)) fail('invalid coverage location');
   return line;
 }
@@ -65,7 +66,7 @@ export function normalizeQualityReports(vitest: unknown, coverage: unknown, supp
     const lineHits = new Map<number, number>();
     let coveredStatements = 0, coveredFunctions = 0, branchCount = 0, coveredBranches = 0;
     for (const [id, value] of Object.entries(statements)) { const hit = count(value); const line = location(statementMap[id]); lineHits.set(line, Math.max(lineHits.get(line) ?? 0, hit)); if (hit > 0) coveredStatements++; }
-    for (const [id, value] of Object.entries(functions)) { location(object(fnMap[id]).loc, true); if (count(value) > 0) coveredFunctions++; }
+    for (const [id, value] of Object.entries(functions)) { location(object(fnMap[id]).loc); if (count(value) > 0) coveredFunctions++; }
     for (const [id, value] of Object.entries(branches)) {
       const hits = array(value); const metadata = object(branchMap[id]); const locations = array(metadata.locations);
       if (!hits.length || hits.length !== locations.length) fail('branch denominator mismatch');
