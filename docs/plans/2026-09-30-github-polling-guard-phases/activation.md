@@ -1,6 +1,6 @@
 # Activation proposal: GitHub polling guard
 
-Status: proposed; no live changes authorized or performed by the repair phase. Local gates passed. Tested bundle SHA-256: `72789ce149f92c311f0d20b6055a75728f14efd0f5bdf1bb3d81a11a5d5604c5`.
+Status: one canary activated under the owner's later continuation; validation is partial and fleet expansion remains gated. See [canary validation](canary-validation.md). Local gates passed. Tested bundle SHA-256: `72789ce149f92c311f0d20b6055a75728f14efd0f5bdf1bb3d81a11a5d5604c5`.
 
 ## Entry conditions
 
