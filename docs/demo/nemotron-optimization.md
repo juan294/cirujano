@@ -21,7 +21,7 @@ The owner-controlled proof repository must be approved before bootstrap or publi
 
 ## Credentials and permits
 
-Use `NEBIUS_API_KEY` for the exact NVIDIA model `nvidia/nvidia-nemotron-3-nano-30b-a3b` at `https://api.tokenfactory.nebius.com/v1/chat/completions`. Inference performs an account-level model availability GET before its single permitted completion POST. No automatic retry or model substitution occurs. Limits per inference are 64 KiB serialized request, 2,048 completion tokens, 256 KiB response and a 60-second deadline.
+Use `NEBIUS_API_KEY` for the exact NVIDIA model `nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B` at `https://api.tokenfactory.nebius.com/v1/chat/completions`. Model identifiers are case-sensitive; this spelling was confirmed in the authenticated catalog on October 1. Inference performs an account-level model availability GET before its single permitted completion POST. No automatic retry or model substitution occurs. Limits per inference are 64 KiB serialized request, 2,048 completion tokens, 256 KiB response and a 60-second deadline.
 
 Sandbox requests use separate `NEBIUS_IAM_TOKEN` credentials and the approved execution profile's `Project` header. Read back the correct Token Factory project and entitlement; an AI Cloud project login does not prove Sandbox access. The exact image UUID, OCI digest, import operation, recipe, dependency store and trusted harness are bound to the execution permit. Paired verification disables networking, uses one concurrent disposable instance, preserves the retained image, and compares actual commands, passed/skipped test IDs and per-file coverage denominators and counters. Local Docker checks do not prove provider network isolation.
 

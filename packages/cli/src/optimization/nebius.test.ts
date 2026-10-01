@@ -1,8 +1,21 @@
 import { describe, expect, it } from 'vitest';
 import { diagnoseOptimization } from './diagnose.js';
+import { DEFAULT_INFERENCE_MODEL } from './nebius.js';
 import { config, inputFixture, permitFixture, transportFixture, responseFixture, model, endpoint } from './nebius.test-helper.js';
 
 describe('Nebius external transport boundary', () => {
+  it('uses the case-sensitive catalog identifier for the selected default Nemotron model', async () => {
+    const advertisedModel = 'nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B';
+    const input = inputFixture(); let posts = 0;
+    const fetcher: typeof fetch = async (_url, init) => {
+      if (init?.method === 'GET') return new Response(JSON.stringify({ data: [{ id: advertisedModel }] }));
+      posts++; expect(JSON.parse(String(init?.body)).model).toBe(advertisedModel);
+      return new Response(JSON.stringify({ ...responseFixture(), model: advertisedModel }));
+    };
+    const result = await diagnoseOptimization(input, { ...config, model: DEFAULT_INFERENCE_MODEL }, { ...permitFixture(input), model: DEFAULT_INFERENCE_MODEL }, { apiKey: 'owned-catalog-regression', fetch: fetcher, beforePost: async () => {} });
+    expect(result.status).toBe('proposal'); expect(posts).toBe(1);
+    expect(result.inference?.requestedModel).toBe(advertisedModel); expect(result.inference?.returnedModel).toBe(advertisedModel);
+  });
   it('rejects credential-valued finish_reason before retaining it', async () => {
     const input = inputFixture(), response = responseFixture(); response.choices[0]!.finish_reason = 'synthetic-provider-key'; const transport = transportFixture(response);
     const result = await diagnoseOptimization(input, config, permitFixture(input), { apiKey: 'synthetic-provider-key', fetch: transport.fetcher, beforePost: async () => {} });

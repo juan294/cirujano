@@ -1,6 +1,6 @@
 import { jsonDigest, type InputArtifact } from '@cirujano/core';
 
-export const model = 'nvidia/nvidia-nemotron-3-nano-30b-a3b';
+export const model = 'nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B';
 export const endpoint = 'https://api.tokenfactory.nebius.com/v1/chat/completions';
 export const config = { schemaVersion: 1, model, endpoint };
 export function inputFixture(): InputArtifact {

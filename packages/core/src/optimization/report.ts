@@ -7,7 +7,7 @@ function fail(message: string): never { throw new OptimizationInputError(`Invali
 function ref(value: string): string { if (!/^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$/.test(value) || value.includes('..') || value.includes('//') || value.endsWith('/') || value.endsWith('.lock')) fail('unsafe ref'); return value; }
 // Only fixed text and typed identities may enter public Markdown. Free-form model,
 // provider, report-path and pricing strings remain in private immutable artifacts.
-function safeModel(value: string | null): string { if (value === null) return 'unavailable'; if (!/^nvidia\/[a-z0-9][a-z0-9._-]{0,127}$/.test(value)) fail('unsafe model identity'); return value; }
+function safeModel(value: string | null): string { if (value === null) return 'unavailable'; if (!/^nvidia\/[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(value)) fail('unsafe model identity'); return value; }
 function currency(value: string): string { if (!/^[A-Z]{3}$/.test(value)) return 'currency unavailable'; return value; }
 function finish(value: string | null): string { return value === 'stop' ? 'stop' : 'unavailable'; }
 const knownEvidenceIds = new Set(['install', 'install-timing', 'setup-node-receipt', 'workflow-eligibility']);

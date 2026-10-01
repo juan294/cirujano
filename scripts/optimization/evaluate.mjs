@@ -8,7 +8,7 @@ import { createRequire } from 'node:module';
 const nativeFetch = globalThis.fetch;
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const require = createRequire(new URL('../../packages/cli/package.json', import.meta.url));
-const MODEL = 'nvidia/nvidia-nemotron-3-nano-30b-a3b';
+const MODEL = 'nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B';
 const CONFIG = { schemaVersion: 1, model: MODEL, endpoint: 'https://api.tokenfactory.nebius.com/v1/chat/completions' };
 let loaded;
 /** Compile the existing product modules unchanged. This harness owns no alternate policy. */

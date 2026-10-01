@@ -1,6 +1,6 @@
 import { canonicalJson, jsonDigest, OptimizationInputError, parseStrictJson, sha256, type InferenceArtifact, type InputArtifact } from '@cirujano/core';
 
-export const DEFAULT_INFERENCE_MODEL = 'nvidia/nvidia-nemotron-3-nano-30b-a3b';
+export const DEFAULT_INFERENCE_MODEL = 'nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B';
 export const DEFAULT_INFERENCE_ENDPOINT = 'https://api.tokenfactory.nebius.com/v1/chat/completions';
 export const MAX_REQUEST_BYTES = 64 * 1024;
 export const MAX_COMPLETION_TOKENS = 2048;

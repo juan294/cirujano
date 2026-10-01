@@ -50,7 +50,7 @@ describe('complete synthetic policy/replay evaluator', () => {
   it('validates the entire model-to-PR chain and rejects mutated evidence', { timeout: 30000 }, async () => {
     const evaluator = await load(), offline = await evaluator.evaluateOffline(), f = await publicationFixture(); roots.push(f.directory); f.pulls.push(f.pull());
     expect((await runPublish(f.reportPath, f.permit, f.options)).status).toBe('published');
-    const model = 'nvidia/nvidia-nemotron-3-nano-30b-a3b', permits = offline.cases.filter(row => row.preview).filter(row => !['prompt-injection', 'unknown-evidence', 'changed-test', 'changed-permission'].includes(row.name)).map(row => ({ name: row.name, permit: { schemaVersion: 1, kind: 'inference-permit', permitId: row.name, repositoryId: 123, inputDigest: jsonDigest(row.input), model, endpoint: 'https://api.tokenfactory.nebius.com/v1/chat/completions', expiresAt: '2099-01-01T00:00:00Z', maxRequests: 1, maxCompletionTokens: 2048, priceBasis: null } }));
+    const model = 'nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B', permits = offline.cases.filter(row => row.preview).filter(row => !['prompt-injection', 'unknown-evidence', 'changed-test', 'changed-permission'].includes(row.name)).map(row => ({ name: row.name, permit: { schemaVersion: 1, kind: 'inference-permit', permitId: row.name, repositoryId: 123, inputDigest: jsonDigest(row.input), model, endpoint: 'https://api.tokenfactory.nebius.com/v1/chat/completions', expiresAt: '2099-01-01T00:00:00Z', maxRequests: 1, maxCompletionTokens: 2048, priceBasis: null } }));
     let posts = 0;
     const fetcher: typeof fetch = async (_url, init) => {
       if (init?.method === 'GET') return new Response(JSON.stringify({ data: [{ id: model }] }));

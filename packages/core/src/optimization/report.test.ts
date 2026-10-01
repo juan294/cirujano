@@ -15,6 +15,17 @@ function fixture(): ReportRenderInputs {
 function comparison(f: ReportRenderInputs) { return { input: f.input, proposal: f.proposal, sandbox: f.sandbox, cohort: f.cohort, samples: f.samples, visibility: f.visibility, pricing: f.pricing }; }
 function refresh(f: ReportRenderInputs) { f.diagnosis.inferenceReceiptDigest = jsonDigest(f.inference); f.proposal.diagnosisDigest = jsonDigest(f.diagnosis); f.sandbox.proposalDigest = jsonDigest(f.proposal); f.cohort.proposalDigest = jsonDigest(f.proposal); f.cohort.sandboxDigest = jsonDigest(f.sandbox); f.measurement = compareMeasurement(comparison(f)); }
 describe('evidence-bound optimization report', () => {
+  it('preserves the canonical mixed-case NVIDIA catalog identity in bound public evidence', () => {
+    const f = fixture(), model = 'nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B';
+    f.inference.requestedModel = model; f.inference.returnedModel = model; refresh(f);
+    const report = renderOptimizationReport(f);
+    expect(report.status).toBe('ready-to-publish');
+    expect(report.markdown).toContain(`Model requested: ${model}; returned: ${model};`);
+  });
+  it.each(['nvidia/Model<script>', 'nvidia/Model space', 'nvidia/Model[link](https://example.com)', 'nvidia/Model`code`'])('rejects unsafe mixed-case model identity %s', model => {
+    const f = fixture(); f.inference.requestedModel = model; f.inference.returnedModel = model; refresh(f);
+    expect(() => renderOptimizationReport(f)).toThrow('unsafe model identity');
+  });
   it('renders deterministic six-row measured report, exact marker, rollback and honest costs', () => {
     const f = fixture(); const report = renderOptimizationReport(f);
     expect(report).toEqual(renderOptimizationReport(f)); expect(report.status).toBe('ready-to-publish');
