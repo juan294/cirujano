@@ -69,7 +69,10 @@ export function createSandboxClient(options: SandboxClientOptions): SandboxClien
     const timer = setTimeout(() => controller.abort(), remaining);
     function check() { if (controller.signal.aborted || now() >= deadline) throw new SandboxError('sandbox-deadline-exceeded'); }
     async function bounded<T>(operation: Promise<T>): Promise<T> {
-      check(); return new Promise<T>((resolve, reject) => {
+      // A caller may already have started work before its deadline check fails.
+      // Drain its eventual rejection even when we cannot wait for its result.
+      try { check(); } catch (error) { void operation.catch(() => {}); throw error; }
+      return new Promise<T>((resolve, reject) => {
         const abort = () => reject(new SandboxError('sandbox-deadline-exceeded'));
         controller.signal.addEventListener('abort', abort, { once: true });
         operation.then(resolve, reject).finally(() => controller.signal.removeEventListener('abort', abort));

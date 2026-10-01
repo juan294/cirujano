@@ -143,6 +143,13 @@ describe('Sandbox fixed-origin transport', () => {
     const result = await createSandboxClient({ iamToken: 'source-specific-iam', project: sandboxProject, fetch: external.fetcher, deadlineMs: 20, pollIntervalMs: 1 }).cancel(record(), async () => {});
     expect(result.status).toBe('outcome-unknown'); expect(external.calls.filter(call => call.method === 'DELETE')).toHaveLength(1);
   });
+  it('drains a rejected fetch when the deadline expires while fetch is starting', async () => {
+    let clock = 0, calls = 0;
+    const fetcher: typeof fetch = () => { calls++; clock = 11; return Promise.reject(new DOMException('expired fixture request', 'AbortError')); };
+    const result = await createSandboxClient({ iamToken: 'source-specific-iam', project: sandboxProject, fetch: fetcher, now: () => clock, deadlineMs: 10 }).read(record());
+    expect(result.status).toBe('outcome-unknown'); expect(result.reasonCode).toBe('sandbox-deadline-exceeded'); expect(calls).toBe(1);
+    await new Promise<void>(resolve => setImmediate(resolve));
+  });
   it('bounds ignored-abort fetch and durable hooks', async () => {
     let posts = 0; const fetcher: typeof fetch = async (_url, init) => { if (init?.method === 'POST') posts++; return new Promise(() => {}); };
     const client = createSandboxClient({ iamToken: 'source-specific-iam', project: sandboxProject, fetch: fetcher, deadlineMs: 10 });
