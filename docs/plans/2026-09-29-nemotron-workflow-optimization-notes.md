@@ -250,3 +250,45 @@ The owner supplied the dedicated key on October 1. Private read-only requests re
 All 16 local gate commands ran against that clean candidate. Fifteen passed, including coverage and every one of 1,259 repository test assertions, but the full test command returned exit 1 because an aborted native fetch produced an unhandled rejection during the Sandbox deadline tests. The failed gate remains private at `phase6-local-gate-20261001T050956Z/results.json`; a successful coverage rerun does not erase that failure. The deterministic regression reproduced the same unhandled rejection when the deadline expired between fetch creation and the shared bounded wait. The repair drains an already-started promise when the deadline precheck rejects it, preserving the original timeout result and one-request limit (`packages/cli/src/optimization/sandbox.ts:71`). Fresh independent review and a complete gate for the repaired source are required before image/benchmark bindings or native proof can be accepted.
 
 Upload recovery remains local preparation. The Skopeo failure fixture showed three distinct queued layers continuing after HTTP 503, so it failed the required immediate-stop contract. A serial host Distribution V2 client was prepared with local HTTP fixtures. Independent review identified protected upload Location/UUID checkpointing, valid JSONL, an outer process deadline covering DNS, preservation of opaque query bytes and sanitized route logging as required repairs. Every failed fixture and review remains retained privately; no second remote upload, imported image, inference, Sandbox execution, comparison attempt or PR has occurred. The old source-specific image, reporter and inference permits must be rebound to the newly accepted source. Additional remote attempts still require repaired local gates and fresh authority under the Phase 6 contract. Full Phase 6/H1 acceptance, final local develop merge and owned-worktree cleanup remain pending.
+
+## Recovery session: 2026-10-02
+
+Candidate clone `/private/tmp/cirujano-nemotron-2026-09-30`, branch `feat/nemotron-workflow-optimization`, local commits `b4b8ff2`, `14f4c31`, `a2d3187` on top of `41ddfe5` (not pushed, not merged). Full local gates passed on `b4b8ff2`; on `14f4c31` every gate passed except `test:coverage`, whose failures were timeouts under a host load average near 285 and passed when rerun in isolation. Rerun the full sequence on the final commit when the host is quiet. Raw receipts: `~/.local/share/cirujano/optimization/live-20261002/` (private).
+
+Resolved:
+
+- Image provisioning: no registry. The Token Factory API key authenticates the Sandboxes API. The pinned Node base is imported by tag (`docker.io/library/node:22.20.0`, verified to resolve to the approved amd64 digest; the importer cannot pull Docker Hub digest references), and `contree build` builds the generated context server-side in about two minutes. `b4b8ff2` verifies built images through a pinned, ordered list of build operations back to the approved import.
+- Benchmark: the 65-package workload installed in about one second. The proof repository now locks about 1,850 packages (Create React App and Gatsby), installs in 16-22 s of 30-35 s jobs, and fits the harness store limit (1 GiB / 100,000 files).
+- Measurement gate (owner decision): seconds-scale savings cannot reduce rounded minutes for sub-minute jobs. `measured-improvement` now requires a 10% faster median with no billable-minute increase and discloses `no-billable-minutes-saved`.
+- Model: the live Nano evaluation failed on decoding faults (abstain with an operation, invented or repeated evidence IDs, thinking traces exhausting the budget). `14f4c31` names reply fields in reasoning order, constrains evidence to per-ID booleans, and disables thinking. The live seven-case evaluation passes (6/6 proposals, abstention correct). The held-out diagnosis on the proof repository proposed the cache; `propose` produced the exact two-line patch.
+
+Open blocker: paired Sandbox verification. The image readback passed live, but instance creation returns HTTP 413. The Sandboxes API rejects request bodies above about 1 MiB, and v1 sends the whole source tree as base64 stdin (3.1 MB here; the controller bundle alone exceeds the limit). Next step: upload source files with `POST /v1/files`, attach them through the instance `files` map, and pass only a hash manifest on stdin. This changes the trusted harness and transport, so it needs TDD, review, gates, a proof-repository rebind, fresh baselines, collect, diagnose and propose before verification, the candidate push, the three-run cohort, measurement and the authorized PR. The local candidate commit on the proof clone's `develop` is not pushed. H1 stays open.
+
+### Outcome later on 2026-10-02: complete live chain, truthful no-improvement
+
+The feature branch in `/private/tmp/cirujano-nemotron-2026-09-30` gained these fixes (local only; not merged into `develop`):
+
+- `cac8c61` uploads the Sandbox payload through `POST /v1/files` and attaches it read-only.
+- `aa6a54a` switches to the `npm_config_` offline settings that pnpm honors.
+- `6a3b646` keeps polling while the provider reports duration -1.
+- `9dbdb6f` keeps execute bits in the image store.
+- `fe879a6` accepts the provider's no-signal marker (-1).
+- `bbabb46` fixes the artifact-name mismatch between the template and `measure`.
+- `245434f`/`7d8093c` covers `gh` 2.102 escape sequences and real runner-log identity (BOM, release tag without the patch component).
+
+Every defect was found by live runs, and each fix is test-first.
+
+Live chain run6, all on real infrastructure:
+
+1. Three baselines run on the proof repository's `main`.
+2. `collect` gathers the evidence.
+3. The NVIDIA Nemotron Nano held-out diagnosis proposes the cache.
+4. `propose` produces the exact two-line patch.
+5. The Sandbox-built image passes pinned-lineage readback.
+6. Paired offline Sandbox verification ends `sandbox-verified`, with identical tests and coverage.
+7. The candidate is pushed to the proof repository's `develop`, and three candidate runs follow: one cold and two cache hits.
+8. `measure` returns **no-improvement**: median job 24 s against 24 s, and rounded minutes 3 against 3. The warm install drops from 9-14 s to 5 s, but the cache restore adds about the same to setup-node.
+
+`report` also returns no-improvement. Per the plan, no savings PR was opened, and H1 stays open on the measurement criterion only. The family of optimization proven end to end does not pay off for this workload on GitHub-hosted runners.
+
+Separately, the runner capacity-wait fix (`develop` `6165121`, pushed; CI and CodeQL green) is deployed to controllers P2-P10 and to telemetry.
