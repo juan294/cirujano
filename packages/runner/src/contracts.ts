@@ -153,6 +153,31 @@ export interface IdleObservation {
   generation: number;
 }
 
+/** A provider refusal that only more capacity can cure, such as an exhausted public IPv4 quota. */
+export interface CapacityRefusal {
+  /** Provider quota names from the refusal, e.g. `vpc.ipv4-address.public.count`; empty when unnamed. */
+  quotas: readonly string[];
+}
+
+export const CAPACITY_WAIT_REASON = 'provider-capacity-wait' as const;
+
+/**
+ * The provider refused capacity for queued work. The job stays queued while the controller waits
+ * until `retryAtMs` and then repeats the refused step; repeated refusals lengthen the wait up to a
+ * fixed cap. A refused start keeps its stopped VM and disk, so only the start is retried.
+ * Absent from the journal unless a wait is in force, so journals without it keep their old shape.
+ */
+export interface CapacityWait {
+  reasonCode: typeof CAPACITY_WAIT_REASON;
+  /** Which mutation the provider refused, and therefore which one the wait holds back. */
+  refusedEffect: 'create-vm' | 'start-vm';
+  detail: string;
+  firstRefusedAtMs: number;
+  lastRefusedAtMs: number;
+  refusals: number;
+  retryAtMs: number;
+}
+
 export interface LifecycleJournal {
   state: LifecycleState;
   startCount: number;
@@ -162,6 +187,8 @@ export interface LifecycleJournal {
   idleObservations: readonly IdleObservation[];
   /** Immutable deadline of the current generation's start grant, persisted when the start reconciles. */
   grantDeadlineMs: number | null;
+  /** Present only while a provider capacity refusal holds queued work back. */
+  capacityWait?: CapacityWait;
 }
 
 export interface LifecycleInput {
@@ -191,6 +218,8 @@ export interface LifecycleDecision {
   state: LifecycleState;
   effect: LifecycleEffect;
   reason: string;
+  /** Machine-readable cause for decisions an operator must be able to filter on. */
+  reasonCode?: typeof CAPACITY_WAIT_REASON;
 }
 
 export interface CostRates {

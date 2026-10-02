@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { LifecycleInput, Permit } from './contracts.js';
-import { GUEST_UP_STATES, canBeginAssignedJob, decideLifecycle, drainDeadlineMs, parsePermit, validatePermit } from './lifecycle.js';
+import { GUEST_UP_STATES, canBeginAssignedJob, decideLifecycle, drainDeadlineMs, nextCapacityWait, parsePermit, validatePermit } from './lifecycle.js';
 import { validConfig as rawConfig } from './config.test.js';
 import { parseRunnerConfig } from './config.js';
 
@@ -442,5 +442,106 @@ describe('deadline and admission budget (R04)', () => {
     }));
     expect(result.effect.type).toBe('none');
     expect(result.state).toBe('blocked');
+  });
+});
+
+describe('provider capacity wait (public IPv4 quota)', () => {
+  const absent = { complete: true, vmStatus: 'absent', ownership: 'absent', ownedMatches: 0, outstandingOperation: null } as const;
+  const waiting = (retryAtMs: number, refusedEffect: 'create-vm' | 'start-vm' = 'start-vm') => ({
+    reasonCode: 'provider-capacity-wait' as const, refusedEffect, detail: 'vpc.ipv4-address.public.count',
+    firstRefusedAtMs: NOW - 60_000, lastRefusedAtMs: NOW - 60_000, refusals: 1, retryAtMs,
+  });
+  const deleteAfterStop = parseRunnerConfig({ ...rawConfig, idleResourcePolicy: 'delete-after-stop' });
+
+  it('keeps a start-refused stopped VM and holds its start during the backoff', () => {
+    const result = decideLifecycle(input({
+      config: deleteAfterStop, permit: { ...permit, maxStarts: 3 },
+      journal: { ...input().journal, state: 'stopped', startCount: 1, capacityWait: waiting(NOW + 1) },
+    }));
+    expect(result).toMatchObject({ state: 'stopped', effect: { type: 'none' }, reasonCode: 'provider-capacity-wait' });
+    expect(result.reason).toContain('vpc.ipv4-address.public.count');
+  });
+
+  it('retries only the start of the same stopped VM once the backoff has elapsed', () => {
+    const result = decideLifecycle(input({
+      permit: { ...permit, maxStarts: 3 },
+      journal: { ...input().journal, state: 'stopped', startCount: 1, capacityWait: waiting(NOW) },
+    }));
+    expect(result).toMatchObject({ state: 'starting', effect: { type: 'start-vm', generation: 2 } });
+    expect(result.reasonCode).toBeUndefined();
+  });
+
+  it('recreates through the owned path when the retained VM disappeared during a start wait', () => {
+    const result = decideLifecycle(input({
+      permit: { ...permit, maxStarts: 3 }, provider: absent,
+      journal: { ...input().journal, state: 'stopped', startCount: 1, capacityWait: waiting(NOW + 600_000) },
+    }));
+    expect(result).toMatchObject({ state: 'starting', effect: { type: 'create-vm', generation: 2 } });
+  });
+
+  it('holds and then retries a refused create when no VM exists', () => {
+    const held = decideLifecycle(input({
+      permit: { ...permit, maxStarts: 3 }, provider: absent,
+      journal: { ...input().journal, state: 'absent', startCount: 1, capacityWait: waiting(NOW + 1, 'create-vm') },
+    }));
+    expect(held).toMatchObject({ state: 'absent', effect: { type: 'none' }, reasonCode: 'provider-capacity-wait' });
+    const retried = decideLifecycle(input({
+      permit: { ...permit, maxStarts: 3 }, provider: absent,
+      journal: { ...input().journal, state: 'absent', startCount: 1, capacityWait: waiting(NOW, 'create-vm') },
+    }));
+    expect(retried).toMatchObject({ state: 'starting', effect: { type: 'create-vm', generation: 2 } });
+  });
+
+  it('does not report a capacity wait when no work is queued', () => {
+    const result = decideLifecycle(input({
+      provider: absent, queue: { complete: true, eligibleQueuedJobs: 0, ownedBusy: false, observedAtMs: NOW },
+      journal: { ...input().journal, state: 'absent', capacityWait: waiting(NOW + 1, 'create-vm') },
+    }));
+    expect(result.reasonCode).toBeUndefined();
+    expect(result.reason).toBe('no complete eligible demand requires creation');
+  });
+
+  it('deletes a capacity-waiting VM only once its queued work is gone and only under delete-after-stop', () => {
+    const idle = input({
+      config: deleteAfterStop, permit: { ...permit, maxStarts: 3 },
+      queue: { complete: true, eligibleQueuedJobs: 0, ownedBusy: false, observedAtMs: NOW },
+      journal: { ...input().journal, state: 'stopped', startCount: 1, capacityWait: waiting(NOW + 600_000) },
+    });
+    expect(decideLifecycle(idle)).toMatchObject({ state: 'absent', effect: { type: 'delete-vm', generation: 1 } });
+    // A never-booted VM whose only start was refused (and handed back) is still cleaned up.
+    expect(decideLifecycle({ ...idle, journal: { ...idle.journal, startCount: 0 } }))
+      .toMatchObject({ state: 'absent', effect: { type: 'delete-vm', generation: 1 } });
+    // Still queued: the retained VM is left alone for the retried start.
+    expect(decideLifecycle({ ...idle, queue: { ...idle.queue, eligibleQueuedJobs: 1 } }).effect).toEqual({ type: 'none' });
+    // Incomplete queue evidence never deletes.
+    expect(decideLifecycle({ ...idle, queue: { ...idle.queue, complete: false } }).effect.type).not.toBe('delete-vm');
+    // Legacy retain policy keeps the stopped VM, as it keeps every stopped VM.
+    expect(decideLifecycle({ ...idle, config }).effect).toEqual({ type: 'none' });
+    // Without delete authority nothing is deleted.
+    expect(decideLifecycle({ ...idle, permit: { ...permit, operations: ['start'] } }).effect).toEqual({ type: 'none' });
+  });
+
+  it('backs off exponentially from two to sixteen minutes and never below the poll interval', () => {
+    let wait = nextCapacityWait(undefined, { quotas: ['vpc.ipv4-address.public.count'] }, 'start-vm', NOW, 30_000);
+    expect(wait).toEqual({
+      reasonCode: 'provider-capacity-wait', refusedEffect: 'start-vm', detail: 'vpc.ipv4-address.public.count',
+      firstRefusedAtMs: NOW, lastRefusedAtMs: NOW, refusals: 1, retryAtMs: NOW + 120_000,
+    });
+    const delays = [wait.retryAtMs - NOW];
+    for (let index = 0; index < 5; index += 1) {
+      const refusedAt = wait.retryAtMs + 60_000;
+      wait = nextCapacityWait(wait, { quotas: ['vpc.ipv4-address.public.count'] }, 'start-vm', refusedAt, 30_000);
+      delays.push(wait.retryAtMs - refusedAt);
+    }
+    expect(delays).toEqual([120_000, 240_000, 480_000, 960_000, 960_000, 960_000]);
+    expect(wait).toMatchObject({ refusals: 6, firstRefusedAtMs: NOW });
+    expect(nextCapacityWait(undefined, { quotas: [] }, 'create-vm', NOW, 600_000))
+      .toMatchObject({ retryAtMs: NOW + 600_000, detail: 'provider quota exhausted', refusedEffect: 'create-vm' });
+  });
+
+  it('starts a fresh backoff episode after a long gap without refusals', () => {
+    const old = nextCapacityWait(undefined, { quotas: ['q'] }, 'start-vm', NOW, 30_000);
+    const later = nextCapacityWait({ ...old, refusals: 5 }, { quotas: ['q'] }, 'start-vm', old.retryAtMs + 3_600_000, 30_000);
+    expect(later).toMatchObject({ refusals: 1, firstRefusedAtMs: old.retryAtMs + 3_600_000 });
   });
 });

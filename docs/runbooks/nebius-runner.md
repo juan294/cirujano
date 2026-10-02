@@ -235,6 +235,23 @@ An incomplete provider operation or GitHub observation leaves the start pending.
 After a start reconciles, a stop before its grant deadline still blocks and
 stays manual (quarantine or a provider fault).
 
+Provider capacity wait: Nebius allocates the public IPv4 address at start, so
+an exhausted `vpc.ipv4-address.public.count` quota fails the start operation
+with `RESOURCE_EXHAUSTED` (`QuotaFailure`). The controller keeps the stopped VM
+and its disk, hands the refused start generation back, and records
+`lifecycle.capacityWait` (reason code `provider-capacity-wait`) in
+`controller-state.json` plus a `provider-capacity-refused` event. Ticks report
+`"status":"waiting"` while the queued job stays queued. After a 2, 4, 8, then
+16-minute backoff it retries only the start, reusing the refused generation.
+A refused create waits and retries the create. A successful start or a delete
+clears the wait. If the queued work goes away, `delete-after-stop` removes the
+waiting VM and its disk.
+
+Rollback: a bundle older than the capacity wait rejects a journal that holds
+`lifecycle.capacityWait`. Before installing such a bundle, stop the agent and
+remove that key from `controller-state.json`. The VM then stays stopped until
+the next eligible demand starts it.
+
 Stop and remove an agent:
 
 ```sh

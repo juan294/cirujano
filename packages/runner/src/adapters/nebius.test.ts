@@ -5,6 +5,7 @@ import { validConfig } from '../config.test.js';
 import {
   NebiusCli,
   NebiusParseError,
+  classifyCapacityRefusal,
   decideDelete,
   decideStop,
   parseInstancePage,
@@ -165,6 +166,46 @@ describe('strict provider response parsers', () => {
     });
     expect(parseMutationOperationId('computeoperation-e00abc123\n')).toBe('computeoperation-e00abc123');
     expect(parseMutationOperationId('{"metadata":{"id":"op-legacy"}}')).toBe('op-legacy');
+  });
+
+  it('classifies a live public-IPv4 quota refusal on start as a capacity refusal', () => {
+    // Shape read back from `compute instance list-operations-by-parent` on 2026-10-02 (tenant id elided).
+    const message = 'rpc error: code = ResourceExhausted desc = Quota limit exceeded. Exceeded limit for container tenant-x, quota vpc.ipv4-address.public.count.\n'
+      + 'caused by service error:\n  Quota failure QuotaFailure: service VPC API, violations:\n'
+      + '    vpc.ipv4-address.public.count (limit 3, requested 4): Exceeded limit for container tenant-x';
+    const page = parseOperationPage(JSON.stringify({
+      operations: [{
+        id: 'computeoperation-quota', description: 'Start Instance', resource_id: 'computeinstance-quota',
+        created_at: '2026-10-02T05:34:23.819820Z', finished_at: '2026-10-02T05:34:35.288896Z',
+        status: {
+          code: 8, message,
+          details: [{
+            '@type': 'type.googleapis.com/nebius.common.v1.ServiceError', service: 'VPC API', code: 'QuotaFailure',
+            quota_failure: { violations: [{ quota: 'vpc.ipv4-address.public.count', message: 'Exceeded limit for container tenant-x', limit: '3', requested: '4' }] },
+            retry_type: 'NOTHING',
+          }],
+        },
+      }],
+    }));
+    expect(page.items[0]).toEqual({
+      id: 'computeoperation-quota', resourceId: 'computeinstance-quota', state: 'FAILED',
+      capacityRefusal: { quotas: ['vpc.ipv4-address.public.count'] },
+    });
+  });
+
+  it('keeps other failed operations ordinary failures', () => {
+    const page = parseOperationPage(JSON.stringify({
+      operations: [{ id: 'op-aborted', resource_id: 'instance-1', finished_at: '2026-09-15T05:54:30Z', status: { code: 10, message: 'aborted' } }],
+    }));
+    expect(page.items[0]).toEqual({ id: 'op-aborted', resourceId: 'instance-1', state: 'FAILED' });
+  });
+
+  it('recognises a quota refusal reported by a failed CLI mutation', () => {
+    expect(classifyCapacityRefusal('Error: rpc error: code = ResourceExhausted desc = Quota limit exceeded. Exceeded limit for container tenant-x, quota vpc.ipv4-address.public.count.'))
+      .toEqual({ quotas: ['vpc.ipv4-address.public.count'] });
+    expect(classifyCapacityRefusal('Quota failure QuotaFailure: service Compute API')).toEqual({ quotas: [] });
+    expect(classifyCapacityRefusal('rpc error: code = PermissionDenied desc = not allowed')).toBeNull();
+    expect(classifyCapacityRefusal('')).toBeNull();
   });
 
   it('rejects ambiguous operation collections and malformed live status fields', () => {

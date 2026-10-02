@@ -617,6 +617,83 @@ describe('production runner command composition (R11/R12)', () => {
     expect(log.split('\n').filter((line) => line.includes('instance start'))).toHaveLength(1);
   }, 60_000);
 
+  it('keeps the stopped VM while Nebius refuses its start for public IPv4 quota, then retries only the start', async () => {
+    const fixture = await createLifecycleFixture();
+    await builtTick(fixture);
+    await updateScenario(fixture, (scenario) => { scenario.jobs[0]!.status = 'queued'; scenario.startQuotaRefused = true; scenario.strictGrant = true; });
+    await builtTick(fixture); // create
+    await builtTick(fixture); // reconcile create
+    await builtTick(fixture); // start, refused asynchronously by the provider
+    // No boot-window wait and no delete: the refused start becomes a capacity wait on the same VM.
+    expect(await builtTick(fixture)).toContain('"status":"waiting"');
+    const held = await builtTick(fixture);
+    expect(held).toContain('"status":"waiting"');
+    expect(held).toContain('"reasonCode":"provider-capacity-wait"');
+    expect((JSON.parse(await readFile(fixture.scenarioPath, 'utf8')) as LifecycleScenario).provider).toBe('STOPPED');
+    const statePath = join(fixture.directory, 'controller-state.json');
+    const waiting = JSON.parse(await readFile(statePath, 'utf8')) as { lifecycle: { state: string; startCount: number; capacityWait: { detail: string; refusedEffect: string; refusals: number; retryAtMs: number } } };
+    expect(waiting.lifecycle.state).toBe('stopped');
+    expect(waiting.lifecycle.startCount).toBe(0);
+    expect(waiting.lifecycle.capacityWait).toMatchObject({ detail: 'vpc.ipv4-address.public.count', refusedEffect: 'start-vm', refusals: 1 });
+    expect((JSON.parse(await readFile(fixture.scenarioPath, 'utf8')) as LifecycleScenario).jobs[0]?.status).toBe('queued');
+    expect(await readFile(join(fixture.directory, 'events.jsonl'), 'utf8')).toContain('"type":"provider-capacity-refused","effect":"start-vm"');
+
+    // A slot frees and the backoff ends: the next tick starts the same instance again.
+    waiting.lifecycle.capacityWait.retryAtMs = Date.now() - 1;
+    await writeFile(statePath, JSON.stringify(waiting));
+    await updateScenario(fixture, (scenario) => { scenario.startQuotaRefused = false; });
+    expect(await builtTick(fixture)).toContain('"type":"start-vm","generation":1');
+    expect(await builtTick(fixture)).toContain('"status":"reconciled"');
+    expect(JSON.parse(await readFile(statePath, 'utf8'))).not.toHaveProperty('lifecycle.capacityWait');
+    expect((JSON.parse(await readFile(fixture.scenarioPath, 'utf8')) as LifecycleScenario).grant?.generation).toBe(1);
+    const log = (await readFile(fixture.logPath, 'utf8')).split('\n');
+    expect(log.filter((line) => line.includes('instance create'))).toHaveLength(1);
+    expect(log.filter((line) => line.includes('instance delete'))).toHaveLength(0);
+    expect(log.filter((line) => line.includes('instance start --id instance-1'))).toHaveLength(2);
+  }, 60_000);
+
+  it('retries a refused start of a previously booted VM as the generation its guest will accept', async () => {
+    const fixture = await createLifecycleFixture();
+    await builtTick(fixture);
+    await updateScenario(fixture, (scenario) => { scenario.jobs[0]!.status = 'queued'; scenario.strictGrant = true; });
+    for (let tick = 0; tick < 4; tick += 1) await builtTick(fixture); // create, reconcile, start, arm generation 1
+    expect((JSON.parse(await readFile(fixture.scenarioPath, 'utf8')) as LifecycleScenario).grant?.generation).toBe(1);
+    await builtDirect(fixture, 'stop'); // ordinary stop: the guest keeps grant generation 1 on disk
+    await updateScenario(fixture, (scenario) => { scenario.startQuotaRefused = true; });
+    expect(await builtTick(fixture)).toContain('"type":"start-vm","generation":2'); // refused by the provider
+    expect(await builtTick(fixture)).toContain('"status":"waiting"');
+    const statePath = join(fixture.directory, 'controller-state.json');
+    const waiting = JSON.parse(await readFile(statePath, 'utf8')) as { lifecycle: { startCount: number; capacityWait: { retryAtMs: number } } };
+    expect(waiting.lifecycle.startCount).toBe(1);
+    waiting.lifecycle.capacityWait.retryAtMs = Date.now() - 1;
+    await writeFile(statePath, JSON.stringify(waiting));
+    await updateScenario(fixture, (scenario) => { scenario.startQuotaRefused = false; });
+    expect(await builtTick(fixture)).toContain('"type":"start-vm","generation":2');
+    // arm-grant receives generation 2 with confirmed stop 1, which the strict guest accepts.
+    expect(await builtTick(fixture)).toContain('"status":"reconciled"');
+    expect((JSON.parse(await readFile(fixture.scenarioPath, 'utf8')) as LifecycleScenario).grant?.generation).toBe(2);
+    const state = JSON.parse(await readFile(statePath, 'utf8')) as { lifecycle: Record<string, unknown> };
+    expect(state.lifecycle).toMatchObject({ startCount: 2 });
+    expect(state.lifecycle).not.toHaveProperty('capacityWait');
+    const log = (await readFile(fixture.logPath, 'utf8')).split('\n');
+    expect(log.filter((line) => line.includes('instance create'))).toHaveLength(1);
+    expect(log.filter((line) => line.includes('instance delete'))).toHaveLength(0);
+  }, 60_000);
+
+  it('waits instead of failing when the create command itself is refused for quota', async () => {
+    const fixture = await createLifecycleFixture();
+    await builtTick(fixture);
+    await updateScenario(fixture, (scenario) => { scenario.jobs[0]!.status = 'queued'; scenario.createQuotaRefused = true; });
+    expect(await builtTick(fixture)).toContain('"status":"waiting"');
+    const state = JSON.parse(await readFile(join(fixture.directory, 'controller-state.json'), 'utf8')) as { pendingEffect: unknown; lifecycle: { state: string; capacityWait?: unknown } };
+    expect(state.pendingEffect).toBeNull();
+    expect(state.lifecycle.state).toBe('absent');
+    expect(state.lifecycle.capacityWait).toMatchObject({ reasonCode: 'provider-capacity-wait', detail: 'vpc.ipv4-address.public.count' });
+    expect(await builtTick(fixture)).toContain('"status":"waiting"');
+    const log = await readFile(fixture.logPath, 'utf8');
+    expect(log.split('\n').filter((line) => line.includes('instance create'))).toHaveLength(1);
+  }, 60_000);
+
   it('waits for a pending provider start before retiring a stopped generation', async () => {
     const fixture = await createLifecycleFixture();
     await builtTick(fixture);
@@ -800,6 +877,15 @@ interface LifecycleScenario {
   registerFailure?: string;
   repositoryUnavailable?: boolean;
   startOperationState?: 'RUNNING' | 'SUCCEEDED';
+  /** The start operation fails with the live public-IPv4 quota status and the VM stays stopped. */
+  startQuotaRefused?: boolean;
+  /** The create command itself exits 1 with a RESOURCE_EXHAUSTED quota error. */
+  createQuotaRefused?: boolean;
+  /**
+   * Emulates guest/arm-grant.sh: with a grant present, only the same generation or exactly
+   * grant+1 with confirmed stop == grant is accepted (otherwise exit 3); a created VM has no grant.
+   */
+  strictGrant?: boolean;
   jobs: Array<{ runId: number; jobId: number; status: 'none' | 'queued' | 'in_progress' | 'completed'; conclusion: string | null; runnerId: number | null; runnerName: string | null }>;
 }
 
@@ -862,8 +948,12 @@ process.stdout.write('HTTP/2 '+status+'\\n\\n'+(body===null?'':JSON.stringify(bo
   await writeFile(nebiusPath, `#!/usr/bin/env node
 ${sharedPrelude}
 const a=process.argv.slice(2);let body={};
-if(a.includes('list-operations-by-parent'))body=s.startOperationState?{items:[{metadata:{id:'op-start'},spec:{resource_id:'instance-1'},status:{state:s.startOperationState}}]}:{};
-else if(a.includes('create')){s.provider='STOPPED';s.guest='booting';save();body={metadata:{id:'op-create'}};}
+const quotaMessage='rpc error: code = ResourceExhausted desc = Quota limit exceeded. Exceeded limit for container tenant-fixture, quota vpc.ipv4-address.public.count.';
+if(a.includes('list-operations-by-parent')&&s.startQuotaRefused)body={operations:[{id:'op-start',description:'Start Instance',resource_id:'instance-1',finished_at:'2026-10-02T05:34:35Z',status:{code:8,message:quotaMessage,details:[{service:'VPC API',code:'QuotaFailure',quota_failure:{violations:[{quota:'vpc.ipv4-address.public.count',limit:'3',requested:'4'}]},retry_type:'NOTHING'}]}}]};
+else if(a.includes('create')&&s.createQuotaRefused){process.stderr.write('Error: '+quotaMessage+'\\n');process.exit(1);}
+else if(a.includes('start')&&s.startQuotaRefused)body={metadata:{id:'op-start'}};
+else if(a.includes('list-operations-by-parent'))body=s.startOperationState?{items:[{metadata:{id:'op-start'},spec:{resource_id:'instance-1'},status:{state:s.startOperationState}}]}:{};
+else if(a.includes('create')){s.provider='STOPPED';s.guest='booting';if(s.strictGrant)s.grant=null;save();body={metadata:{id:'op-create'}};}
 else if(a.includes('start')){s.provider='RUNNING';s.guest='booting';save();body={metadata:{id:'op-start'}};}
 else if(a.includes('stop')){s.provider='STOPPED';s.guest='booting';s.runnerName=null;s.runnerId=null;s.runnerBusy=false;save();body={metadata:{id:'op-stop'}};}
 else if(a.includes('delete')){s.provider='ABSENT';save();body={metadata:{id:'op-delete'}};}
@@ -875,6 +965,7 @@ ${sharedPrelude}
 const helper=process.argv.at(-1);const lines=fs.readFileSync(0,'utf8').trim().split('\\n');
 if(helper==='/opt/cirujano/arm-grant'&&s.sshFailures.length>0){const failure=s.sshFailures.shift();save();process.stderr.write(failure);process.exit(255);}
 else if(helper==='/opt/cirujano/arm-grant'&&(s.lostGrantUpdates??0)>0){s.lostGrantUpdates-=1;s.guest='ready';save();process.stdout.write('armed\\n');}
+else if(helper==='/opt/cirujano/arm-grant'&&s.strictGrant&&s.grant!==null&&Number(lines[0])!==s.grant.generation&&!(Number(lines[0])===s.grant.generation+1&&Number(lines[5])===s.grant.generation)){process.stderr.write('grant generation must increment exactly once\\n');process.exit(3);}
 else if(helper==='/opt/cirujano/arm-grant'){s.grant={generation:Number(lines[0]),startedAtMs:Number(lines[1]),deadlineMs:Number(lines[2])};s.guest='ready';save();process.stdout.write('armed\\n');}
 else if(helper==='/opt/cirujano/register-runner'&&s.registerFailure){process.stderr.write(s.registerFailure+'\\ntoken='+lines[4]+'\\n');process.exit(1);}
 else if(helper==='/opt/cirujano/register-runner'){const job=s.jobs.find(j=>j.status==='queued');s.runnerName=lines[1];s.runnerId=job.jobId===2001?301:302;s.runnerBusy=true;job.status='in_progress';job.runnerId=s.runnerId;job.runnerName=s.runnerName;s.guest='busy';save();process.stdout.write('registered\\n');}

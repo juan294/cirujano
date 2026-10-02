@@ -1,5 +1,16 @@
-import type { LifecycleDecision, LifecycleEffect, LifecycleInput, LifecycleJournal, LifecycleState, PermitIdentity, PermitOperation } from './contracts.js';
-import { decideLifecycle, validateCleanupPermit } from './lifecycle.js';
+import {
+  CAPACITY_WAIT_REASON,
+  type CapacityRefusal,
+  type CapacityWait,
+  type LifecycleDecision,
+  type LifecycleEffect,
+  type LifecycleInput,
+  type LifecycleJournal,
+  type LifecycleState,
+  type PermitIdentity,
+  type PermitOperation,
+} from './contracts.js';
+import { decideLifecycle, nextCapacityWait, validateCleanupPermit } from './lifecycle.js';
 import { acquireControllerLock, appendRedactedEvent, assertControllerLock, type ControllerLock, readJournal, writeJournalAtomic } from './journal.js';
 
 export interface PendingEffect {
@@ -35,9 +46,23 @@ export interface TickOptions {
   input: LifecycleInput;
   dryRun?: boolean;
   secrets?: readonly string[];
+  /** Throws ProviderCapacityError when the provider refuses a create or start for exhausted quota. */
   executeEffect(effect: Exclude<LifecycleEffect, { type: 'none' }>): Promise<{ operationId?: string; resolved?: boolean; readback?: unknown }>;
-  reconcileEffect(effect: PendingEffect): Promise<{ resolved: boolean; retry?: boolean; retireStoppedStart?: boolean; readback?: unknown }>;
+  reconcileEffect(effect: PendingEffect): Promise<{
+    resolved: boolean; retry?: boolean; retireStoppedStart?: boolean; readback?: unknown;
+    /** The pending create or start operation failed because the provider ran out of quota. */
+    capacityRefusal?: CapacityRefusal;
+  }>;
   boundary?(name: ControllerBoundary): Promise<void>;
+}
+
+/** A provider refused a create or start because a quota is exhausted; nothing was started. */
+export class ProviderCapacityError extends Error {
+  override readonly name = 'ProviderCapacityError';
+
+  constructor(readonly refusal: CapacityRefusal, message: string) {
+    super(message);
+  }
 }
 
 export type ControllerBoundary =
@@ -50,7 +75,8 @@ export type ControllerBoundary =
   | 'after-final-event';
 
 export interface TickResult {
-  status: 'blocked' | 'idle' | 'dry-run' | 'mutated' | 'reconciled' | 'pending' | 'abandoned';
+  /** `waiting`: queued work is held back by a provider capacity wait (reason code provider-capacity-wait). */
+  status: 'blocked' | 'idle' | 'dry-run' | 'mutated' | 'reconciled' | 'pending' | 'abandoned' | 'waiting';
   decision?: LifecycleDecision;
 }
 
@@ -96,6 +122,15 @@ export async function tickController(options: TickOptions): Promise<TickResult> 
       return executePendingEffect(options, prior);
     }
     const reconciliation = await options.reconcileEffect(prior.pendingEffect);
+    const readbacksWith = (readback: unknown) => (readback === undefined ? prior.readbacks : [...prior.readbacks, readback].slice(-100));
+    const capacityRefusal = reconciliation.capacityRefusal;
+    if (capacityRefusal !== undefined && reconciliation.retireStoppedStart === true && refusedStartLeftOwnedStoppedVm(prior.pendingEffect, options.input)) {
+      // The provider refused the start for quota: its operation is terminal and the exact owned VM
+      // is still stopped and never booted. Keep the VM and its disk, drop the start intent, and hold
+      // the queued job until the backoff ends; the lifecycle then retries only the start.
+      const lifecycle = mergeLifecycle(prior.lifecycle, options.input.journal);
+      return waitForCapacity(options, { ...prior, lifecycle, readbacks: readbacksWith(reconciliation.readback) }, capacityRefusal, 'start-vm');
+    }
     if (reconciliation.retireStoppedStart === true && canRetireStoppedStart(prior.pendingEffect, options.input)) {
       const lifecycle = mergeLifecycle(prior.lifecycle, options.input.journal);
       const decision: LifecycleDecision = {
@@ -103,9 +138,12 @@ export async function tickController(options: TickOptions): Promise<TickResult> 
         effect: { type: 'delete-vm', generation: lifecycle.startCount },
         reason: 'start stopped before registration after its boot window; deleting the unusable generation',
       };
-      const readbacks = reconciliation.readback === undefined
-        ? prior.readbacks : [...prior.readbacks, reconciliation.readback].slice(-100);
-      return recordAndExecuteDecision(options, decision, { ...lifecycle, outstandingIntent: null }, readbacks);
+      return recordAndExecuteDecision(options, decision, { ...lifecycle, outstandingIntent: null }, readbacksWith(reconciliation.readback));
+    }
+    if (capacityRefusal !== undefined && prior.pendingEffect.effect.type === 'create-vm' && providerProvenAbsent(options.input)) {
+      // A refused create left nothing behind (complete readback, no owned or related VM): drop the
+      // create intent and wait for capacity instead of holding the intent until its deadline.
+      return waitForCapacity(options, { ...prior, readbacks: readbacksWith(reconciliation.readback) }, capacityRefusal, 'create-vm');
     }
     if (!reconciliation.resolved && reconciliation.retry === true) {
       const retryState: ControllerState = {
@@ -134,9 +172,13 @@ export async function tickController(options: TickOptions): Promise<TickResult> 
     const grantDeadlineMs = reconciledEffect.type === 'start-vm' || reconciledEffect.type === 'adopt-vm'
       ? reconciledEffect.deadlineMs
       : reconciledEffect.type === 'create-vm' || reconciledEffect.type === 'delete-vm' ? null : prior.lifecycle.grantDeadlineMs;
+    // A start that reconciled got its capacity, and a deleted VM has nothing left to start: either
+    // ends any capacity wait.
+    const lifecycleBase = reconciledEffect.type === 'start-vm' || reconciledEffect.type === 'delete-vm'
+      ? withoutCapacityWait(prior.lifecycle) : prior.lifecycle;
     const reconciled: ControllerState = {
       ...prior,
-      lifecycle: { ...prior.lifecycle, state: reconciledState, outstandingIntent: null, grantDeadlineMs },
+      lifecycle: { ...lifecycleBase, state: reconciledState, outstandingIntent: null, grantDeadlineMs },
       pendingEffect: null,
       readbacks: [...prior.readbacks, reconciliation.readback].slice(-100),
     };
@@ -158,8 +200,12 @@ export async function tickController(options: TickOptions): Promise<TickResult> 
     } satisfies ControllerState;
     parseControllerState(observedState);
     await writeJournalAtomic(options.journalPath, observedState);
-    await appendRedactedEvent(options.eventPath, { schemaVersion: 1, type: 'decision', state: decision.state, reason: decision.reason }, { secrets: options.secrets ?? [] });
-    return { status: decision.state === 'blocked' ? 'blocked' : 'idle', decision };
+    await appendRedactedEvent(options.eventPath, {
+      schemaVersion: 1, type: 'decision', state: decision.state, reason: decision.reason,
+      ...(decision.reasonCode === undefined ? {} : { reasonCode: decision.reasonCode }),
+    }, { secrets: options.secrets ?? [] });
+    const status = decision.state === 'blocked' ? 'blocked' : decision.reasonCode === CAPACITY_WAIT_REASON ? 'waiting' : 'idle';
+    return { status, decision };
   }
   if (options.dryRun === true) {
     await appendRedactedEvent(options.eventPath, { schemaVersion: 1, type: 'dry-run', effect: decision.effect.type }, { secrets: options.secrets ?? [] });
@@ -260,7 +306,8 @@ function parseIdentity(input: unknown): PermitIdentity {
 
 function parseLifecycleJournal(input: unknown): LifecycleJournal {
   // grantDeadlineMs is optional on read so journals written before it existed still parse.
-  const root = strictObject(input, ['state', 'startCount', 'cumulativeRuntimeMs', 'cumulativeCostUsd', 'outstandingIntent', 'idleObservations'], 'controller state lifecycle', ['grantDeadlineMs']);
+  // capacityWait is written only while a provider capacity wait is in force.
+  const root = strictObject(input, ['state', 'startCount', 'cumulativeRuntimeMs', 'cumulativeCostUsd', 'outstandingIntent', 'idleObservations'], 'controller state lifecycle', ['grantDeadlineMs', 'capacityWait']);
   const states: readonly LifecycleState[] = ['absent', 'stopped', 'starting', 'ready', 'busy', 'draining', 'stopping', 'blocked'];
   if (typeof root['state'] !== 'string' || !states.includes(root['state'] as LifecycleState)) throw new Error('controller state lifecycle state is invalid');
   if (!Number.isInteger(root['startCount']) || (root['startCount'] as number) < 0) throw new Error('controller state startCount is invalid');
@@ -290,7 +337,18 @@ function parseLifecycleJournal(input: unknown): LifecycleJournal {
     outstandingIntent,
     idleObservations: idleObservations.slice(-100),
     grantDeadlineMs: grantDeadlineMs as number | null,
+    ...(root['capacityWait'] === undefined ? {} : { capacityWait: parseCapacityWait(root['capacityWait']) }),
   };
+}
+
+function parseCapacityWait(input: unknown): CapacityWait {
+  const root = strictObject(input, ['reasonCode', 'refusedEffect', 'detail', 'firstRefusedAtMs', 'lastRefusedAtMs', 'refusals', 'retryAtMs'], 'controller state capacityWait');
+  if (root['reasonCode'] !== CAPACITY_WAIT_REASON) throw new Error('controller state capacityWait reasonCode is invalid');
+  if (root['refusedEffect'] !== 'create-vm' && root['refusedEffect'] !== 'start-vm') throw new Error('controller state capacityWait refusedEffect is invalid');
+  if (typeof root['detail'] !== 'string' || root['detail'].length === 0) throw new Error('controller state capacityWait detail is invalid');
+  for (const key of ['firstRefusedAtMs', 'lastRefusedAtMs', 'retryAtMs'] as const) finiteNumber(root[key], `controller state capacityWait ${key}`);
+  positiveInteger(root['refusals'], 'controller state capacityWait refusals');
+  return root as unknown as CapacityWait;
 }
 
 function parsePendingEffect(input: unknown): PendingEffect {
@@ -435,6 +493,11 @@ async function executePendingEffect(options: TickOptions, state: ControllerState
     await atBoundary(options, 'after-final-event');
     return { status: 'mutated', ...(decision === undefined ? {} : { decision }) };
   } catch (error) {
+    if (error instanceof ProviderCapacityError && (pending.effect.type === 'create-vm' || pending.effect.type === 'start-vm')) {
+      // The provider rejected the request itself, so no operation exists to reconcile: a refused
+      // create left nothing and a refused start left the owned VM stopped.
+      return waitForCapacity(options, state, error.refusal, pending.effect.type, error.message);
+    }
     await writeJournalAtomic(options.journalPath, {
       ...state,
       lifecycle: markIntentAmbiguous(state.lifecycle),
@@ -578,6 +641,12 @@ function pendingEffectIsStale(pending: PendingEffect, input: LifecycleInput): bo
   return !recoveryOperation && saved.effectDeadlineMs !== null && input.nowMs > saved.effectDeadlineMs;
 }
 
+function refusedStartLeftOwnedStoppedVm(pending: PendingEffect, input: LifecycleInput): boolean {
+  return pending.effect.type === 'start-vm'
+    && input.provider.complete && input.provider.ownership === 'owned' && input.provider.ownedMatches === 1
+    && input.provider.vmStatus === 'stopped' && input.provider.outstandingOperation === null;
+}
+
 function canRetireStoppedStart(pending: PendingEffect, input: LifecycleInput): boolean {
   return pending.effect.type === 'start-vm'
     && input.nowMs >= pending.createdAtMs + input.config.timing.bootTimeoutMs
@@ -607,6 +676,59 @@ async function abandonPendingEffect(options: TickOptions, state: ControllerState
     operation: pending.authorization.operation, reason: 'pending effect deadline has expired',
   }, { secrets: options.secrets ?? [] });
   return { status: 'abandoned' };
+}
+
+function providerProvenAbsent(input: LifecycleInput): boolean {
+  return input.provider.complete && input.provider.vmStatus === 'absent'
+    && input.provider.ownership === 'absent' && input.provider.ownedMatches === 0;
+}
+
+function withoutCapacityWait(journal: LifecycleJournal): LifecycleJournal {
+  if (journal.capacityWait === undefined) return journal;
+  const copy = { ...journal };
+  delete copy.capacityWait;
+  return copy;
+}
+
+// Clears a create or start the provider refused for quota and holds queued work until the backoff
+// ends. A refused create leaves nothing (absent); a refused start leaves the owned VM stopped with
+// its disk, so only the start is repeated.
+//
+// A refused start never booted and never armed its grant, so its generation is handed back:
+// startCount returns to the generation before it and the retry reuses the refused generation.
+// The guest only accepts grant generation + 1 after a confirmed stop (guest/arm-grant.sh), so a
+// retry that took the next generation could never arm on a previously booted VM. It also keeps the
+// permit's maxStarts cap counting starts that ran, not refusals. This is a controller-authored
+// write of its own journal; the observed-input regression check in mergeLifecycle is unchanged.
+async function waitForCapacity(
+  options: TickOptions, state: ControllerState, refusal: CapacityRefusal, refusedEffect: CapacityWait['refusedEffect'], error?: string,
+): Promise<TickResult> {
+  const pending = state.pendingEffect;
+  if (pending === null) throw new Error('controller state invariant: capacity wait has no pending effect');
+  const capacityWait = nextCapacityWait(state.lifecycle.capacityWait, refusal, refusedEffect, options.input.nowMs, options.input.config.timing.pollIntervalMs);
+  let startCount = state.lifecycle.startCount;
+  if (pending.effect.type === 'start-vm') {
+    if (state.lifecycle.startCount !== pending.effect.generation) {
+      throw new Error('controller state invariant: refused start generation is not the journaled start count');
+    }
+    startCount = pending.effect.generation - 1;
+  }
+  const waiting: ControllerState = {
+    ...state,
+    lifecycle: {
+      ...state.lifecycle, startCount,
+      state: refusedEffect === 'create-vm' ? 'absent' : 'stopped', outstandingIntent: null, capacityWait,
+    },
+    pendingEffect: null,
+  };
+  assertStateInvariants(waiting);
+  await writeJournalAtomic(options.journalPath, waiting);
+  await appendRedactedEvent(options.eventPath, {
+    schemaVersion: 1, type: 'provider-capacity-refused', effect: refusedEffect, reasonCode: capacityWait.reasonCode,
+    detail: capacityWait.detail, refusals: capacityWait.refusals, retryAtMs: capacityWait.retryAtMs,
+    ...(error === undefined ? {} : { error }),
+  }, { secrets: options.secrets ?? [] });
+  return { status: 'waiting' };
 }
 
 async function blockPendingAuthorization(options: TickOptions, state: ControllerState, reason: string): Promise<TickResult> {

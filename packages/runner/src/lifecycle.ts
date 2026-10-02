@@ -1,10 +1,13 @@
-import type {
-  LifecycleDecision,
-  LifecycleInput,
-  LifecycleState,
-  Permit,
-  PermitIdentity,
-  PermitOperation,
+import {
+  CAPACITY_WAIT_REASON,
+  type CapacityRefusal,
+  type CapacityWait,
+  type LifecycleDecision,
+  type LifecycleInput,
+  type LifecycleState,
+  type Permit,
+  type PermitIdentity,
+  type PermitOperation,
 } from './contracts.js';
 
 const DRAIN_FALLBACK_MS = 600_000;
@@ -125,6 +128,13 @@ export function decideLifecycle(input: LifecycleInput): LifecycleDecision {
     if (!input.provider.complete || !input.queue.complete || input.queue.eligibleQueuedJobs === 0) {
       return { state: 'absent', effect: { type: 'none' }, reason: 'no complete eligible demand requires creation' };
     }
+    // Only a refused create holds creation back. A start-refused VM that vanished is recreated
+    // through the ordinary owned path (creating a stopped VM allocates no public address); its
+    // start then waits out the remaining backoff below.
+    if (input.journal.capacityWait?.refusedEffect === 'create-vm') {
+      const capacityHold = capacityWaitDecision(input, 'absent');
+      if (capacityHold !== null) return capacityHold;
+    }
     const budget = startBudget(input);
     if (!budget.valid) return blocked(budget.reason);
     if (input.journal.startCount >= (input.permit?.maxStarts ?? 0)) return blocked('permit start count is exhausted');
@@ -189,6 +199,17 @@ export function decideLifecycle(input: LifecycleInput): LifecycleDecision {
     });
   }
 
+  // A VM kept stopped for a capacity wait is left alone while work stays queued. Once the work is
+  // gone it is an idle stopped VM like any other, so delete-after-stop removes it and its disk.
+  // A refused first start hands its generation back, so startCount may be 0 here.
+  if (input.provider.vmStatus === 'stopped' && input.journal.capacityWait !== undefined && input.journal.state === 'stopped'
+    && input.queue.eligibleQueuedJobs === 0 && input.config.idleResourcePolicy === 'delete-after-stop') {
+    return authorizedCleanup(input, {
+      state: 'absent', effect: { type: 'delete-vm', generation: Math.max(1, input.journal.startCount) },
+      reason: 'queued work left during a capacity wait; deleting the idle stopped VM and its retained disk',
+    });
+  }
+
   if (input.provider.vmStatus === 'stopped' && input.journal.state === 'stopping'
     && input.journal.startCount > 0 && input.queue.eligibleQueuedJobs === 0
     && input.config.idleResourcePolicy === 'delete-after-stop') {
@@ -199,6 +220,8 @@ export function decideLifecycle(input: LifecycleInput): LifecycleDecision {
   }
 
   if (input.provider.vmStatus === 'stopped' && input.queue.eligibleQueuedJobs > 0) {
+    const capacityHold = capacityWaitDecision(input, input.journal.state);
+    if (capacityHold !== null) return capacityHold;
     if (input.journal.startCount >= (input.permit?.maxStarts ?? 0)) return blocked('permit start count is exhausted');
     const budget = startBudget(input);
     if (!budget.valid) return blocked(budget.reason);
@@ -245,6 +268,49 @@ export function decideLifecycle(input: LifecycleInput): LifecycleDecision {
   }
 
   return { state: input.journal.state, effect: { type: 'none' }, reason: 'no lifecycle transition is required' };
+}
+
+/** First wait after a capacity refusal; each further refusal in the same episode doubles it. */
+export const CAPACITY_RETRY_BASE_MS = 120_000;
+/** Longest wait between attempts, so a freed slot is used within this bound. */
+export const CAPACITY_RETRY_MAX_MS = 960_000;
+
+/**
+ * Records one more provider capacity refusal and when to try again. A refusal more than one
+ * maximum wait after the previous retry time starts a fresh episode, so a quiet day does not
+ * inherit yesterday's long backoff. The wait never undercuts the controller's own poll interval.
+ */
+export function nextCapacityWait(
+  previous: CapacityWait | undefined,
+  refusal: CapacityRefusal,
+  refusedEffect: CapacityWait['refusedEffect'],
+  nowMs: number,
+  pollIntervalMs: number,
+): CapacityWait {
+  const continuing = previous !== undefined && nowMs - previous.retryAtMs <= CAPACITY_RETRY_MAX_MS;
+  const refusals = continuing ? previous.refusals + 1 : 1;
+  const backoffMs = Math.min(CAPACITY_RETRY_MAX_MS, CAPACITY_RETRY_BASE_MS * 2 ** Math.min(refusals - 1, 16));
+  return {
+    reasonCode: CAPACITY_WAIT_REASON,
+    refusedEffect,
+    detail: refusal.quotas.length > 0 ? refusal.quotas.join(',') : 'provider quota exhausted',
+    firstRefusedAtMs: continuing ? previous.firstRefusedAtMs : nowMs,
+    lastRefusedAtMs: nowMs,
+    refusals,
+    retryAtMs: nowMs + Math.max(pollIntervalMs, backoffMs),
+  };
+}
+
+function capacityWaitDecision(input: LifecycleInput, state: LifecycleState): LifecycleDecision | null {
+  const wait = input.journal.capacityWait;
+  if (wait === undefined || input.nowMs >= wait.retryAtMs) return null;
+  return {
+    state,
+    effect: { type: 'none' },
+    reason: `${CAPACITY_WAIT_REASON}: provider refused capacity (${wait.detail}) ${wait.refusals} time(s); `
+      + `queued work waits until ${new Date(wait.retryAtMs).toISOString()}`,
+    reasonCode: CAPACITY_WAIT_REASON,
+  };
 }
 
 export function drainDeadlineMs(originalDeadlineMs: number, nowMs: number, fallbackMs = DRAIN_FALLBACK_MS): number {

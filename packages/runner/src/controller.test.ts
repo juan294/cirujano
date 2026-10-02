@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import type { LifecycleInput } from './contracts.js';
-import { requiredPermitOperation, runInterruptRecovery, runLockedControllerTick, tickController } from './controller.js';
+import { ProviderCapacityError, parseControllerState, requiredPermitOperation, runInterruptRecovery, runLockedControllerTick, tickController } from './controller.js';
 import { acquireControllerLock, readJournal, writeJournalAtomic } from './journal.js';
 
 const NOW = 1_800_000_000_000;
@@ -603,5 +603,215 @@ describe('stale pending effect recovery (D-11)', () => {
     await expiredLock.release();
     expect(result.status).toBe('blocked');
     expect((await readJournal<{ pendingEffect: unknown }>(journalPath)).pendingEffect).not.toBeNull();
+  });
+});
+
+describe('provider capacity refusal (public IPv4 quota)', () => {
+  const refusal = { quotas: ['vpc.ipv4-address.public.count'] };
+
+  function capacityInput(): LifecycleInput {
+    const input = startInput();
+    input.permit = { ...input.permit!, operations: ['create', 'start', 'register', 'stop', 'delete'], maxStarts: 5 };
+    return input;
+  }
+
+  async function tick(directory: string, input: LifecycleInput, handlers: Partial<Pick<Parameters<typeof tickController>[0], 'executeEffect' | 'reconcileEffect'>>) {
+    const journalPath = join(directory, 'state.json');
+    // The production observer reads the saved lifecycle back as the observed journal.
+    const saved = await readJournal<{ lifecycle: LifecycleInput['journal'] }>(journalPath).catch(() => null);
+    const lock = await acquireControllerLock(directory);
+    try {
+      return await tickController({
+        lock, journalPath, eventPath: join(directory, 'events.jsonl'),
+        input: saved === null ? input : { ...input, journal: saved.lifecycle },
+        executeEffect: handlers.executeEffect ?? (async () => { throw new Error('unexpected provider write'); }),
+        reconcileEffect: handlers.reconcileEffect ?? (async () => ({ resolved: false })),
+      });
+    } finally {
+      await lock.release();
+    }
+  }
+
+  async function pendingStart(): Promise<string> {
+    const directory = await mkdtemp(join(tmpdir(), 'cirujano-controller-capacity-'));
+    expect((await tick(directory, capacityInput(), { executeEffect: async () => ({ operationId: 'op-start' }) })).status).toBe('mutated');
+    return directory;
+  }
+
+  function later(input: LifecycleInput, offsetMs: number): LifecycleInput {
+    return { ...input, nowMs: NOW + offsetMs, queue: { ...input.queue, observedAtMs: NOW + offsetMs } };
+  }
+
+  it('keeps a quota-refused stopped VM, emits no provider write and records a visible capacity wait', async () => {
+    const directory = await pendingStart();
+    const result = await tick(directory, later(capacityInput(), 60_000), {
+      reconcileEffect: async () => ({ resolved: false, retireStoppedStart: true, capacityRefusal: refusal, readback: { startOperation: 'FAILED' } }),
+    });
+    expect(result.status).toBe('waiting');
+    const state = await readJournal<{ pendingEffect: unknown; readbacks: unknown[]; lifecycle: Record<string, unknown> }>(join(directory, 'state.json'));
+    expect(state.pendingEffect).toBeNull();
+    expect(state.readbacks).toContainEqual({ startOperation: 'FAILED' });
+    expect(state.lifecycle).toMatchObject({
+      // The refused generation never ran, so it is handed back for the retry to reuse.
+      state: 'stopped', startCount: 0, outstandingIntent: null,
+      capacityWait: { reasonCode: 'provider-capacity-wait', refusedEffect: 'start-vm', detail: 'vpc.ipv4-address.public.count', refusals: 1, retryAtMs: NOW + 60_000 + 120_000 },
+    });
+    const events = await readFile(join(directory, 'events.jsonl'), 'utf8');
+    expect(events).toContain('"type":"provider-capacity-refused","effect":"start-vm"');
+    expect(events).not.toContain('delete-vm');
+  });
+
+  it('leaves a quota-refused start pending while the provider readback is not a proven owned stopped VM', async () => {
+    const directory = await pendingStart();
+    const unproven = later(capacityInput(), 60_000);
+    unproven.provider = { ...unproven.provider, complete: false, vmStatus: 'unknown', ownership: 'unknown', ownedMatches: 0 };
+    const result = await tick(directory, unproven, {
+      reconcileEffect: async () => ({ resolved: false, retireStoppedStart: true, capacityRefusal: refusal }),
+    });
+    expect(result.status).toBe('pending');
+    expect((await readJournal<{ pendingEffect: unknown }>(join(directory, 'state.json'))).pendingEffect).not.toBeNull();
+  });
+
+  it('keeps waiting out the boot window for a stopped start that was not a quota refusal', async () => {
+    const directory = await pendingStart();
+    const result = await tick(directory, later(capacityInput(), 60_000), {
+      reconcileEffect: async () => ({ resolved: false, retireStoppedStart: true, readback: { startOperation: 'FAILED' } }),
+    });
+    expect(result.status).toBe('pending');
+    expect((await readJournal<{ lifecycle: Record<string, unknown> }>(join(directory, 'state.json'))).lifecycle).not.toHaveProperty('capacityWait');
+  });
+
+  it('holds the queued job through the backoff, then retries only the start and clears the wait on a good start', async () => {
+    const directory = await pendingStart();
+    await tick(directory, later(capacityInput(), 60_000), {
+      reconcileEffect: async () => ({ resolved: false, retireStoppedStart: true, capacityRefusal: refusal }),
+    });
+    const held = await tick(directory, later(capacityInput(), 120_000), {});
+    expect(held.status).toBe('waiting');
+    expect(held.decision).toMatchObject({ state: 'stopped', effect: { type: 'none' }, reasonCode: 'provider-capacity-wait' });
+    expect(await readFile(join(directory, 'events.jsonl'), 'utf8')).toContain('"type":"decision","state":"stopped","reason":"provider-capacity-wait');
+
+    const writes: string[] = [];
+    const retry = await tick(directory, later(capacityInput(), 180_000), { executeEffect: async (effect) => { writes.push(effect.type); return { operationId: 'op-start-2' }; } });
+    expect(retry.decision).toMatchObject({ effect: { type: 'start-vm', generation: 1 } });
+    expect(writes).toEqual(['start-vm']);
+    expect((await readJournal<{ lifecycle: Record<string, unknown> }>(join(directory, 'state.json'))).lifecycle).toHaveProperty('capacityWait');
+    expect((await tick(directory, later(capacityInput(), 240_000), { reconcileEffect: async () => ({ resolved: true }) })).status).toBe('reconciled');
+    expect((await readJournal<{ lifecycle: Record<string, unknown> }>(join(directory, 'state.json'))).lifecycle).not.toHaveProperty('capacityWait');
+    const events = await readFile(join(directory, 'events.jsonl'), 'utf8');
+    expect(events).not.toContain('create-vm');
+    expect(events).not.toContain('delete-vm');
+  });
+
+  it('recreates through the owned path when the retained VM disappears during a start wait', async () => {
+    const directory = await pendingStart();
+    await tick(directory, later(capacityInput(), 60_000), {
+      reconcileEffect: async () => ({ resolved: false, retireStoppedStart: true, capacityRefusal: refusal }),
+    });
+    const gone = later(capacityInput(), 90_000);
+    gone.provider = { complete: true, vmStatus: 'absent', ownership: 'absent', ownedMatches: 0, outstandingOperation: null };
+    const writes: string[] = [];
+    const result = await tick(directory, gone, { executeEffect: async (effect) => { writes.push(effect.type); return { operationId: 'op-create' }; } });
+    expect(result.decision).toMatchObject({ effect: { type: 'create-vm', generation: 1 } });
+    expect(writes).toEqual(['create-vm']);
+  });
+
+  it('retries a refused start of a previously booted VM with the refused generation, not the next one', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'cirujano-controller-capacity-'));
+    // Generation 1 ran and was stopped normally; its guest still holds grant generation 1.
+    const booted = (offsetMs: number) => {
+      const input = later(capacityInput(), offsetMs);
+      input.journal = { ...input.journal, state: 'stopping', startCount: 1, grantDeadlineMs: NOW - 1 };
+      return input;
+    };
+    const first = await tick(directory, booted(0), { executeEffect: async () => ({ operationId: 'op-start-2' }) });
+    expect(first.decision).toMatchObject({ effect: { type: 'start-vm', generation: 2 } });
+    expect(await tick(directory, booted(60_000), {
+      reconcileEffect: async () => ({ resolved: false, retireStoppedStart: true, capacityRefusal: refusal }),
+    })).toMatchObject({ status: 'waiting' });
+    expect((await readJournal<{ lifecycle: { startCount: number } }>(join(directory, 'state.json'))).lifecycle.startCount).toBe(1);
+    expect((await tick(directory, booted(120_000), {})).status).toBe('waiting');
+    const retry = await tick(directory, booted(180_000), { executeEffect: async () => ({ operationId: 'op-start-2b' }) });
+    // The guest accepts only grant_generation + 1 = 2 with confirmed stop 1 (arm-grant.sh).
+    expect(retry.decision).toMatchObject({ effect: { type: 'start-vm', generation: 2 } });
+    expect((await readJournal<{ lifecycle: { startCount: number } }>(join(directory, 'state.json'))).lifecycle.startCount).toBe(2);
+  });
+
+  it('turns a synchronous quota refusal of create into a wait instead of an ambiguous intent', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'cirujano-controller-capacity-'));
+    const input = capacityInput();
+    input.provider = { complete: true, vmStatus: 'absent', ownership: 'absent', ownedMatches: 0, outstandingOperation: null };
+    input.journal = { ...input.journal, state: 'absent' };
+    const result = await tick(directory, input, { executeEffect: async () => { throw new ProviderCapacityError(refusal, 'Nebius create refused: quota'); } });
+    expect(result.status).toBe('waiting');
+    const state = await readJournal<{ pendingEffect: unknown; lifecycle: { state: string; outstandingIntent: unknown; capacityWait: { retryAtMs: number } } }>(join(directory, 'state.json'));
+    expect(state.pendingEffect).toBeNull();
+    expect(state.lifecycle).toMatchObject({ state: 'absent', outstandingIntent: null, capacityWait: { refusedEffect: 'create-vm', retryAtMs: NOW + 120_000 } });
+    expect(await readFile(join(directory, 'events.jsonl'), 'utf8')).toContain('"type":"provider-capacity-refused","effect":"create-vm"');
+    expect((await tick(directory, later(input, 60_000), {})).status).toBe('waiting');
+    const writes: string[] = [];
+    const retry = await tick(directory, later(input, 120_000), { executeEffect: async (effect) => { writes.push(effect.type); return { operationId: 'op-create' }; } });
+    expect(retry.decision).toMatchObject({ effect: { type: 'create-vm', generation: 1 } });
+    expect(writes).toEqual(['create-vm']);
+  });
+
+  it('drops the wait when its retained VM is deleted because the queued work went away', async () => {
+    const directory = await pendingStart();
+    await tick(directory, later(capacityInput(), 60_000), {
+      reconcileEffect: async () => ({ resolved: false, retireStoppedStart: true, capacityRefusal: refusal }),
+    });
+    const idle = later(capacityInput(), 90_000);
+    idle.config = { ...idle.config, idleResourcePolicy: 'delete-after-stop' };
+    idle.queue = { ...idle.queue, eligibleQueuedJobs: 0 };
+    const writes: string[] = [];
+    const result = await tick(directory, idle, { executeEffect: async (effect) => { writes.push(effect.type); return { operationId: 'op-delete' }; } });
+    expect(result.decision).toMatchObject({ state: 'absent', effect: { type: 'delete-vm', generation: 1 } });
+    expect(writes).toEqual(['delete-vm']);
+    const gone = later(capacityInput(), 120_000);
+    gone.config = idle.config;
+    gone.provider = { complete: true, vmStatus: 'absent', ownership: 'absent', ownedMatches: 0, outstandingOperation: null };
+    gone.queue = { ...gone.queue, eligibleQueuedJobs: 0 };
+    expect((await tick(directory, gone, { reconcileEffect: async () => ({ resolved: true }) })).status).toBe('reconciled');
+    expect((await readJournal<{ lifecycle: Record<string, unknown> }>(join(directory, 'state.json'))).lifecycle).not.toHaveProperty('capacityWait');
+  });
+
+  it('turns a synchronous quota refusal of start into a wait that keeps the stopped VM', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'cirujano-controller-capacity-'));
+    const result = await tick(directory, capacityInput(), { executeEffect: async () => { throw new ProviderCapacityError(refusal, 'Nebius start refused: quota'); } });
+    expect(result.status).toBe('waiting');
+    const state = await readJournal<{ pendingEffect: unknown; lifecycle: { state: string; startCount: number; outstandingIntent: unknown } }>(join(directory, 'state.json'));
+    expect(state.pendingEffect).toBeNull();
+    expect(state.lifecycle).toMatchObject({ state: 'stopped', startCount: 0, outstandingIntent: null });
+    const held = await tick(directory, later(capacityInput(), 30_000), {});
+    expect(held).toMatchObject({ status: 'waiting', decision: { state: 'stopped', effect: { type: 'none' } } });
+  });
+
+  it('clears an asynchronously refused create only when the provider proves nothing was created', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'cirujano-controller-capacity-'));
+    const input = capacityInput();
+    input.provider = { complete: true, vmStatus: 'absent', ownership: 'absent', ownedMatches: 0, outstandingOperation: null };
+    input.journal = { ...input.journal, state: 'absent' };
+    await tick(directory, input, { executeEffect: async () => ({ operationId: 'op-create' }) });
+    const incomplete = later(input, 30_000);
+    incomplete.provider = { ...incomplete.provider, complete: false, vmStatus: 'unknown', ownership: 'unknown' };
+    expect((await tick(directory, incomplete, { reconcileEffect: async () => ({ resolved: false, capacityRefusal: refusal }) })).status).toBe('pending');
+    const result = await tick(directory, later(input, 60_000), { reconcileEffect: async () => ({ resolved: false, capacityRefusal: refusal }) });
+    expect(result.status).toBe('waiting');
+    const state = await readJournal<{ pendingEffect: unknown; lifecycle: { state: string; capacityWait: { refusals: number } } }>(join(directory, 'state.json'));
+    expect(state.pendingEffect).toBeNull();
+    expect(state.lifecycle).toMatchObject({ state: 'absent', capacityWait: { refusals: 1 } });
+  });
+
+  it('rejects a malformed persisted capacity wait', () => {
+    const base = {
+      schemaVersion: 1, identity: startInput().identity, pendingEffect: null, readbacks: [],
+      lifecycle: { ...startInput().journal },
+    };
+    expect(parseControllerState(base).lifecycle).not.toHaveProperty('capacityWait');
+    const valid = { reasonCode: 'provider-capacity-wait', refusedEffect: 'start-vm', detail: 'q', firstRefusedAtMs: NOW, lastRefusedAtMs: NOW, refusals: 1, retryAtMs: NOW + 1 };
+    expect(parseControllerState({ ...base, lifecycle: { ...base.lifecycle, capacityWait: valid } }).lifecycle.capacityWait).toEqual(valid);
+    expect(() => parseControllerState({ ...base, lifecycle: { ...base.lifecycle, capacityWait: { ...valid, refusals: 0 } } })).toThrow('capacityWait');
+    expect(() => parseControllerState({ ...base, lifecycle: { ...base.lifecycle, capacityWait: { ...valid, refusedEffect: 'stop-vm' } } })).toThrow('capacityWait');
+    expect(() => parseControllerState({ ...base, lifecycle: { ...base.lifecycle, capacityWait: { ...valid, extra: true } } })).toThrow('unknown key');
   });
 });

@@ -1,4 +1,4 @@
-import type { NebiusConfig, RunnerConfig, VmStatus } from '../contracts.js';
+import type { CapacityRefusal, NebiusConfig, RunnerConfig, VmStatus } from '../contracts.js';
 
 const INSTANCE_STATES = ['CREATING', 'UPDATING', 'STARTING', 'RUNNING', 'STOPPING', 'STOPPED', 'DELETING', 'ERROR'] as const;
 const OPERATION_STATES = ['PENDING', 'RUNNING', 'SUCCEEDED', 'FAILED', 'CANCELLED'] as const;
@@ -66,6 +66,45 @@ export interface NebiusOperation {
   id: string;
   resourceId: string | null;
   state: OperationState;
+  /** Set only on a failed operation the provider refused for exhausted quota. */
+  capacityRefusal?: CapacityRefusal;
+}
+
+// gRPC RESOURCE_EXHAUSTED: Nebius reports quota refusals with this status code.
+const RESOURCE_EXHAUSTED = 8;
+const CAPACITY_TEXT = /\bResourceExhausted\b|\bRESOURCE_EXHAUSTED\b|\bQuotaFailure\b|Quota limit exceeded/u;
+const QUOTA_NAME = /\bquota ([a-z0-9][a-z0-9_.-]*[a-z0-9])/gu;
+
+/**
+ * Classifies provider error text, such as a failed CLI mutation's stderr, as a quota refusal.
+ * Only explicit quota exhaustion qualifies; every other failure keeps its ordinary handling.
+ */
+export function classifyCapacityRefusal(text: string): CapacityRefusal | null {
+  if (!CAPACITY_TEXT.test(text)) return null;
+  return { quotas: [...new Set([...text.matchAll(QUOTA_NAME)].map((match) => match[1]!))] };
+}
+
+function operationCapacityRefusal(status: Record<string, unknown>, state: OperationState): CapacityRefusal | null {
+  if (state !== 'FAILED') return null;
+  const details = Array.isArray(status['details']) ? status['details'] : [];
+  const quotas = details.flatMap((detail) => {
+    if (typeof detail !== 'object' || detail === null) return [];
+    const failure = (detail as Record<string, unknown>)['quota_failure'];
+    if (typeof failure !== 'object' || failure === null) return [];
+    const violations = (failure as Record<string, unknown>)['violations'];
+    return Array.isArray(violations)
+      ? violations.flatMap((violation) => {
+        const quota = typeof violation === 'object' && violation !== null ? (violation as Record<string, unknown>)['quota'] : undefined;
+        return typeof quota === 'string' && quota.length > 0 ? [quota] : [];
+      })
+      : [];
+  });
+  const quotaDetail = details.some((detail) => typeof detail === 'object' && detail !== null
+    && ((detail as Record<string, unknown>)['code'] === 'QuotaFailure' || (detail as Record<string, unknown>)['quota_failure'] !== undefined));
+  const code = typeof status['code'] === 'string' ? Number(status['code']) : status['code'];
+  if (code !== RESOURCE_EXHAUSTED && !quotaDetail) return null;
+  const fromMessage = typeof status['message'] === 'string' ? classifyCapacityRefusal(status['message'])?.quotas ?? [] : [];
+  return { quotas: [...new Set([...quotas, ...fromMessage])] };
 }
 
 export interface ParsedPage<T> {
@@ -157,10 +196,13 @@ export function parseOperationPage(json: string): ParsedPage<NebiusOperation> {
     const metadata = operation['metadata'] === undefined ? operation : objectAt(operation['metadata'], `${location}.metadata`);
     const spec = operation['spec'] === undefined ? operation : objectAt(operation['spec'], `${location}.spec`);
     const status = objectAt(operation['status'], `${location}.status`);
+    const state = operationState(operation, status, location);
+    const capacityRefusal = operationCapacityRefusal(status, state);
     return {
       id: stringAt(metadata['id'], `${location}.id`),
       resourceId: nullableStringAt(spec['resource_id'], `${location}.resource_id`),
-      state: operationState(operation, status, location),
+      state,
+      ...(capacityRefusal === null ? {} : { capacityRefusal }),
     };
   });
   return { items, nextPageToken: optionalPageToken(root['next_page_token'], 'operation page.next_page_token') };

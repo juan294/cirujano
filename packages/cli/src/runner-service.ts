@@ -9,12 +9,14 @@ import {
   GUEST_FILE_NAMES,
   GUEST_UP_STATES,
   NebiusCli,
+  ProviderCapacityError,
   RUNNER_SCHEMA_VERSION,
   acquireControllerLock,
   appendRedactedEvent,
   buildQueueSnapshot,
   buildRunnerReport,
   buildSshInvocation,
+  classifyCapacityRefusal,
   classifySshReadinessFailure,
   classifyOwnedRunners,
   decideDelete,
@@ -40,6 +42,7 @@ import {
   validatePermit,
   verifySshPublicKeyFingerprint,
   writeJournalAtomic,
+  type CapacityRefusal,
   type ControllerState,
   type ExpectedNebiusResource,
   type LifecycleEffect,
@@ -594,10 +597,10 @@ async function executeEffect(context: RuntimeContext, effect: Exclude<LifecycleE
       context.identity.configHash,
       await cloudInit(context),
     );
-    return operation(await context.nebius.create(request), 'Nebius create');
+    return operation(refuseOnCapacity(await context.nebius.create(request), 'Nebius create'), 'Nebius create');
   }
   if (instance === null) throw new Error(`${effect.type} requires one owned VM`);
-  if (effect.type === 'start-vm') return operation(await context.nebius.start(instance.id), 'Nebius start');
+  if (effect.type === 'start-vm') return operation(refuseOnCapacity(await context.nebius.start(instance.id), 'Nebius start'), 'Nebius start');
   if (effect.type === 'stop-vm') return operation(await context.nebius.stop(instance.id), 'Nebius stop');
   const state = await priorState(context);
   const generation = Math.max(1, state?.lifecycle.startCount ?? 1);
@@ -645,7 +648,7 @@ async function removeOwnedRegistration(context: RuntimeContext, state: Controlle
   else if (ownership.ownership !== 'absent') throw new Error(`runner ownership is ${ownership.ownership} ${phase}`);
 }
 
-async function reconcileEffect(context: RuntimeContext, pending: PendingEffect): Promise<{ resolved: boolean; retireStoppedStart?: boolean; readback?: unknown }> {
+async function reconcileEffect(context: RuntimeContext, pending: PendingEffect): Promise<{ resolved: boolean; retireStoppedStart?: boolean; capacityRefusal?: CapacityRefusal; readback?: unknown }> {
   const provider = await observeProvider(context);
   if (pending.effect.type === 'register-runner' && provider.complete
     && provider.vmStatus === 'absent' && provider.ownership === 'absent' && provider.ownedMatches === 0) {
@@ -701,12 +704,28 @@ async function reconcileEffect(context: RuntimeContext, pending: PendingEffect):
       && (item.resourceId === null || item.resourceId === instance.id));
     const inFlight = operations.some((item) => (item.resourceId === instance.id || item.resourceId === null)
       && (item.state === 'PENDING' || item.state === 'RUNNING'));
+    // Nebius allocates the public IPv4 address at start, so an exhausted address quota fails the
+    // start operation (gRPC RESOURCE_EXHAUSTED) and leaves the VM stopped.
+    const capacityRefusal = start?.capacityRefusal;
     return {
       resolved: false,
       retireStoppedStart: start !== undefined && !inFlight
         && (start.state === 'SUCCEEDED' || start.state === 'FAILED' || start.state === 'CANCELLED'),
-      readback: { provider, startOperation: start?.state ?? 'missing', inFlight },
+      ...(capacityRefusal === undefined ? {} : { capacityRefusal }),
+      readback: { provider, startOperation: start?.state ?? 'missing', inFlight, ...(capacityRefusal === undefined ? {} : { capacityRefusal }) },
     };
+  }
+  if (pending.effect.type === 'create-vm' && pending.operationId !== undefined && provider.complete
+    && provider.vmStatus === 'absent' && provider.ownership === 'absent' && provider.ownedMatches === 0) {
+    // An unreadable operation list only keeps today's pending behaviour; it never clears the intent.
+    const create = await listOperations(context).then(
+      (operations) => operations.find((item) => item.id === pending.operationId),
+      () => undefined,
+    );
+    if (create?.state === 'FAILED' && create.capacityRefusal !== undefined) {
+      return { resolved: false, capacityRefusal: create.capacityRefusal, readback: { provider, createOperation: create.state, capacityRefusal: create.capacityRefusal } };
+    }
+    return { resolved: false, readback: { provider, createOperation: create?.state ?? 'missing' } };
   }
   if (pending.effect.type === 'register-runner' || pending.effect.type === 'begin-drain' || pending.effect.type === 'resume-admission') {
     const guest = await observeGuest(context, provider);
@@ -1114,6 +1133,15 @@ async function requireSuccessful<T extends { exitCode: number; timedOut: boolean
   if (result.timedOut) throw new Error(`${operationName} timed out`);
   if (result.exitCode !== 0) throw new Error(`${operationName} failed: ${result.stderr}`);
   return result;
+}
+
+// A mutation the provider rejected outright for exhausted quota becomes a capacity wait; any other
+// failure keeps the ambiguous-intent handling below.
+function refuseOnCapacity<T extends { exitCode: number; timedOut: boolean; stderr: string; stdout: string }>(result: T, name: string): T {
+  if (result.timedOut || result.exitCode === 0) return result;
+  const refusal = classifyCapacityRefusal(`${result.stderr}\n${result.stdout}`);
+  if (refusal === null) return result;
+  throw new ProviderCapacityError(refusal, `${name} refused for exhausted quota${refusal.quotas.length > 0 ? ` (${refusal.quotas.join(',')})` : ''}`);
 }
 
 async function operation(resultValue: { exitCode: number; timedOut: boolean; stderr: string; stdout: string }, name: string): Promise<{ operationId?: string }> {
