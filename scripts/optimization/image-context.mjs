@@ -65,7 +65,7 @@ export async function generateImageContext(source,recipe,output) {
  files.set('dependency-input/pnpm-lock.yaml',Buffer.from(source.files.find(file=>file.path==='pnpm-lock.yaml').bytesBase64,'base64'));
  const docker=`FROM ${recipe.from}
 USER root
-ENV PNPM_CONFIG_IGNORE_SCRIPTS=true PNPM_CONFIG_IGNORE_PNPMFILE=true
+ENV npm_config_ignore_scripts=true npm_config_ignore_pnpmfile=true
 RUN node -e 'if(process.versions.node!=="${recipe.nodeVersion}") process.exit(1)' && npm install --global --ignore-scripts --no-audit --no-fund pnpm@${recipe.pnpmVersion} && test "$(pnpm --version)" = "${recipe.pnpmVersion}"
 COPY --chmod=600 dependency-input/ /opt/cirujano/dependency-input/
 COPY --chmod=600 harness.mjs recipe.json build-manifest.mjs /opt/cirujano/

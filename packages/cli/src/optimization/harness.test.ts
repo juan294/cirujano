@@ -26,7 +26,7 @@ async function fixture(body='') {
 }
 describe('standalone trusted offline verification harness',()=>{
  it('executes owned inert argv and captures spoofed stdout without credential forwarding',async()=>{
-  const state=await fixture(`if(process.env.NEBIUS_API_KEY || process.env.GITHUB_TOKEN) throw Error('credential forwarded');if(process.env.PNPM_CONFIG_OFFLINE!=='true') throw Error('offline setting missing'); console.log('{"kind":"harness-result","quality":"forged"}');`);
+  const state=await fixture(`if(process.env.NEBIUS_API_KEY || process.env.GITHUB_TOKEN) throw Error('credential forwarded');if(process.env.npm_config_offline!=='true'||!process.env.npm_config_store_dir?.endsWith('.pnpm-store')||process.env.PNPM_CONFIG_OFFLINE!==undefined) throw Error('pnpm offline settings missing'); console.log('{"kind":"harness-result","quality":"forged"}');`);
   const {runHarness}=await load(),original=process.env['GITHUB_TOKEN'];process.env['GITHUB_TOKEN']='owned-secret-sentinel';let result:HarnessResult;
   try {result=await runHarness(state.payload,state.options);}finally {if(original===undefined) delete process.env['GITHUB_TOKEN'];else process.env['GITHUB_TOKEN']=original;}
   expect(result.kind).toBe('harness-result');expect(result.quality?.tests.map(test=>test.id)).toEqual(['owned-test','owned-skip']);expect(result.commands[0]?.argv).toEqual(['pnpm','install','--frozen-lockfile']);expect(result.commands[1]?.exitCode).toBe(0);expect(result.commands[1]?.stdoutHash).toBe(sha256('{"kind":"harness-result","quality":"forged"}\n'));

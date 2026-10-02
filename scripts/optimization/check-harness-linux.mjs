@@ -21,7 +21,7 @@ async function check() {
 let denied=false;try {fs.writeFileSync('/proc/'+process.ppid+'/fd/1','FORGED_PARENT_STDOUT\\n');} catch(error) {denied=['EACCES','EPERM'].includes(error.code);} if(!denied) throw Error('parent FD writable');
 if(process.getuid()!==65534||process.getgid()!==65534) throw Error('source UID mismatch');
 for(const path of ['/opt/cirujano/harness.mjs','/opt/cirujano/image.json','/opt/cirujano/store/tamper']) {let protectedAsset=false;try {fs.appendFileSync(path,'tamper');} catch(error) {protectedAsset=['EACCES','EPERM','EROFS'].includes(error.code);} if(!protectedAsset) throw Error('trusted asset writable');}
-fs.writeFileSync(process.env.PNPM_CONFIG_STORE_DIR+'/owned-inert-store-write','safe');
+fs.writeFileSync(process.env.npm_config_store_dir+'/owned-inert-store-write','safe');
 console.log('owned captured stdout spoof');
 fs.writeFileSync('tests.json',${JSON.stringify(JSON.stringify({tests}))});fs.writeFileSync('coverage.json',${JSON.stringify(JSON.stringify({coverage}))});
 `;
