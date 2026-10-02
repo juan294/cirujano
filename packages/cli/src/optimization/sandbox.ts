@@ -8,6 +8,11 @@ const STREAM_BYTES = 1024 * 1024;
 const OPERATION_BYTES = 32 * 1024 * 1024;
 const PAYLOAD_BYTES = 16 * 1024 * 1024;
 const REQUEST_BYTES = 24 * 1024 * 1024;
+const LINEAGE_STEPS = 64;
+/** Built images pin every build operation, newest first, ending above the approved import. */
+export function buildLineageValid(ids: unknown, importOperationId: string): ids is string[] { return Array.isArray(ids) && ids.length <= LINEAGE_STEPS && ids.every(id => typeof id === 'string' && UUID.test(id) && id !== importOperationId) && new Set(ids).size === ids.length; }
+/** Directly imported images are digest-pinned; Sandbox-built images may name their base by tag and bind its digest through owner approval. */
+export function imageReferenceValid(reference: string, ociDigest: string, built: boolean): boolean { return /^docker:\/\/[A-Za-z0-9./_:-]+(?:@sha256:[a-f0-9]{64})?$/.test(reference) && (reference.endsWith(`@sha256:${ociDigest}`) || (built && !reference.includes('@'))); }
 const states = ['PENDING', 'ASSIGNED', 'EXECUTING', 'SUCCESS', 'FAILED', 'CANCELLED'] as const;
 export type SandboxStatus = typeof states[number];
 export interface SandboxRecord { id: string; url: string; imageUuid: string; project: string; requestHash: string; createdAt: string }
@@ -17,8 +22,8 @@ export interface SandboxProcess { exitCode: number; signal: number; timedOut: bo
 /** An allowlisted receipt. Raw metadata, credentials, stdin and streams are excluded. */
 export interface SandboxObservedOperation { id: string; status: SandboxStatus; imageUuid: string; project: string; disposable: true; process: SandboxProcess | null; usage: { value: number; unit: 'undocumented-provider-unit'; currency: null } | null; createdAt: string | null; providerDuration: number | null; stdoutHash: string | null; stderrHash: string | null; stdoutTruncated: boolean | null; stderrTruncated: boolean | null }
 export interface SandboxResult { status: 'observed' | 'terminal' | 'failed' | 'outcome-unknown'; reasonCode: string; operation: SandboxObservedOperation | null; stdout: string | null; stderr: string | null; retryAfterMs: number }
-export interface SandboxImageProfile { image: { uuid: string; ociDigest: string; registryReference: string; importOperationId: string; harnessHash: string; manifestHash: string } }
-export interface ImageReadbackReceipt { imageUuid: string; importOperationId: string; registryReference: string; approvedOciDigest: string; harnessHash: string; manifestHash: string; readAt: string }
+export interface SandboxImageProfile { image: { uuid: string; ociDigest: string; registryReference: string; importOperationId: string; buildOperationIds: string[]; harnessHash: string; manifestHash: string } }
+export interface ImageReadbackReceipt { imageUuid: string; importOperationId: string; buildOperationIds: string[]; registryReference: string; approvedOciDigest: string; harnessHash: string; manifestHash: string; readAt: string }
 export interface SandboxImageResult { status: 'verified' | 'failed'; reasonCode: string; receipt: ImageReadbackReceipt | null; harnessBytes: Uint8Array | null; manifestBytes: Uint8Array | null }
 export interface SandboxClientOptions { iamToken: string; project: string; authorityDigest?: string; fetch?: typeof fetch; now?: () => number; sleep?: (milliseconds: number) => Promise<void>; deadlineMs?: number; pollIntervalMs?: number }
 export interface SandboxClient {
@@ -173,17 +178,29 @@ export function createSandboxClient(options: SandboxClientOptions): SandboxClien
       const ctx = context(); const failure = (reasonCode: string): SandboxImageResult => ({ status: 'failed', reasonCode, receipt: null, harnessBytes: null, manifestBytes: null });
       try {
         const image = profile.image;
-        if (!UUID.test(image.uuid) || !UUID.test(image.importOperationId) || ![image.ociDigest, image.harnessHash, image.manifestHash].every(value => DIGEST.test(value)) || !image.registryReference.endsWith(`@sha256:${image.ociDigest}`) || !image.registryReference.startsWith('docker://') || /[\u0000-\u0020\u007f]/.test(image.registryReference) || image.registryReference.includes(options.iamToken)) return failure('sandbox-image-profile-invalid');
+        if (!UUID.test(image.importOperationId) || !buildLineageValid(image.buildOperationIds, image.importOperationId)) return failure('sandbox-image-profile-invalid');
+        const built = image.buildOperationIds.length > 0;
+        if (!UUID.test(image.uuid) || ![image.ociDigest, image.harnessHash, image.manifestHash].every(value => DIGEST.test(value)) || !imageReferenceValid(image.registryReference, image.ociDigest, built) || /[\u0000-\u0020\u007f]/.test(image.registryReference) || image.registryReference.includes(options.iamToken)) return failure('sandbox-image-profile-invalid');
         const registry = new URL(image.registryReference);
         if (registry.protocol !== 'docker:' || !registry.hostname || registry.username || registry.password || registry.search || registry.hash) return failure('sandbox-image-profile-invalid');
         const inspect = await ctx.request(`${SANDBOX_ORIGIN}${SANDBOX_PREFIX}inspect/${image.uuid}/`, 'GET'); if (inspect.status !== 200) return failure(`sandbox-image-http-${inspect.status}`);
-        const metadata = await ctx.json(inspect, 65536); if (metadata.uuid !== image.uuid || metadata.operation_uuid !== image.importOperationId) return failure('sandbox-image-identity-mismatch');
+        const metadata = await ctx.json(inspect, 65536); const chain = [...image.buildOperationIds, image.importOperationId];
+        if (metadata.uuid !== image.uuid || metadata.operation_uuid !== chain[0]) return failure('sandbox-image-identity-mismatch');
+        // A built image must chain through exactly the approved, successful, persisted build steps to the approved import.
+        let current = image.uuid;
+        for (const [index, operationId] of image.buildOperationIds.entries()) {
+          const read = await ctx.request(operationUrl(operationId), 'GET'); if (read.status !== 200) return failure(`sandbox-build-http-${read.status}`);
+          const build = await ctx.json(read), buildMetadata = object(build.metadata), state = object(object(buildMetadata.result).state);
+          if (build.uuid !== operationId || build.kind !== 'instance' || build.status !== 'SUCCESS' || build.result_image_uuid !== current || buildMetadata.disposable !== false || state.exit_code !== 0 || typeof build.image_uuid !== 'string' || !UUID.test(build.image_uuid)) return failure('sandbox-image-lineage-invalid');
+          current = build.image_uuid; const parent = await ctx.request(`${SANDBOX_ORIGIN}${SANDBOX_PREFIX}inspect/${current}/`, 'GET'); if (parent.status !== 200) return failure(`sandbox-image-http-${parent.status}`);
+          const parentMetadata = await ctx.json(parent, 65536); if (parentMetadata.uuid !== current || parentMetadata.operation_uuid !== chain[index + 1]) return failure('sandbox-image-lineage-invalid');
+        }
         const imported = await ctx.request(operationUrl(image.importOperationId), 'GET'); if (imported.status !== 200) return failure(`sandbox-import-http-${imported.status}`);
-        const operation = await ctx.json(imported); if (operation.uuid !== image.importOperationId || operation.kind !== 'image_import' || operation.status !== 'SUCCESS' || object(operation.result).image !== image.uuid || object(object(operation.metadata).registry).url !== image.registryReference) return failure('sandbox-import-identity-mismatch');
+        const operation = await ctx.json(imported); if (operation.uuid !== image.importOperationId || operation.kind !== 'image_import' || operation.status !== 'SUCCESS' || object(operation.result).image !== current || object(object(operation.metadata).registry).url !== image.registryReference) return failure('sandbox-import-identity-mismatch');
         const download = async (path: string, maximum: number) => { const url = new URL(`${SANDBOX_ORIGIN}${SANDBOX_PREFIX}inspect/${image.uuid}/download`); url.searchParams.set('path', path); const response = await ctx.request(url.href, 'GET'); if (response.status !== 200) throw new SandboxError(`sandbox-image-file-http-${response.status}`); return ctx.bytes(response, maximum); };
         const harnessBytes = await download('/opt/cirujano/harness.mjs', 512 * 1024), manifestBytes = await download('/opt/cirujano/image.json', 65536);
         if (sha256(harnessBytes) !== image.harnessHash || sha256(manifestBytes) !== image.manifestHash) return failure('sandbox-image-bytes-mismatch');
-        return { status: 'verified', reasonCode: 'sandbox-image-readback-verified', receipt: { imageUuid: image.uuid, importOperationId: image.importOperationId, registryReference: image.registryReference, approvedOciDigest: image.ociDigest, harnessHash: image.harnessHash, manifestHash: image.manifestHash, readAt: new Date(now()).toISOString() }, harnessBytes, manifestBytes };
+        return { status: 'verified', reasonCode: 'sandbox-image-readback-verified', receipt: { imageUuid: image.uuid, importOperationId: image.importOperationId, buildOperationIds: [...image.buildOperationIds], registryReference: image.registryReference, approvedOciDigest: image.ociDigest, harnessHash: image.harnessHash, manifestHash: image.manifestHash, readAt: new Date(now()).toISOString() }, harnessBytes, manifestBytes };
       } catch (error) { return failure(reason(error)); } finally { ctx.close(); }
     },
   };

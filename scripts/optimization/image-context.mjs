@@ -13,7 +13,7 @@ function rejectPreparationCredentials(text) {
  if(/(?:^|\n)\s*["']?(?:_?auth(?:token)?|authorization|_?password|username|token(?:helper)?|api[_-]?key|secret)["']?\s*[:=]/i.test(decoded)) throw Error('image-context-credential-config-unsupported');
 }
 function rejectCodePreparation(text) {
- if(/(?:\b(?:git(?:\+[a-z]+)?|github|gitlab|bitbucket|file|link|patch):|\bgit@|(?:^|\n)\s*(?:patchedDependencies|repo|directory)\s*:|\btype\s*:\s*["']?(?:git|directory)\b)/i.test(text)) throw Error('image-context-code-dependency-unsupported');
+ if(/(?:(?<![\w@./-])(?:git(?:\+[a-z]+)?|github|gitlab|bitbucket|file|link|patch):|\bgit@|(?:^|\n)\s*(?:patchedDependencies|repo|directory)\s*:|\btype\s*:\s*["']?(?:git|directory)\b)/i.test(text)) throw Error('image-context-code-dependency-unsupported');
 }
 function object(value,keys) {if(!value||typeof value!=='object'||Array.isArray(value)||Object.keys(value).sort().join('|')!==[...keys].sort().join('|')) throw Error('image-context-object-fields');}
 function match(value,pattern) {if(typeof value!=='string'||!pattern.test(value)) throw Error('image-context-invalid-identity');}

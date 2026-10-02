@@ -175,3 +175,36 @@ describe('Sandbox fixed-origin transport', () => {
     expect(result.status).toBe('failed'); expect(result.receipt).toBeNull();
   });
 });
+
+describe('Sandbox-built image lineage', () => {
+  const finalStep = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', firstStep = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd', rogueStep = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+  const middleImage = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', baseImage = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
+  const built = { image: { ...imageProfile.image, registryReference: 'docker://docker.io/library/node:22.20.0', buildOperationIds: [finalStep, firstStep] } };
+  function lineage(failure?: string) {
+    // final image <- finalStep <- middle image <- firstStep (or an inserted rogue step) <- base image <- approved import
+    const producer: Record<string, string> = { [sandboxImageUuid]: finalStep, [middleImage]: failure === 'inserted-step' ? rogueStep : firstStep, [baseImage]: failure === 'foreign-import' ? sandboxOperationId : imageProfile.image.importOperationId };
+    const steps: Record<string, { input: string; output: string }> = { [finalStep]: { input: middleImage, output: failure === 'broken-chain' ? middleImage : sandboxImageUuid }, [firstStep]: { input: baseImage, output: middleImage }, [rogueStep]: { input: baseImage, output: middleImage } };
+    return fixture((call, response) => {
+      const inspected = /\/inspect\/([a-f0-9-]+)\/$/.exec(call.path)?.[1], operation = /\/operations\/([a-f0-9-]+)$/.exec(call.path)?.[1];
+      if (inspected) response.end(JSON.stringify({ uuid: inspected, operation_uuid: producer[inspected] }));
+      else if (operation && steps[operation]) response.end(JSON.stringify({ uuid: operation, kind: failure === 'wrong-kind' ? 'image_import' : 'instance', status: 'SUCCESS', image_uuid: steps[operation].input, result_image_uuid: steps[operation].output, metadata: { disposable: failure === 'disposable-step', result: { state: { exit_code: failure === 'failed-step' && operation === firstStep ? 1 : 0 } } } }));
+      else if (operation) response.end(JSON.stringify({ uuid: operation, kind: 'image_import', status: 'SUCCESS', metadata: { registry: { url: failure === 'reference-drift' ? 'docker://docker.io/library/node:latest' : built.image.registryReference } }, result: { image: baseImage } }));
+      else { const harness = new URL(call.path, sandboxOrigin).searchParams.get('path') === '/opt/cirujano/harness.mjs'; response.end(harness ? harnessBytes : manifestBytes); }
+    });
+  }
+  const inspect = async (external: Awaited<ReturnType<typeof lineage>>, profile: typeof built = built) => createSandboxClient({ iamToken: 'source-specific-iam', project: sandboxProject, fetch: external.fetcher }).inspectImage(profile);
+  it('verifies a Sandbox-built image through exactly its pinned successful build steps back to the approved import', async () => {
+    const external = await lineage(); const result = await inspect(external);
+    expect(result.status).toBe('verified'); expect(result.receipt?.buildOperationIds).toEqual([finalStep, firstStep]); expect(result.receipt?.importOperationId).toBe(imageProfile.image.importOperationId); expect(external.calls.every(call => call.method === 'GET')).toBe(true);
+  });
+  it.each(['failed-step', 'disposable-step', 'wrong-kind', 'broken-chain', 'inserted-step', 'foreign-import', 'reference-drift'])('blocks %s build lineage', async failure => {
+    const result = await inspect(await lineage(failure)); expect(result.status).toBe('failed'); expect(result.receipt).toBeNull();
+  });
+  it.each([['out-of-order', [firstStep, finalStep]], ['truncated', [finalStep]], ['import-as-build', [imageProfile.image.importOperationId]], ['duplicate', [finalStep, finalStep]]])('blocks a %s pinned build chain', async (_, ids) => {
+    const external = await lineage(); const result = await inspect(external, { image: { ...built.image, buildOperationIds: ids as string[] } }); expect(result.status).toBe('failed'); expect(result.receipt).toBeNull();
+  });
+  it('keeps mutable registry references unsupported for directly imported images', async () => {
+    const external = await fixture(); const result = await inspect(external, { image: { ...built.image, buildOperationIds: [] } });
+    expect(result.status).toBe('failed'); expect(external.calls).toHaveLength(0);
+  });
+});

@@ -10,7 +10,7 @@ export const sandboxOrigin = 'https://api.tokenfactory.nebius.com';
 export const sandboxPrefix = '/sandboxes/v1/';
 export const harnessBytes = Buffer.from('trusted harness fixture');
 export const manifestBytes = Buffer.from('{"schemaVersion":1,"kind":"optimization-image"}');
-export const imageProfile = { image: { uuid: sandboxImageUuid, ociDigest: 'a'.repeat(64), registryReference: `docker://registry.example.test/cirujano@sha256:${'a'.repeat(64)}`, importOperationId, harnessHash: sha256(harnessBytes), manifestHash: sha256(manifestBytes) } };
+export const imageProfile = { image: { uuid: sandboxImageUuid, ociDigest: 'a'.repeat(64), registryReference: `docker://registry.example.test/cirujano@sha256:${'a'.repeat(64)}`, importOperationId, buildOperationIds: [] as string[], harnessHash: sha256(harnessBytes), manifestHash: sha256(manifestBytes) } };
 export function requestFixture() {
   return { command: '/usr/local/bin/node', args: ['/opt/cirujano/harness.mjs'], image: sandboxImageUuid, shell: false, disposable: true, preserve_env: false, networking: { enabled: false }, timeout: 600, truncate_output_at: 1048576, cwd: '/workspace', uid: 0, resources_limits: { max_layer_bytes: 1024 }, env: { PNPM_CONFIG_OFFLINE: 'true', PNPM_CONFIG_STORE_DIR: '/opt/cirujano/store', HOME: '/workspace/.home', PATH: '/usr/local/bin:/usr/bin:/bin', CI: 'true', CIRUJANO_SANDBOX_AUTHORITY: '0'.repeat(64) }, stdin: { value: Buffer.from(canonicalJson({ schemaVersion: 1, kind: 'sandbox-payload', role: 'base', sourceDigest: 'a'.repeat(64) })).toString('base64'), encoding: 'base64', close: true } };
 }

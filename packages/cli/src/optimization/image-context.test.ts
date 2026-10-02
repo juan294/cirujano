@@ -50,6 +50,14 @@ describe('manifest-only reviewable image preparation context',()=>{
  it('rejects credential query parameters in package dependency URLs',async()=>{
   const directory=await output();await expect((await load()).generateImageContext(source({'package.json':JSON.stringify({name:'owned-inert',dependencies:{fixture:'https://registry.example/package.tgz?token=owned-secret'}})}),recipe,directory)).rejects.toThrow();await expect(stat(directory)).rejects.toMatchObject({code:'ENOENT'});
  });
+ it('accepts registry packages whose names merely end in link, file or patch',async()=>{
+  const directory=await output(),lock="lockfileVersion: '9.0'\npackages:\n  terminal-link@2.1.1:\n    resolution: {integrity: sha512-owned}\n  vfile@6.0.3:\n    dependencies:\n      terminal-link: 2.1.1\n      vfile: 6.0.3\n      diff-patch: 1.0.0\n";
+  await expect((await load()).generateImageContext(source({'pnpm-lock.yaml':lock}),recipe,directory)).resolves.toMatchObject({output:directory});
+ });
+ it.each(["'@owned/local': link:../local","fixture: file:../fixture.tgz","fixture: github:owned/inert","fixture: 'link:../quoted'","fixture: file:../x\npackages:\n  fixture@file:../x:\n    resolution: {directory: ../x, type: directory}","fixture: file:../x.tgz\npackages:\n  fixture@file:../x.tgz:\n    resolution: {integrity: sha512-owned, tarball: file:../x.tgz}"])('still rejects local or hosted code specifier %s',async specifier=>{
+  const directory=await output(),lock=`lockfileVersion: '9.0'\nimporters:\n  .:\n    dependencies:\n      ${specifier}\n`;
+  await expect((await load()).generateImageContext(source({'pnpm-lock.yaml':lock}),recipe,directory)).rejects.toThrow();await expect(stat(directory)).rejects.toMatchObject({code:'ENOENT'});
+ });
  it('rejects locked Git dependencies that may execute prepare hooks despite ignore-scripts',async()=>{
   const directory=await output(),lock="lockfileVersion: '9.0'\npackages:\n  fixture:\n    resolution:\n      type: git\n      repo: https://github.com/owned/inert.git\n      commit: abcdef\n";
   await expect((await load()).generateImageContext(source({'pnpm-lock.yaml':lock}),recipe,directory)).rejects.toThrow();await expect(stat(directory)).rejects.toMatchObject({code:'ENOENT'});
