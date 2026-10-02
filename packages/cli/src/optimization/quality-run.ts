@@ -26,11 +26,13 @@ export function selectedCacheLog(log:string,setupNodeCommit:string):string{
 }
 
 /** Read provider setup metadata before any workflow-controlled action output. */
+/** Release tags name the image version, sometimes without its final patch component (tag 20260927.320 for 20260927.320.1). */
+function releaseMatches(line:string,major:string,version:string):boolean{const tag=/^Image Release: https:\/\/github\.com\/actions\/runner-images\/releases\/tag\/ubuntu(\d\d)%2F(\d{8}(?:\.\d+){0,3})$/.exec(line);return !!tag&&tag[1]===major&&(tag[2]===version||version.startsWith(`${tag[2]}.`));}
 export function readHostedRunnerIdentity(log:string,labels:unknown,requestedRunner:string):{runnerOs:string;runnerArchitecture:string;runnerImage:string}{
  if(Buffer.byteLength(log)>4*1024*1024||!Array.isArray(labels)||!labels.every(label=>typeof label==='string')||!labels.includes(requestedRunner)||labels.includes('self-hosted')||!/^ubuntu-(?:latest|\d\d\.04)$/.test(requestedRunner))throw new Error('measurement-runner-labels');
- const lines=log.split(/\r?\n/).map(stripTimestamp),firstAction=lines.findIndex(line=>line.startsWith('##[group]Run ')),prefix=firstAction<0?lines:lines.slice(0,firstAction);
+ const lines=log.replace(/^\uFEFF/,'').split(/\r?\n/).map(stripTimestamp),firstAction=lines.findIndex(line=>line.startsWith('##[group]Run ')),prefix=firstAction<0?lines:lines.slice(0,firstAction);
  if(prefix.filter(line=>/^Current runner version: '\d+\.\d+\.\d+'$/.test(line)).length!==1)throw new Error('measurement-runner-setup');
  const groups=prefix.map((line,index)=>line==='##[group]Runner Image'?index:-1).filter(index=>index>=0);if(groups.length!==1)throw new Error('measurement-runner-image');const begin=groups[0]!,end=prefix.findIndex((line,index)=>index>begin&&line==='##[endgroup]');if(end<0)throw new Error('measurement-runner-image');const block=prefix.slice(begin+1,end),images=block.filter(line=>line.startsWith('Image: ')),versions=block.filter(line=>line.startsWith('Version: ')),releases=block.filter(line=>line.startsWith('Image Release: '));
- if(images.length!==1||versions.length!==1||releases.length!==1)throw new Error('measurement-runner-image');const image=/^Image: ubuntu-(\d\d)\.04$/.exec(images[0]!),version=/^Version: (\d{8}(?:\.\d+){1,3})$/.exec(versions[0]!);if(!image||!version||(requestedRunner!=='ubuntu-latest'&&requestedRunner!==`ubuntu-${image[1]}.04`)||releases[0]!==`Image Release: https://github.com/actions/runner-images/releases/tag/ubuntu${image[1]}%2F${version[1]}`)throw new Error('measurement-runner-image');
+ if(images.length!==1||versions.length!==1||releases.length!==1)throw new Error('measurement-runner-image');const image=/^Image: ubuntu-(\d\d)\.04$/.exec(images[0]!),version=/^Version: (\d{8}(?:\.\d+){1,3})$/.exec(versions[0]!);if(!image||!version||(requestedRunner!=='ubuntu-latest'&&requestedRunner!==`ubuntu-${image[1]}.04`)||!releaseMatches(releases[0]!,image[1]!,version[1]!))throw new Error('measurement-runner-image');
  return{runnerOs:'Linux',runnerArchitecture:'X64',runnerImage:`ubuntu${image[1]}/${version[1]}`};
 }
