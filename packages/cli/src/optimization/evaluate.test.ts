@@ -57,7 +57,7 @@ describe('complete synthetic policy/replay evaluator', () => {
       posts++; const request = JSON.parse(String(init?.body)) as { messages: { content: string }[] };
       const facts = JSON.parse(request.messages[1]!.content) as { baselines: { installElapsedMs: number }[]; operations: unknown[] };
       const abstain = facts.baselines[0]!.installElapsedMs === 1;
-      return new Response(JSON.stringify({ id: `live-owned-${posts}`, model, choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: JSON.stringify({ status: abstain ? 'abstain' : 'proposal', reason: 'Owned synthetic model response for live harness test.', uncertainty: 'Timing remains unmeasured.', evidenceIds: ['install'], operation: abstain ? null : facts.operations[0] }), refusal: null } }], usage: { prompt_tokens: 100, completion_tokens: 30, total_tokens: 130 } }));
+      return new Response(JSON.stringify({ id: `live-owned-${posts}`, model, choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: JSON.stringify({ decision: abstain ? 'abstain' : 'proposal', analysis: 'Owned synthetic model response for live harness test.', uncertainty: 'Timing remains unmeasured.', evidence: { install: true }, operation: abstain ? null : facts.operations[0] }), refusal: null } }], usage: { prompt_tokens: 100, completion_tokens: 30, total_tokens: 130 } }));
     };
     const output = join(f.directory, 'live-models');
     const replayed = await evaluator.runLiveModels({ schemaVersion: 1, kind: 'model-evaluation-permits', model, permits }, output, { apiKey: 'owned-test-key', fetch: fetcher, permitLedger: join(f.directory, 'model-ledger') }); expect(posts).toBe(7); expect(replayed).toMatchObject({ live: false, transport: 'injected-replay' });

@@ -17,7 +17,7 @@ async function setup(decision:'proposal'|'abstain'='proposal',alreadyCached=fals
   const original=githubFixture();const fixture=alreadyCached?githubFixture(original.source.replace('node-version: 22.20.0','node-version: 22.20.0\n          cache: pnpm')):original;let posts=0;
   const service=createOptimizationService({pageRunner:fixture.pageRunner,toolSourceSha:'1'.repeat(40),bundleDigest:'2'.repeat(64),apiKey:'synthetic-provider-key',permitLedger:join(directory,'permits'),fetch:async(_url,init)=>{
     if(init?.method==='GET') return new Response(JSON.stringify({data:[{id:model}]}));
-    posts++;const response=responseFixture();response.choices[0]!.message.content=JSON.stringify({status:decision,reason:'Expensive measured install',uncertainty:'Performance remains unmeasured',evidenceIds:['install-timing'],operation:decision==='proposal'?{type:'enable-pnpm-cache',jobId:'test',stepIndex:2}:null});return new Response(JSON.stringify(response));
+    posts++;const response=responseFixture();response.choices[0]!.message.content=JSON.stringify({decision,analysis:'Expensive measured install',uncertainty:'Performance remains unmeasured',evidence:{'install-timing':true},operation:decision==='proposal'?{type:'enable-pnpm-cache',jobId:'test',stepIndex:2}:null});return new Response(JSON.stringify(response));
   }});
   const output:string[]=[];const io={stdout:(value:string)=>output.push(value),stderr:(value:string)=>output.push(value)};
   const collected=join(directory,'collected'),diagnosed=join(directory,'diagnosed'),proposed=join(directory,'proposed');

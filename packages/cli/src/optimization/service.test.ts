@@ -17,7 +17,7 @@ async function setup(workflow?: string) {
   const directory = await temporary(), fixture = githubFixture(workflow); let posts = 0;
   const fetcher: typeof fetch = async (_url, init) => {
     if (init?.method === 'GET') return new Response(JSON.stringify({ data: [{ id: model }] }));
-    posts++; const response = responseFixture(); const decision = JSON.parse(response.choices[0]!.message.content); decision.evidenceIds = ['install-timing']; response.choices[0]!.message.content = JSON.stringify(decision);
+    posts++; const response = responseFixture(); const decision = JSON.parse(response.choices[0]!.message.content); decision.evidence = { 'install-timing': true }; response.choices[0]!.message.content = JSON.stringify(decision);
     return new Response(JSON.stringify(response));
   };
   const service = createOptimizationService({ pageRunner: fixture.pageRunner, fetch: fetcher, apiKey: 'synthetic-provider-key', toolSourceSha: '1'.repeat(40), bundleDigest: '2'.repeat(64), permitLedger: join(directory, 'permits') });
@@ -30,7 +30,7 @@ describe('optimization collection and diagnosis integration', () => {
     const result = await setup(), inputPath = join(result.collected, 'input.json'), input = decodeArtifact('input', await readPrivateJson(inputPath));
     const configPath = join(result.directory, 'config.json'), permitPath = join(result.directory, 'permit.json'); await writeFile(configPath, canonicalJson(config)); await writeFile(permitPath, canonicalJson(permitFixture(input)));
     let authorization = '';
-    const fetcher: typeof fetch = async (_url, init) => { authorization = new Headers(init?.headers).get('Authorization') ?? ''; if (init?.method === 'GET') return new Response(JSON.stringify({ data: [{ id: model }] })); const response = responseFixture(), decision = JSON.parse(response.choices[0]!.message.content); decision.evidenceIds = ['install-timing']; response.choices[0]!.message.content = JSON.stringify(decision); return new Response(JSON.stringify(response)); };
+    const fetcher: typeof fetch = async (_url, init) => { authorization = new Headers(init?.headers).get('Authorization') ?? ''; if (init?.method === 'GET') return new Response(JSON.stringify({ data: [{ id: model }] })); const response = responseFixture(), decision = JSON.parse(response.choices[0]!.message.content); decision.evidence = { 'install-timing': true }; response.choices[0]!.message.content = JSON.stringify(decision); return new Response(JSON.stringify(response)); };
     const service = createOptimizationService({ fetch: fetcher, permitLedger: join(result.directory, 'env-permits') });
     vi.stubEnv('NEBIUS_API_KEY', 'source-specific-environment-key'); vi.stubEnv('GITHUB_TOKEN', 'never-use-github-token-for-inference');
     expect(await service.run(args('diagnose', { input: inputPath, config: configPath, permit: permitPath, output: join(result.directory, 'environment-diagnosis') }), result.io.io)).toBe(0); expect(authorization).toBe('Bearer source-specific-environment-key');

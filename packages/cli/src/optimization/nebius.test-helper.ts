@@ -12,7 +12,7 @@ export function permitFixture(input = inputFixture()) {
   return { schemaVersion: 1, kind: 'inference-permit', permitId: 'test-permit', repositoryId: 123, inputDigest: jsonDigest(input), model, endpoint, expiresAt: '2099-01-01T00:00:00.000Z', maxRequests: 1, maxCompletionTokens: 2048, priceBasis: null };
 }
 export function decisionFixture() {
-  return { status: 'proposal', reason: 'Installation can reuse the pnpm store.', uncertainty: 'Cache benefit remains unmeasured.', evidenceIds: ['install-1'], operation: { type: 'enable-pnpm-cache', jobId: 'test', stepIndex: 2 } };
+  return { decision: 'proposal', analysis: 'Installation can reuse the pnpm store.', uncertainty: 'Cache benefit remains unmeasured.', evidence: { 'install-1': true } as Record<string, boolean>, operation: { type: 'enable-pnpm-cache', jobId: 'test', stepIndex: 2 } };
 }
 export function responseFixture() {
   return { id: 'completion-1', model, choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: JSON.stringify(decisionFixture()), refusal: null } }], usage: { prompt_tokens: 100, completion_tokens: 30, total_tokens: 130 } };

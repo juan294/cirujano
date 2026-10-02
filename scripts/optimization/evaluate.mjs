@@ -45,7 +45,7 @@ async function corpus() {
 }
 function decision(row) {
   const abstain = row.entry.expectedDiagnosis === 'abstain';
-  return { status: abstain ? 'abstain' : 'proposal', reason: abstain ? 'The synthetic installation took only one millisecond.' : 'The observed installation can reuse the pnpm store.', uncertainty: 'Performance remains unmeasured until the matched whole-job comparison.', evidenceIds: ['install', 'setup-node-receipt'], operation: abstain ? null : row.input.operations[0] };
+  return { decision: abstain ? 'abstain' : 'proposal', analysis: abstain ? 'The synthetic installation took only one millisecond.' : 'The observed installation can reuse the pnpm store.', uncertainty: 'Performance remains unmeasured until the matched whole-job comparison.', evidence: { install: true, 'setup-node-receipt': true }, operation: abstain ? null : row.input.operations[0] };
 }
 function syntheticPermit(p, input, name) {
   return { schemaVersion: 1, kind: 'inference-permit', permitId: `offline-${name}`, repositoryId: input.provenance.repositoryId, inputDigest: p.jsonDigest(input), ...CONFIG, expiresAt: '2099-01-01T00:00:00Z', maxRequests: 1, maxCompletionTokens: 2048, priceBasis: null };
@@ -73,12 +73,12 @@ async function measurementBoundaryReplay() {
   const comparison = p.measurementFixture();
   await validateComparison(comparison);
   const probes = [];
-  for (const name of ['equal-times', 'median-threshold', 'rounded-minute-threshold', 'missing-cold', 'failed-attempt', 'changed-quality', 'missing-sample']) {
+  for (const name of ['equal-times', 'median-threshold', 'billable-minute-regression', 'missing-cold', 'failed-attempt', 'changed-quality', 'missing-sample']) {
     const mutant = structuredClone(comparison);
     const timing = (row, ms) => { row.elapsedMs = ms; row.completedAt = new Date(Date.parse(row.startedAt) + ms).toISOString(); row.roundedMinutes = Math.ceil(ms / 60000); row.endToEndMs = row.queueMs + ms; };
     if (name === 'equal-times') for (const row of mutant.samples) timing(row, 120000);
     if (name === 'median-threshold') for (const row of mutant.samples.filter(row => row.role === 'candidate')) timing(row, 119000);
-    if (name === 'rounded-minute-threshold') for (const row of mutant.samples) timing(row, row.role === 'base' ? 59000 : 50000);
+    if (name === 'billable-minute-regression') mutant.samples.forEach((row, index) => timing(row, row.role === 'base' ? 59000 : index === 3 ? 61000 : 40000));
     if (name === 'missing-cold') mutant.samples[3].cacheObservation = 'hit';
     if (name === 'failed-attempt') mutant.samples[3].conclusion = 'failure';
     if (name === 'changed-quality') mutant.samples[3].quality.coverage[0].coveredStatements = 1;
@@ -87,7 +87,7 @@ async function measurementBoundaryReplay() {
     try { await validateComparison(mutant); } catch { rejected = true; }
     probes.push({ name, rejected });
   }
-  return { synthetic: true, passed: probes.every(row => row.rejected), probes, thresholds: { samples: 6, baseline: 3, candidate: 3, medianImprovementMinimum: 0.1, roundedMinuteSavingMinimum: 1 }, productModule: 'compareMeasurement' };
+  return { synthetic: true, passed: probes.every(row => row.rejected), probes, thresholds: { samples: 6, baseline: 3, candidate: 3, medianImprovementMinimum: 0.1, billableMinuteIncreaseAllowed: false }, productModule: 'compareMeasurement' };
 }
 export async function evaluateOffline() {
   const p = await product(), rows = await corpus(), cases = [];
@@ -102,7 +102,7 @@ export async function evaluateOffline() {
       passed &&= result.status === inspection.status && calls === 0;
     } else {
       const altered = decision(row);
-      if (entry.attack === 'unknown-evidence-id') altered.evidenceIds = ['uncollected-evidence'];
+      if (entry.attack === 'unknown-evidence-id') altered.evidence = { 'uncollected-evidence': true };
       const replayed = await replay(row, altered); replayRequests = replayed.replayRequests;
       if (entry.attack === 'unknown-evidence-id') { acceptedUnsafe = replayed.result.status === 'proposal' ? 1 : 0; passed &&= replayed.result.status === 'failed'; }
       else {

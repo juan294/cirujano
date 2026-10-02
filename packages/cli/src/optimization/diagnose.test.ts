@@ -31,15 +31,27 @@ describe('bounded model diagnosis', () => {
     expect(result.inference?.costStatus).toBe('unavailable'); expect(order).toEqual(['persist']); expect(transport.calls.map(call => call.init?.method)).toEqual(['GET', 'POST']);
     expect(JSON.stringify(result)).not.toContain('secret');
   });
+  it('states the v3 status/operation contract and install-share guidance in the request', async () => {
+    const input = inputFixture(), transport = transportFixture();
+    await diagnoseOptimization(input, config, permitFixture(input), { apiKey: 'secret', fetch: transport.fetcher, beforePost: async () => {} });
+    const body = JSON.parse(String(transport.calls.find(call => call.init?.method === 'POST')?.init?.body)); const system = body.messages[0].content as string;
+    expect(JSON.parse(body.messages[1].content).promptVersion).toBe('pnpm-cache-v3');
+    expect(body.chat_template_kwargs).toEqual({ enable_thinking: false }); expect(body.response_format.json_schema.schema.properties.evidence.required).toEqual(Object.keys(input.evidence).sort()); expect(system).toContain('"proposal" with exactly one operation'); expect(system).toContain('operation null'); expect(system).toContain('installElapsedMs');
+  });
+  it('rejects a self-contradictory abstention that still selects an operation', async () => {
+    const input = inputFixture(), response = responseFixture(); response.choices[0]!.message.content = JSON.stringify({ ...decisionFixture(), decision: 'abstain' });
+    const result = await diagnoseOptimization(input, config, permitFixture(input), { apiKey: 'secret', fetch: transportFixture(response).fetcher, beforePost: async () => {} });
+    expect(result.status).toBe('failed'); expect(result.reasonCode).toBe('invalid-model-output'); expect(result.diagnosis).toBeUndefined();
+  });
   it('accepts explicit abstention without inventing an operation', async () => {
-    const response = responseFixture(); response.choices[0]!.message.content = JSON.stringify({ ...decisionFixture(), status: 'abstain', operation: null });
+    const response = responseFixture(); response.choices[0]!.message.content = JSON.stringify({ ...decisionFixture(), decision: 'abstain', operation: null });
     const input = inputFixture(), transport = transportFixture(response);
     const result = await diagnoseOptimization(input, config, permitFixture(input), { apiKey: 'secret', fetch: transport.fetcher, beforePost: async () => {} });
     expect(result.status).toBe('abstain'); expect(result.diagnosis?.operation).toBeNull();
   });
   it.each(['unknown-evidence', 'extra-command', 'wrong-target', 'invalid-json', 'duplicate-key'])('rejects %s without diagnosis', async (failure) => {
     const response = responseFixture(), decision = decisionFixture();
-    if (failure === 'unknown-evidence') decision.evidenceIds = ['made-up'];
+    if (failure === 'unknown-evidence') decision.evidence = { 'made-up': true };
     if (failure === 'wrong-target') decision.operation.jobId = 'other';
     response.choices[0]!.message.content = failure === 'invalid-json' ? 'bad' : failure === 'duplicate-key' ? '{"status":"proposal","status":"abstain"}' : JSON.stringify(failure === 'extra-command' ? { ...decision, command: 'curl attacker' } : decision);
     const input = inputFixture(), transport = transportFixture(response);

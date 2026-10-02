@@ -99,7 +99,8 @@ export function compareMeasurement(inputs: ComparisonInputs): MeasurementArtifac
   result.baselineMedianMs = median(result.samples.filter(sample => sample.role === 'base').map(sample => sample.elapsedMs));
   result.candidateMedianMs = median(result.samples.filter(sample => sample.role === 'candidate').map(sample => sample.elapsedMs));
   if (!Number.isSafeInteger(result.baselineMinutes) || !Number.isSafeInteger(result.candidateMinutes)) invalid('minute-total');
-  const improved = result.baselineMinutes - result.candidateMinutes >= 1 && result.candidateMedianMs <= result.baselineMedianMs * 0.9;
+  // Seconds-scale optimizations rarely cross a billing boundary: require a faster median and no billable regression, and disclose when no minute is saved.
+  const improved = result.candidateMinutes <= result.baselineMinutes && result.candidateMedianMs <= result.baselineMedianMs * 0.9;
   result.status = errors.size ? 'rejected' : improved ? 'measured-improvement' : 'no-improvement';
   result.claimLevel = result.status === 'measured-improvement' ? 'sample-execution-only' : 'none';
   result.limits = ['sample-execution-only', 'cold-candidate-required', 'list-price-estimate-not-invoice', 'provider-inference-costs-not-netted'];
@@ -108,6 +109,7 @@ export function compareMeasurement(inputs: ComparisonInputs): MeasurementArtifac
   else if (inputs.pricing === null) result.limits.push('github-pricing-unavailable');
   else if (!inputs.pricing.allowanceKnown) result.limits.push('github-allowance-unknown');
   else if (result.status === 'measured-improvement') { result.githubListSavingUsd = (result.baselineMinutes - result.candidateMinutes) * inputs.pricing.usdPerMinute; if (!Number.isFinite(result.githubListSavingUsd)) invalid('list-estimate'); }
+  if (result.status === 'measured-improvement' && result.baselineMinutes - result.candidateMinutes < 1) result.limits.push('no-billable-minutes-saved');
   result.limits.push(...errors);
   return decodeArtifact('measurement', result);
 }
