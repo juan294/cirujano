@@ -21,7 +21,7 @@ describe('manifest-only reviewable image preparation context',()=>{
   expect(result.recipeHash).toBe(jsonDigest(recipe));expect(result.files).toEqual(['Dockerfile','build-manifest.mjs','dependency-input/package.json','dependency-input/pnpm-lock.yaml','harness.mjs','recipe.json']);
   expect((await stat(directory)).mode&0o777).toBe(0o700);for(const path of result.files) expect((await stat(join(directory,path))).mode&0o777).toBe(0o600);
   const manifest=JSON.parse(await readFile(join(directory,'dependency-input/package.json'),'utf8')) as Record<string,unknown>;expect(manifest.scripts).toBeUndefined();expect(manifest.dependencies).toEqual({yaml:'2.8.1'});
-  const docker=await readFile(join(directory,'Dockerfile'),'utf8');expect(docker).toContain(recipe.from);expect(docker).toContain('--ignore-scripts --ignore-pnpmfile');expect(docker).not.toContain('COPY . ');expect(docker).not.toContain('test.cjs');
+  const docker=await readFile(join(directory,'Dockerfile'),'utf8');expect(docker).toContain(recipe.from);expect(docker).toContain('--ignore-scripts --ignore-pnpmfile');expect(docker).not.toContain('COPY . ');expect(docker).toContain('chmod -R a+rX,a-w /opt/cirujano');expect(docker).not.toContain('chmod 0444');expect(docker).not.toContain('test.cjs');
   expect(await readFile(join(directory,'build-manifest.mjs'),'utf8')).toContain('dependencyStoreDigest');expect(JSON.stringify(result)).not.toContain('uuid');
   const second=await generateImageContext(source(),recipe,await output());expect(second.contextDigest).toBe(result.contextDigest);
  });

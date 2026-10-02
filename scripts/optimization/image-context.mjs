@@ -72,7 +72,7 @@ COPY --chmod=600 harness.mjs recipe.json build-manifest.mjs /opt/cirujano/
 WORKDIR /opt/cirujano/dependency-input
 RUN pnpm fetch --store-dir /opt/cirujano/store --ignore-scripts --ignore-pnpmfile
 RUN node /opt/cirujano/build-manifest.mjs
-RUN find /opt/cirujano -type f -exec chmod 0444 {} + && find /opt/cirujano -type d -exec chmod 0555 {} +
+RUN chmod -R a+rX,a-w /opt/cirujano
 RUN mkdir -p /workspace && chown 65534:65534 /workspace && chmod 700 /workspace
 WORKDIR /workspace
 `;
