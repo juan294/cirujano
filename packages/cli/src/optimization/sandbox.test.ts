@@ -111,6 +111,11 @@ describe('Sandbox fixed-origin transport', () => {
     const created = await client.create(payload, sandboxImageUuid, 1024, async () => {}, async () => {}, async digest => { digests.push(digest); expect(external.uploads).toHaveLength(0); });
     expect(created.status).toBe('created'); expect(digests).toEqual([sha256(canonicalJson(payload))]); expect(external.uploads).toHaveLength(1);
   });
+  it.each([[-1, 'observed'], [9, 'failed']] as const)('treats provider signal %i as %s on an exit-0 operation', async (signal, expected) => {
+    const external = await fixture((_call, response) => { response.setHeader('Content-Type', 'application/json'); const operation = operationFixture(); (operation.metadata.result.state as { signal: number }).signal = signal; response.end(JSON.stringify(operation)); });
+    const result = await createSandboxClient({ iamToken: 'source-specific-iam', project: sandboxProject, fetch: external.fetcher }).read(record());
+    expect(result.status).toBe(expected); if (expected === 'observed') expect(result.operation?.process?.signal).toBe(0);
+  });
   it('keeps polling a running operation that reports the provider duration sentinel -1', async () => {
     let reads = 0; const external = await fixture((call, response) => { response.setHeader('Content-Type', 'application/json'); reads++; const operation = operationFixture(reads === 1 ? 'EXECUTING' : 'SUCCESS'); if (reads === 1) { operation.duration = -1; (operation.metadata as Record<string, unknown>).result = null; } response.end(JSON.stringify(operation)); });
     const result = await createSandboxClient({ iamToken: 'source-specific-iam', project: sandboxProject, fetch: external.fetcher, sleep: async () => {} }).poll(record());

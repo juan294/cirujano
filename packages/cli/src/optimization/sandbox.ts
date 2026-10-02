@@ -129,7 +129,9 @@ export function createSandboxClient(options: SandboxClientOptions): SandboxClien
     try {
       const result = object(metadata.result), state = object(result.state), resources = result.resources === undefined ? {} : object(result.resources);
       if (resources.cost !== undefined && resources.cost !== null) operation.usage = { value: finite(resources.cost), unit: 'undocumented-provider-unit', currency: null };
-      operation.process = { exitCode: integer(state.exit_code), signal: integer(state.signal), timedOut: boolean(state.timed_out), stopped: boolean(state.stopped), continued: boolean(state.continued), coreDump: boolean(state.core_dump) };
+      // The provider reports -1 when no signal ended the process; normalize to 0.
+      const signal = integer(state.signal);
+      operation.process = { exitCode: integer(state.exit_code), signal: signal === -1 ? 0 : signal, timedOut: boolean(state.timed_out), stopped: boolean(state.stopped), continued: boolean(state.continued), coreDump: boolean(state.core_dump) };
       if (operation.process.exitCode !== 0 || operation.process.signal !== 0 || operation.process.timedOut || operation.process.stopped || operation.process.continued || operation.process.coreDump) return failure('sandbox-process-failed', operation);
       const stdout = stream(result.stdout), stderr = stream(result.stderr); operation.stdoutHash = stdout.hash; operation.stderrHash = stderr.hash;
       ctx.check();
