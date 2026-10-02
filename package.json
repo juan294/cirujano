@@ -19,6 +19,8 @@
     "typecheck": "pnpm -r typecheck",
     "lint": "pnpm -r lint",
     "build": "pnpm -r build",
+    "verify:optimization-harness-linux": "node scripts/optimization/check-harness-linux.mjs",
+    "verify:optimization-actionlint": "node scripts/optimization/check-actionlint.mjs",
     "verify:bundle": "pnpm run build && node scripts/verify-bundle.mjs",
     "test:coverage": "pnpm -r --workspace-concurrency=1 test:coverage",
     "ci:fast": "pnpm run typecheck && pnpm run lint && pnpm run verify:bundle && pnpm run test",

@@ -16,5 +16,8 @@
     "test": "vitest run",
     "test:coverage": "vitest run --config ../../vitest.config.ts --coverage",
     "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "yaml": "2.9.0"
   }
 }

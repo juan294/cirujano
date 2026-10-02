@@ -1,10 +1,20 @@
 import { SHA_PATTERN } from './fleet-registry.js';
 import { HOSTED_SKUS, type HostedSku } from './telemetry.js';
+import { parseOptimizeArguments, type OptimizeArguments } from './optimization/arguments.js';
 
 export const VERSION = '0.0.1';
 
 export const USAGE = [
   'Usage:',
+  '  cirujano optimize collect --repository <owner/name> --ref <sha> --workflow <path> --job <key> --run <id>... --output <directory>',
+  '  cirujano optimize diagnose --input <input.json> --config <config.json> --output <directory> [--permit <permit.json>]',
+  '  cirujano optimize propose --input <input.json> --diagnosis <diagnosis.json> --output <directory>',
+  '  cirujano optimize verify --proposal <proposal.json> --profile <profile.json> --permit <permit.json> --output <directory>',
+  '  cirujano optimize measure --proposal <proposal.json> --sandbox <sandbox.json> --cohort <cohort.json> --output <directory>',
+  '  cirujano optimize report --proposal <proposal.json> --sandbox <sandbox.json> --measurement <measurement.json> --output <directory>',
+  '  cirujano optimize publish --report <report.json> --permit <permit.json>',
+  '  cirujano optimize status --operation <directory> [--format json|text]',
+  '  cirujano optimize cancel --operation <directory> --permit <permit.json>',
   '  cirujano estimate --jobs <github-jobs.json> [--format json|text]',
   '  cirujano runner inspect --config <runner.json> [--format json|text]',
   '  cirujano runner watch --config <runner.json> [--permit <permit.json>] [--dry-run]',
@@ -159,7 +169,7 @@ export type FleetArguments = FleetInitArguments | FleetEnrollArguments | FleetCu
   | FleetControllerConfigArguments | FleetPermitProposalArguments | FleetPublishArguments;
 
 export type RunnerArguments = RunnerInspectArguments | RunnerWatchArguments | RunnerMutationArguments | RunnerReportArguments;
-export type ParsedArguments = EstimateArguments | HelpArguments | VersionArguments | RunnerArguments | TelemetryArguments | FleetArguments;
+export type ParsedArguments = EstimateArguments | HelpArguments | VersionArguments | RunnerArguments | TelemetryArguments | FleetArguments | OptimizeArguments;
 
 export class ArgumentError extends Error {
   override readonly name = 'ArgumentError';
@@ -174,6 +184,7 @@ export function parseArguments(argv: readonly string[]): ParsedArguments {
     return { command: 'version' };
   }
   if (first === 'runner') return parseRunnerArguments(rest);
+  if (first === 'optimize') return parseOptimizeArguments(rest);
   if (first === 'telemetry') return parseTelemetryArguments(rest);
   if (first === 'fleet') return parseFleetArguments(rest);
   if (first !== 'estimate') {

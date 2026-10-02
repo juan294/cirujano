@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "commands": [
+    ["node", "reporter.mjs", "start", "--config", "reporter.json"],
+    ["pnpm", "test"],
+    ["node", "reporter.mjs", "finish", "--config", "reporter.json"]
+  ],
+  "testReportPath": "normalized-tests.json",
+  "coverageReportPath": "normalized-coverage.json",
+  "nodeVersion": "22.20.0",
+  "pnpmVersion": "10.11.0",
+  "timeoutSeconds": 600,
+  "sourcePaths": ["src/ledger.mjs"]
+}
