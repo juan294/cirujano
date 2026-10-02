@@ -17,7 +17,7 @@ export async function reporterFixture() {
  for(const [path,bytes]of Object.entries(files)){await mkdir(dirname(join(workspace,path)),{recursive:true});await writeFile(join(workspace,path),bytes);}
  git('init','--initial-branch=develop');git('add','.');const tree=git('write-tree'),headSha=git('commit-tree',tree,'-m','Owned isolated source object');git('update-ref','refs/heads/develop',headSha);
  await symlink(join(root,'node_modules'),join(workspace,'node_modules'),'dir');
- const capture=()=>execFileSync(pnpmPath,['test'],{cwd:workspace,encoding:'utf8',timeout:30000});
+ const capture=()=>execFileSync(pnpmPath,['test'],{cwd:workspace,encoding:'utf8',timeout:30000,env:{...process.env,pnpm_config_verify_deps_before_run:'false'}});
  const env:NodeJS.ProcessEnv={GITHUB_ACTIONS:'true',GITHUB_REPOSITORY_ID:'1',GITHUB_REPOSITORY:'owner/owned',GITHUB_RUN_ID:'123',GITHUB_RUN_ATTEMPT:'2',GITHUB_SHA:headSha,GITHUB_JOB:'test',GITHUB_WORKFLOW_REF:'owner/owned/.github/workflows/ci.yml@refs/heads/develop',RUNNER_OS:'Linux',RUNNER_ARCH:'X64',ImageOS:'ubuntu24',ImageVersion:'20260920.1'};
  const json=async(path:string)=>JSON.parse(await readFile(join(workspace,path),'utf8')) as Record<string,unknown>;
  return{workspace,profile,config,headSha,git,capture,env,json};

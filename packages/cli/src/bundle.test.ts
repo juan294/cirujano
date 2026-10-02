@@ -11,7 +11,8 @@ it('builds a standalone ESM CLI that starts without repository dependencies', as
   for (const dependency of ['core', 'runner']) {
     const dependencyBuild = spawnSync('pnpm', ['run', 'build'], {
       cwd: fileURLToPath(new URL(`../../${dependency}/`, import.meta.url)),
-      env: { PATH: process.env.PATH ?? '' },
+      // A test must never let pnpm's pre-run dependency check reinstall the workspace.
+      env: { PATH: process.env.PATH ?? '', pnpm_config_verify_deps_before_run: 'false' },
       encoding: 'utf8',
       timeout: 30_000,
     });
