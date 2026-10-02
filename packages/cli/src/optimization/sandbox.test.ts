@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { canonicalJson, sha256 } from '@cirujano/core';
 import { createSandboxClient, type SandboxRecord } from './sandbox.js';
-import { sandboxHttpFixture, sandboxImageUuid, sandboxOperationId, sandboxProject, sandboxOrigin, sandboxPrefix, operationFixture, imageProfile, harnessBytes, manifestBytes, requestFixture } from './sandbox.test-helper.js';
+import { payloadFileUuid, sandboxHttpFixture, sandboxImageUuid, sandboxOperationId, sandboxProject, sandboxOrigin, sandboxPrefix, operationFixture, imageProfile, harnessBytes, manifestBytes, requestFixture } from './sandbox.test-helper.js';
 
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0)) await cleanup(); });
@@ -9,11 +9,12 @@ const payload = { schemaVersion: 1, kind: 'sandbox-payload', role: 'base', sourc
 function record(): SandboxRecord { return { id: sandboxOperationId, url: `${sandboxOrigin}${sandboxPrefix}operations/${sandboxOperationId}`, imageUuid: sandboxImageUuid, project: sandboxProject, requestHash: sha256(canonicalJson(requestFixture())), createdAt: new Date().toISOString() }; }
 async function fixture(handler?: Parameters<typeof sandboxHttpFixture>[0]) { const fixture = await sandboxHttpFixture(handler); cleanups.push(fixture.close); return fixture; }
 describe('Sandbox fixed-origin transport', () => {
-  it.each(['command', 'args', 'stdin', 'env', 'cwd', 'timeout', 'resources', 'output-cap'])('R4-2 rejects %s request identity drift even with successful quality output', async field => {
+  it.each(['command', 'args', 'stdin', 'env', 'cwd', 'timeout', 'resources', 'output-cap', 'payload-file'])('R4-2 rejects %s request identity drift even with successful quality output', async field => {
     const operation = operationFixture();
     if (field === 'command') operation.metadata.command = '/usr/local/bin/other';
     if (field === 'args') operation.metadata.args = ['/tmp/untrusted.mjs'];
     if (field === 'stdin') operation.metadata.stdin.value = Buffer.from('different payload').toString('base64');
+    if (field === 'payload-file') operation.metadata.files['/tmp/cirujano-payload.json']!.uuid = 'e0e0e0e0-e0e0-5e0e-8e0e-e0e0e0e0e0e0';
     if (field === 'env') operation.metadata.env.CI = 'false';
     if (field === 'cwd') operation.metadata.cwd = '/other';
     if (field === 'timeout') operation.metadata.timeout = 601;
@@ -78,8 +79,9 @@ describe('Sandbox fixed-origin transport', () => {
     expect(result.status).toBe('created'); expect(order).toEqual(['intent', 'created']); expect(external.calls).toHaveLength(1);
     const call = external.calls[0]!, body = JSON.parse(call.body);
     expect(call.headers.authorization).toBe('Bearer source-specific-iam'); expect(call.headers.project).toBe(sandboxProject);
-    expect(body).toMatchObject({ command: '/usr/local/bin/node', args: ['/opt/cirujano/harness.mjs'], image: sandboxImageUuid, shell: false, disposable: true, preserve_env: false, networking: { enabled: false }, timeout: 600, truncate_output_at: 1048576, cwd: '/workspace', uid: 0, resources_limits: { max_layer_bytes: 1024 }, stdin: { encoding: 'base64', close: true } });
-    expect(JSON.stringify(body.env)).not.toContain('source-specific-iam'); expect(Buffer.from(body.stdin.value, 'base64').toString()).not.toContain('source-specific-iam');
+    expect(body).toMatchObject({ command: '/usr/local/bin/node', args: ['/opt/cirujano/harness.mjs', '/tmp/cirujano-payload.json'], image: sandboxImageUuid, shell: false, disposable: true, preserve_env: false, networking: { enabled: false }, timeout: 600, truncate_output_at: 1048576, cwd: '/workspace', uid: 0, resources_limits: { max_layer_bytes: 1024 }, stdin: { value: '', encoding: 'ascii', close: true }, files: { '/tmp/cirujano-payload.json': { uuid: payloadFileUuid, mode: '0400', uid: 0, gid: 0 } } });
+    expect(external.uploads).toHaveLength(1); expect(external.uploads[0]!.body).toBe(canonicalJson(payload)); expect(external.uploads[0]!.headers['content-type']).toBe('application/octet-stream'); expect(body.env.CIRUJANO_PAYLOAD_SHA256).toBe(sha256(canonicalJson(payload)));
+    expect(JSON.stringify(body.env)).not.toContain('source-specific-iam'); expect(external.uploads[0]!.body).not.toContain('source-specific-iam');
   });
   it.each(['cross-origin', 'outside-prefix', 'uuid-mismatch', 'redirect', 'lost-response'])('never retries %s create outcome', async failure => {
     const external = await fixture((_call, response) => {
@@ -100,6 +102,22 @@ describe('Sandbox fixed-origin transport', () => {
     const external = await fixture((_call, response) => { response.statusCode = 201; response.setHeader('Location', `${sandboxPrefix}operations/${sandboxOperationId}`); if (mode === 'stalled') { response.flushHeaders(); response.write('{'); } else response.end('{malformed'); });
     const result = await createSandboxClient({ iamToken: 'source-specific-iam', project: sandboxProject, fetch: external.fetcher, deadlineMs: 50 }).create(payload, sandboxImageUuid, 1024, async () => {}, async () => { persisted = true; });
     expect(persisted).toBe(true); expect(result.status).toBe('outcome-unknown'); expect(result.record?.id).toBe(sandboxOperationId); expect(external.calls).toHaveLength(1);
+  });
+  it('consumes upload authority before any byte leaves and uploads nothing when it is refused', async () => {
+    const external = await fixture(); const digests: string[] = [];
+    const client = createSandboxClient({ iamToken: 'source-specific-iam', project: sandboxProject, fetch: external.fetcher });
+    const refused = await client.create(payload, sandboxImageUuid, 1024, async () => {}, async () => {}, async () => { throw new Error('permit exhausted'); });
+    expect(refused.status).toBe('failed'); expect(external.uploads).toHaveLength(0); expect(external.calls).toHaveLength(0);
+    const created = await client.create(payload, sandboxImageUuid, 1024, async () => {}, async () => {}, async digest => { digests.push(digest); expect(external.uploads).toHaveLength(0); });
+    expect(created.status).toBe('created'); expect(digests).toEqual([sha256(canonicalJson(payload))]); expect(external.uploads).toHaveLength(1);
+  });
+  it.each(['digest', 'size', 'status'])('stops before any intent or instance when the payload upload %s is wrong', async failure => {
+    let intents = 0; const fetcher: typeof fetch = async (url, init) => {
+      if (!String(url).endsWith('/files')) throw new Error('instance request must not be sent');
+      const body = Buffer.from(init!.body as Uint8Array); return new Response(JSON.stringify({ uuid: payloadFileUuid, sha256: failure === 'digest' ? 'f'.repeat(64) : sha256(body), size: failure === 'size' ? body.length + 1 : body.length }), { status: failure === 'status' ? 500 : 201 });
+    };
+    const result = await createSandboxClient({ iamToken: 'source-specific-iam', project: sandboxProject, fetch: fetcher }).create(payload, sandboxImageUuid, 1024, async () => { intents++; }, async () => {});
+    expect(result.status).toBe('failed'); expect(result.record).toBeNull(); expect(intents).toBe(0);
   });
   it('blocks oversized stdin before intent or transport', async () => {
     const external = await fixture(); let intents = 0;
@@ -151,7 +169,7 @@ describe('Sandbox fixed-origin transport', () => {
     await new Promise<void>(resolve => setImmediate(resolve));
   });
   it('bounds ignored-abort fetch and durable hooks', async () => {
-    let posts = 0; const fetcher: typeof fetch = async (_url, init) => { if (init?.method === 'POST') posts++; return new Promise(() => {}); };
+    let posts = 0; const fetcher: typeof fetch = async (url, init) => { if (String(url).endsWith('/files')) { const body = Buffer.from(init!.body as Uint8Array); return new Response(JSON.stringify({ uuid: payloadFileUuid, sha256: sha256(body), size: body.length }), { status: 201 }); } if (init?.method === 'POST') posts++; return new Promise(() => {}); };
     const client = createSandboxClient({ iamToken: 'source-specific-iam', project: sandboxProject, fetch: fetcher, deadlineMs: 10 });
     expect((await client.create(payload, sandboxImageUuid, 1024, async () => {}, async () => {})).status).toBe('outcome-unknown'); expect(posts).toBe(1);
     expect((await client.create(payload, sandboxImageUuid, 1024, async () => new Promise(() => {}), async () => {})).status).toBe('failed'); expect(posts).toBe(1);

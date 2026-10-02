@@ -16,7 +16,7 @@ export function imageReferenceValid(reference: string, ociDigest: string, built:
 const states = ['PENDING', 'ASSIGNED', 'EXECUTING', 'SUCCESS', 'FAILED', 'CANCELLED'] as const;
 export type SandboxStatus = typeof states[number];
 export interface SandboxRecord { id: string; url: string; imageUuid: string; project: string; requestHash: string; createdAt: string }
-export interface SandboxCreateIntent { schemaVersion: 1; kind: 'sandbox-intent'; attemptId: string; requestHash: string; payloadDigest: string; imageUuid: string; project: string; createdAt: string }
+export interface SandboxCreateIntent { schemaVersion: 1; kind: 'sandbox-intent'; attemptId: string; requestHash: string; payloadDigest: string; payloadFileUuid: string; imageUuid: string; project: string; createdAt: string }
 export interface SandboxCreateResult { status: 'created' | 'failed' | 'outcome-unknown'; reasonCode: string; record: SandboxRecord | null }
 export interface SandboxProcess { exitCode: number; signal: number; timedOut: boolean; stopped: boolean; continued: boolean; coreDump: boolean }
 /** An allowlisted receipt. Raw metadata, credentials, stdin and streams are excluded. */
@@ -27,7 +27,7 @@ export interface ImageReadbackReceipt { imageUuid: string; importOperationId: st
 export interface SandboxImageResult { status: 'verified' | 'failed'; reasonCode: string; receipt: ImageReadbackReceipt | null; harnessBytes: Uint8Array | null; manifestBytes: Uint8Array | null }
 export interface SandboxClientOptions { iamToken: string; project: string; authorityDigest?: string; fetch?: typeof fetch; now?: () => number; sleep?: (milliseconds: number) => Promise<void>; deadlineMs?: number; pollIntervalMs?: number }
 export interface SandboxClient {
-  create(payload: unknown, imageUuid: string, maxLayerBytes: number, beforePost: (intent: SandboxCreateIntent) => Promise<void>, onCreated: (record: SandboxRecord) => Promise<void>): Promise<SandboxCreateResult>;
+  create(payload: unknown, imageUuid: string, maxLayerBytes: number, beforePost: (intent: SandboxCreateIntent) => Promise<void>, onCreated: (record: SandboxRecord) => Promise<void>, beforeUpload?: (payloadDigest: string) => Promise<void>): Promise<SandboxCreateResult>;
   read(record: SandboxRecord): Promise<SandboxResult>;
   poll(record: SandboxRecord): Promise<SandboxResult>;
   cancel(record: SandboxRecord, beforeDelete: (record: SandboxRecord) => Promise<void>): Promise<SandboxResult>;
@@ -46,14 +46,17 @@ function decodeRecord(record: SandboxRecord, project: string): void { if (!recor
 function failure(reasonCode: string, operation: SandboxObservedOperation | null = null): SandboxResult { return { status: 'failed', reasonCode, operation, stdout: null, stderr: null, retryAfterMs: 0 }; }
 function unknown(reasonCode: string): SandboxResult { return { status: 'outcome-unknown', reasonCode, operation: null, stdout: null, stderr: null, retryAfterMs: 0 }; }
 function reason(error: unknown): string { return error instanceof SandboxError ? error.code : 'sandbox-transport-failed'; }
-const requestFields = ['command', 'args', 'image', 'shell', 'disposable', 'preserve_env', 'networking', 'timeout', 'truncate_output_at', 'cwd', 'uid', 'resources_limits', 'env', 'stdin'] as const;
+const requestFields = ['command', 'args', 'image', 'shell', 'disposable', 'preserve_env', 'networking', 'timeout', 'truncate_output_at', 'cwd', 'uid', 'resources_limits', 'env', 'stdin', 'files'] as const;
+/** Instance requests are capped near 1 MiB, so the payload travels as an uploaded, digest-checked, read-only file. */
+export const PAYLOAD_PATH = '/tmp/cirujano-payload.json';
 /** Exact pure request identity shared by create and durable receipt validation. */
-export function previewSandboxRequest(payload: unknown, imageUuid: string, maxLayerBytes: number, authorityDigest = '0'.repeat(64)): { body: string; requestHash: string; payloadDigest: string } {
-  if (!UUID.test(imageUuid) || !Number.isSafeInteger(maxLayerBytes) || maxLayerBytes < 1 || maxLayerBytes > 1024 * 1024 * 1024 || !DIGEST.test(authorityDigest)) throw new SandboxError('sandbox-request-invalid');
+export function previewSandboxRequest(payload: unknown, imageUuid: string, maxLayerBytes: number, payloadFileUuid: string, authorityDigest = '0'.repeat(64)): { body: string; requestHash: string; payloadDigest: string } {
+  if (!UUID.test(imageUuid) || !UUID.test(payloadFileUuid) || !Number.isSafeInteger(maxLayerBytes) || maxLayerBytes < 1 || maxLayerBytes > 1024 * 1024 * 1024 || !DIGEST.test(authorityDigest)) throw new SandboxError('sandbox-request-invalid');
   const serialized = canonicalJson(payload); if (Buffer.byteLength(serialized) > PAYLOAD_BYTES) throw new SandboxError('sandbox-payload-invalid');
-  const body = canonicalJson({ command: '/usr/local/bin/node', args: ['/opt/cirujano/harness.mjs'], image: imageUuid, shell: false, disposable: true, preserve_env: false, networking: { enabled: false }, timeout: 600, truncate_output_at: STREAM_BYTES, cwd: '/workspace', uid: 0, resources_limits: { max_layer_bytes: maxLayerBytes }, env: { PNPM_CONFIG_OFFLINE: 'true', PNPM_CONFIG_STORE_DIR: '/opt/cirujano/store', HOME: '/workspace/.home', PATH: '/usr/local/bin:/usr/bin:/bin', CI: 'true', CIRUJANO_SANDBOX_AUTHORITY: authorityDigest }, stdin: { value: Buffer.from(serialized).toString('base64'), encoding: 'base64', close: true } });
+  const payloadDigest = sha256(serialized);
+  const body = canonicalJson({ command: '/usr/local/bin/node', args: ['/opt/cirujano/harness.mjs', PAYLOAD_PATH], image: imageUuid, shell: false, disposable: true, preserve_env: false, networking: { enabled: false }, timeout: 600, truncate_output_at: STREAM_BYTES, cwd: '/workspace', uid: 0, resources_limits: { max_layer_bytes: maxLayerBytes }, env: { PNPM_CONFIG_OFFLINE: 'true', PNPM_CONFIG_STORE_DIR: '/opt/cirujano/store', HOME: '/workspace/.home', PATH: '/usr/local/bin:/usr/bin:/bin', CI: 'true', CIRUJANO_SANDBOX_AUTHORITY: authorityDigest, CIRUJANO_PAYLOAD_SHA256: payloadDigest }, stdin: { value: '', encoding: 'ascii', close: true }, files: { [PAYLOAD_PATH]: { uuid: payloadFileUuid, mode: '0400', uid: 0, gid: 0 } } });
   if (Buffer.byteLength(body) > REQUEST_BYTES) throw new SandboxError('sandbox-request-too-large');
-  return { body, requestHash: sha256(body), payloadDigest: sha256(serialized) };
+  return { body, requestHash: sha256(body), payloadDigest };
 }
 function truncation(value: unknown): boolean | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
@@ -83,8 +86,8 @@ export function createSandboxClient(options: SandboxClientOptions): SandboxClien
         operation.then(resolve, reject).finally(() => controller.signal.removeEventListener('abort', abort));
       });
     }
-    async function request(url: string, method: 'GET' | 'POST' | 'DELETE', body?: string): Promise<Response> {
-      check(); const response = await bounded(fetcher(url, { method, headers, ...(body === undefined ? {} : { body }), redirect: 'error', signal: controller.signal }));
+    async function request(url: string, method: 'GET' | 'POST' | 'DELETE', body?: string | Uint8Array, contentType = 'application/json'): Promise<Response> {
+      check(); const response = await bounded(fetcher(url, { method, headers: { ...headers, 'Content-Type': contentType }, ...(body === undefined ? {} : { body }), redirect: 'error', signal: controller.signal }));
       if (response.redirected) throw new SandboxError('sandbox-redirect-rejected'); return response;
     }
     async function bytes(response: Response, maximum: number): Promise<Buffer> {
@@ -142,14 +145,21 @@ export function createSandboxClient(options: SandboxClientOptions): SandboxClien
     return unknown('sandbox-poll-limit');
   }
   return {
-    async create(payload, imageUuid, maxLayerBytes, beforePost, onCreated) {
+    async create(payload, imageUuid, maxLayerBytes, beforePost, onCreated, beforeUpload = async () => {}) {
       let sent = false, record: SandboxRecord | null = null; const ctx = context();
       try {
-        if (typeof beforePost !== 'function' || typeof onCreated !== 'function') throw new SandboxError('sandbox-request-invalid');
-        const { body, requestHash, payloadDigest } = previewSandboxRequest(payload, imageUuid, maxLayerBytes, options.authorityDigest);
-        if (canonicalJson(payload).includes(options.iamToken)) throw new SandboxError('sandbox-payload-invalid');
+        if (typeof beforePost !== 'function' || typeof onCreated !== 'function' || typeof beforeUpload !== 'function') throw new SandboxError('sandbox-request-invalid');
+        const serialized = canonicalJson(payload); if (Buffer.byteLength(serialized) > PAYLOAD_BYTES) throw new SandboxError('sandbox-payload-invalid');
+        if (serialized.includes(options.iamToken)) throw new SandboxError('sandbox-payload-invalid');
+        // Authority is consumed before any source byte leaves; the upload itself starts no instance.
+        await ctx.bounded(beforeUpload(sha256(serialized)));
+        const uploaded = await ctx.request(`${SANDBOX_ORIGIN}${SANDBOX_PREFIX}files`, 'POST', Buffer.from(serialized), 'application/octet-stream');
+        if (uploaded.status !== 200 && uploaded.status !== 201) return { status: 'failed', reasonCode: `sandbox-upload-http-${uploaded.status}`, record: null };
+        const file = await ctx.json(uploaded, 65536);
+        if (typeof file.uuid !== 'string' || !UUID.test(file.uuid) || file.sha256 !== sha256(serialized) || file.size !== Buffer.byteLength(serialized)) throw new SandboxError('sandbox-upload-mismatch');
+        const { body, requestHash, payloadDigest } = previewSandboxRequest(payload, imageUuid, maxLayerBytes, file.uuid, options.authorityDigest);
         const createdAt = new Date(now()).toISOString();
-        await ctx.bounded(beforePost({ schemaVersion: 1, kind: 'sandbox-intent', attemptId: jsonDigest({ requestHash, payloadDigest, imageUuid, project: options.project }), requestHash, payloadDigest, imageUuid, project: options.project, createdAt }));
+        await ctx.bounded(beforePost({ schemaVersion: 1, kind: 'sandbox-intent', attemptId: jsonDigest({ requestHash, payloadDigest, imageUuid, project: options.project }), requestHash, payloadDigest, payloadFileUuid: file.uuid, imageUuid, project: options.project, createdAt }));
         ctx.check(); sent = true; const response = await ctx.request(`${SANDBOX_ORIGIN}${SANDBOX_PREFIX}instances`, 'POST', body);
         if (response.status !== 201) return { status: response.status >= 400 && response.status < 500 ? 'failed' : 'outcome-unknown', reasonCode: `sandbox-http-${response.status}`, record: null };
         const location = response.headers.get('Location'); if (!location) throw new SandboxError('sandbox-location-invalid');

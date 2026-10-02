@@ -100,6 +100,11 @@ function execute(executable,args,workspace,env,timeout,identity) {
  });
 }
 /** options is a local inert-fixture boundary; the deployed CLI never accepts path overrides. */
+/** The provider attaches the payload read-only at one fixed path; its digest travels separately in the request. */
+export async function readPayloadFile(path,expectedDigest,allowedPath='/tmp/cirujano-payload.json') {
+ if(path!==allowedPath) throw Error('harness-payload-path');
+ const input=await regularRead(path,LIMIT);if(typeof expectedDigest!=='string'||!digest.test(expectedDigest)||sha256(input)!==expectedDigest) throw Error('harness-payload-digest');return input;
+}
 export async function runHarness(payload,options={}) {
  const started=Date.now();validatePayload(payload);
  const inertFixture=Object.keys(options).length>0;
@@ -127,6 +132,6 @@ export async function runHarness(payload,options={}) {
  return {schemaVersion:1,kind:'harness-result',role:payload.role,profileDigest:payload.profileDigest,proposalDigest:payload.proposalDigest,toolSourceSha:payload.toolSourceSha,bundleDigest:payload.bundleDigest,imageManifestHash:payload.imageManifestHash,harnessHash:payload.harnessHash,sourceDigest:payload.sourceDigest,workflowHash:payload.workflowHash,commands,quality,elapsedMs:Date.now()-started};
 }
 if(process.argv[1]&&resolve(process.argv[1])===fileURLToPath(import.meta.url)) {
- try {let input=Buffer.alloc(0);for await(const part of process.stdin){input=Buffer.concat([input,part]);if(input.length>LIMIT) throw Error('harness-stdin-size');}const result=await runHarness(parseStrictJson(input.toString('utf8')));const output=canonicalJson(result);if(Buffer.byteLength(output)>OUTPUT) throw Error('harness-result-size');process.stdout.write(output+'\n');}
+ try {let input=Buffer.alloc(0);if(process.argv[2]) input=await readPayloadFile(process.argv[2],process.env.CIRUJANO_PAYLOAD_SHA256);else for await(const part of process.stdin){input=Buffer.concat([input,part]);if(input.length>LIMIT) throw Error('harness-stdin-size');}const result=await runHarness(parseStrictJson(input.toString('utf8')));const output=canonicalJson(result);if(Buffer.byteLength(output)>OUTPUT) throw Error('harness-result-size');process.stdout.write(output+'\n');}
  catch(error){process.stderr.write((error instanceof Error&&/^harness-[a-z-]+$/.test(error.message)?error.message:'harness-failed')+'\n');process.exitCode=1;}
 }

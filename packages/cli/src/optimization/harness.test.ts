@@ -82,4 +82,12 @@ describe('standalone trusted offline verification harness',()=>{
   try {const address=server.address();if(!address||typeof address==='string') throw Error('missing owned server');const state=await fixture(`require('node:http').get('http://127.0.0.1:${address.port}',response=>response.resume());`);expect((await(await load()).runHarness(state.payload,state.options)).quality?.tests).toHaveLength(2);expect(requests).toBe(1);}
   finally {await new Promise<void>((resolve,reject)=>server.close(error=>error?reject(error):resolve()));}
  });
+ it('reads only the fixed digest-checked payload file',async()=>{
+  const {readPayloadFile}=await import(harnessPath.href) as {readPayloadFile:(path:string,digest:string|undefined,allowed?:string)=>Promise<Buffer>};
+  const directory=await mkdtemp(join(tmpdir(),'cirujano-payload-')),path=join(directory,'payload.json'),bytes=Buffer.from('{"owned":true}');await writeFile(path,bytes,{mode:0o400});
+  await expect(readPayloadFile(path,sha256(bytes),path)).resolves.toEqual(bytes);
+  await expect(readPayloadFile(path,'0'.repeat(64),path)).rejects.toThrow('harness-payload-digest');
+  await expect(readPayloadFile(path,undefined,path)).rejects.toThrow('harness-payload-digest');
+  await expect(readPayloadFile(path,sha256(bytes))).rejects.toThrow('harness-payload-path');
+ });
 });
