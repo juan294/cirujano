@@ -119,7 +119,8 @@ export function createSandboxClient(options: SandboxClientOptions): SandboxClien
     if (requestFields.some(field => !Object.hasOwn(metadata, field)) || sha256(canonicalJson(Object.fromEntries(requestFields.map(field => [field, metadata[field]])))) !== record.requestHash) return failure('sandbox-request-readback-mismatch');
     if (object(metadata.env).CIRUJANO_SANDBOX_AUTHORITY !== (options.authorityDigest ?? '0'.repeat(64))) return failure('sandbox-request-readback-mismatch');
     ctx.check();
-    const operation: SandboxObservedOperation = { id: record.id, status: raw.status as SandboxStatus, imageUuid: record.imageUuid, project: options.project, disposable: true, process: null, usage: null, createdAt: raw.created_at === undefined ? null : timestamp(raw.created_at), providerDuration: raw.duration === undefined || raw.duration === null ? null : finite(raw.duration), stdoutHash: null, stderrHash: null, stdoutTruncated: null, stderrTruncated: null };
+    const operation: SandboxObservedOperation = { id: record.id, status: raw.status as SandboxStatus, imageUuid: record.imageUuid, project: options.project, disposable: true, process: null, usage: null, createdAt: raw.created_at === undefined ? null : timestamp(raw.created_at), // The provider reports duration -1 until an operation finishes.
+      providerDuration: raw.duration === undefined || raw.duration === null || raw.duration === -1 ? null : finite(raw.duration), stdoutHash: null, stderrHash: null, stdoutTruncated: null, stderrTruncated: null };
     if (['SUCCESS', 'FAILED', 'CANCELLED'].includes(operation.status) && metadata.result && typeof metadata.result === 'object' && !Array.isArray(metadata.result)) {
       const result = metadata.result as Record<string, unknown>; operation.stdoutTruncated = truncation(result.stdout); operation.stderrTruncated = truncation(result.stderr);
     }

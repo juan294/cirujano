@@ -111,6 +111,11 @@ describe('Sandbox fixed-origin transport', () => {
     const created = await client.create(payload, sandboxImageUuid, 1024, async () => {}, async () => {}, async digest => { digests.push(digest); expect(external.uploads).toHaveLength(0); });
     expect(created.status).toBe('created'); expect(digests).toEqual([sha256(canonicalJson(payload))]); expect(external.uploads).toHaveLength(1);
   });
+  it('keeps polling a running operation that reports the provider duration sentinel -1', async () => {
+    let reads = 0; const external = await fixture((call, response) => { response.setHeader('Content-Type', 'application/json'); reads++; const operation = operationFixture(reads === 1 ? 'EXECUTING' : 'SUCCESS'); if (reads === 1) { operation.duration = -1; (operation.metadata as Record<string, unknown>).result = null; } response.end(JSON.stringify(operation)); });
+    const result = await createSandboxClient({ iamToken: 'source-specific-iam', project: sandboxProject, fetch: external.fetcher, sleep: async () => {} }).poll(record());
+    expect(result.status).toBe('terminal'); expect(reads).toBe(2);
+  });
   it.each(['digest', 'size', 'status'])('stops before any intent or instance when the payload upload %s is wrong', async failure => {
     let intents = 0; const fetcher: typeof fetch = async (url, init) => {
       if (!String(url).endsWith('/files')) throw new Error('instance request must not be sent');
