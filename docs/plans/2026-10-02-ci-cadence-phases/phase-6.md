@@ -12,10 +12,12 @@ Default-off repair definitions, suite receipt checks and F reporting compatibili
 
 ## Automated acceptance
 
-Read-only native checks bind every workflow to pushed SHA/run ID/attempt and policy fingerprint. Observe 72 hours per repository, at least one due natural nightly full run, complete ordinary-event inventory and current deployed reporting behavior. Collect all attempts, unknown timing/labels and separate activation/release costs. E full-release admission must be backed by existing or newly authorized eligible candidate evidence; a fixture does not prove production admission. G fixtures alone do not prove its native Python/image matrix.
+Read-only native checks bind every workflow to pushed SHA/run ID/attempt and policy fingerprint. Observe 36 elapsed hours per repository, at least one due natural nightly full run, complete ordinary-event inventory and current deployed reporting behavior. Collect all attempts, unknown timing/labels and separate activation/release costs. E full-release admission must be backed by existing or newly authorized eligible candidate evidence; a fixture does not prove production admission. G fixtures alone do not prove its native Python/image matrix.
 
 ## Manual acceptance and recovery
 
 Owner reviews rollout ledger, environment differences and absent evidence before phase acceptance. Native failures preserve logs/results and require local repair plus new specific remote authority. Missing native release cases remain named acceptance gaps until an eligible authorized release supplies evidence. Blocked definitions/rules/variables expose exact missing context and recovery action. Rollback sets legacy first and restores captured development rules under explicit authority; read back full effective rules. Never automatically dispatch a run, retry an attempt, start a VM or alter a cap to get green.
 
-Handoff records actual remote default/integration/production heads, workflows/settings, deployed F identity, receipts/report provenance, observation intervals and explicit gaps. Phase 7 begins after final accepted activation, with seven complete days of read-only observation; phase acceptance does not itself authorize any corrective publication.
+Handoff records actual remote default/integration/production heads, workflows/settings, deployed F identity, receipts/report provenance, observation intervals and explicit gaps. Phase 7 begins after final accepted activation, with at least 84 elapsed hours of read-only observation; phase acceptance does not itself authorize any corrective publication.
+
+Owner revision, 2026-10-03: the observation window is halved. Collect existing natural events read-only; do not dispatch extra runs to fill the shorter window. Weekly refresh and coverage deadlines remain unchanged; unobserved weekly or release behavior remains an explicit evidence gap.

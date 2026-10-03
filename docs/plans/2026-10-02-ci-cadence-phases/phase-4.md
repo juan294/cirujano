@@ -16,13 +16,13 @@ Before the first candidate push, explicitly authorized activation pauses each ex
 2. For B, prepare the separately authorized develop-to-main release PR and obtain actual successful Release artifact smoke for its exact candidate. With explicit settings authority, replace only main's old Preview context with the proven new context BEFORE merging this installation PR; otherwise the unavailable Preview gate deadlocks publication. Preserve all other main gates. Then complete authorized default-main release publication and verify nightly/repair definitions. Other required default-branch publications also use their documented release paths. No manual/schedule success impersonates a required PR test.
 3. Confirm `CI Fast` exists and succeeded for the exact supported native candidate. Add it to development requirements, read back effective protection, remove only obsolete development full contexts, then set `CI_CADENCE_MODE=lean`. Preserve A/C production full requirements and B's remaining full gates. Verify repair stays default-off before natural validation events.
 4. Observe the next already-authorized natural integration event/nightly/release. Assert complete context inventory, lane reason, child outcomes, pinned SHA, receipt and coverage provenance. No synthetic push, dispatch, failed-test commit or live paid probe for demonstration without separate authorization.
-5. Observe 72 hours including at least one natural full nightly per active repository and all weekly-definition guards. Check zero unexpected ordinary full jobs, no Preview/repair publication and correct F health. A quiet repo without a due run remains pending native validation, not accepted based on local fixtures.
+5. Observe 36 elapsed hours including at least one natural full nightly per active repository and all weekly-definition guards. Check zero unexpected ordinary full jobs, no Preview/repair publication and correct F health. A quiet repo without a due run remains pending native validation, not accepted based on local fixtures.
 
 ## Automated and manual acceptance
 
 Read-only GitHub collection verifies exact pushed SHA and every expected workflow, app-bound required context, mode and immutable source/definition receipt. Deployed consumer readback verifies actual measured date/SHA plus pending/deadline, not stale relabeling. Run the cost tool on all attempts during observation; capture queued/unknown/timing gaps and activation minutes separately. Preserve real release gates and post-deployment behavior under native evidence.
 
-Owner reviews candidate-bound first-wave evidence, production smoke replacement/platform gap and 72-hour outcome. Agent executes authorized operations. Record any absent natural release evidence as an activation acceptance gap; do not fabricate a release or claim full rollout validated. Later eligible release evidence can close it under separate release authority.
+Owner reviews candidate-bound first-wave evidence, production smoke replacement/platform gap and 36-hour outcome. Agent executes authorized operations. Record any absent natural release evidence as an activation acceptance gap; do not fabricate a release or claim full rollout validated. Later eligible release evidence can close it under separate release authority.
 
 ## Stuck states and rollback
 
@@ -31,3 +31,5 @@ Native failure: keep failed result and logs, reproduce/fix locally, complete all
 Missing context/default definition, unavailable runner, budget stop, failed smoke or incompatible deployed consumer leaves repo on legacy and ledger names the blocker and recovery. Local fixtures prove staged rollback and blocked→available context recovery; read-only native readback proves actual state. Never restore unavailable self-hosted placement or start a VM as automatic recovery.
 
 Handoff includes authorized operation list, resulting remote heads/blobs/rules, run IDs/attempts, deployed identity, cost window, failures and excluded evidence. Phase 5 requires accepted first-wave evidence; no later publication authority is implied.
+
+Owner revision, 2026-10-03: the observation window is halved. Collect existing natural events read-only; do not dispatch extra runs to fill the shorter window. Weekly refresh and coverage deadlines remain unchanged; unobserved weekly or release behavior remains an explicit evidence gap.
