@@ -11,12 +11,13 @@ it('builds a standalone ESM CLI that starts without repository dependencies', as
   for (const dependency of ['core', 'runner']) {
     const dependencyBuild = spawnSync('pnpm', ['run', 'build'], {
       cwd: fileURLToPath(new URL(`../../${dependency}/`, import.meta.url)),
-      env: { PATH: process.env.PATH ?? '' },
+      // A test must never let pnpm's pre-run dependency check reinstall the workspace.
+      env: { PATH: process.env.PATH ?? '', pnpm_config_verify_deps_before_run: 'false' },
       encoding: 'utf8',
       timeout: 30_000,
     });
     expect(dependencyBuild.error).toBeUndefined();
-    expect(dependencyBuild.status, dependencyBuild.stderr).toBe(0);
+    expect(dependencyBuild.status, `${dependency} build stdout:\n${dependencyBuild.stdout}\nstderr:\n${dependencyBuild.stderr}`).toBe(0);
   }
   const build = spawnSync(process.execPath, ['scripts/bundle.mjs'], {
     cwd: packageRoot,
@@ -25,7 +26,7 @@ it('builds a standalone ESM CLI that starts without repository dependencies', as
     timeout: 30_000,
   });
   expect(build.error).toBeUndefined();
-  expect(build.status, build.stderr).toBe(0);
+  expect(build.status, `bundle stdout:\n${build.stdout}\nstderr:\n${build.stderr}`).toBe(0);
 
   const directory = await mkdtemp(join(tmpdir(), 'cirujano-standalone-cli-'));
   try {
