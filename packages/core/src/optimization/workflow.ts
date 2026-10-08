@@ -4,7 +4,7 @@ import { decodeProvenance, decodeActionReceipt } from './contracts.js';
 import type { ActionReceipt, CacheOperation, Provenance } from './contracts.js';
 export interface WorkflowEvidence { provenance: Provenance; receipt: ActionReceipt; rootLockfile: boolean; timedBaseline: boolean; requiredChecks: string[]; verificationProfilePresent: boolean }
 export interface WorkflowEligibility { status: 'eligible' | 'no-change' | 'unsupported'; reason: string; operations: CacheOperation[]; protectedDigest: string | null; structuralFacts: Record<string,string|number|boolean> }
-function record(value:unknown): Record<string,unknown> { if (!value || typeof value!=='object' || Array.isArray(value)) throw new OptimizationInputError('Expected YAML mapping'); return value as Record<string,unknown>; }
+export function record(value:unknown): Record<string,unknown> { if (!value || typeof value!=='object' || Array.isArray(value)) throw new OptimizationInputError('Expected YAML mapping'); return value as Record<string,unknown>; }
 function parse(source:string): Record<string,unknown> {
   if (Buffer.byteLength(source)>256*1024) throw new OptimizationInputError('yaml-size');
   const documents=parseAllDocuments(source,{version:'1.2',uniqueKeys:true,strict:true,keepSourceTokens:true});
@@ -27,7 +27,7 @@ export function protectedWorkflowDigest(source:string,jobId:string,stepIndex:num
   delete inputs.cache;delete inputs['cache-dependency-path'];
   return jsonDigest(workflow);
 }
-function allStrings(value:unknown):string[] {
+export function allStrings(value:unknown):string[] {
   if (typeof value==='string') return [value]; if (Array.isArray(value)) return value.flatMap(allStrings);
   if (value && typeof value==='object') return Object.values(value).flatMap(allStrings); return [];
 }

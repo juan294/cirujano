@@ -26,32 +26,33 @@ export interface PublicationArtifact extends BaseArtifact<'publication'> { candi
 export interface ReportArtifact extends BaseArtifact<'report'> { candidateSha: string; patchHash: string; proposalDigest: string; sandboxDigest: string; measurementDigest: string; status: 'ready-to-publish' | 'no-improvement' | 'rejected'; markdown: string; markdownHash: string; marker: string; baseRef: string; headRef: string }
 export interface ArtifactMap { input: InputArtifact; diagnosis: DiagnosisArtifact; inference: InferenceArtifact; proposal: ProposalArtifact; sandbox: SandboxArtifact; measurement: MeasurementArtifact; report: ReportArtifact; publication: PublicationArtifact }
 export type ArtifactKind = keyof ArtifactMap;
-type Validator = (value: unknown, path: string) => void;
-function fail(path: string): never { throw new OptimizationInputError(`Invalid optimization field: ${path}`); }
-const text: Validator = (v, p) => { if (typeof v !== 'string' || !v || Buffer.byteLength(v) > 8192 || /[\u0000-\u0008\u000b\u000c\u000e-\u001f]/.test(v)) fail(p); };
-const number: Validator = (v, p) => { if (typeof v !== 'number' || !Number.isFinite(v) || v < 0) fail(p); };
+/** Field validators and shared-stage checks below are also used by the push family (push-contracts.ts). */
+export type Validator = (value: unknown, path: string) => void;
+export function fail(path: string): never { throw new OptimizationInputError(`Invalid optimization field: ${path}`); }
+export const text: Validator = (v, p) => { if (typeof v !== 'string' || !v || Buffer.byteLength(v) > 8192 || /[\u0000-\u0008\u000b\u000c\u000e-\u001f]/.test(v)) fail(p); };
+export const number: Validator = (v, p) => { if (typeof v !== 'number' || !Number.isFinite(v) || v < 0) fail(p); };
 const sourceBytes: Validator = (v,p) => { if (typeof v !== 'string' || Buffer.byteLength(v)>Math.ceil(4*1024*1024/3)*4 || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(v)) fail(p); };
-const integer: Validator = (v, p) => { number(v,p); if (!Number.isSafeInteger(v)) fail(p); };
-const id: Validator = (v,p) => { integer(v,p); if (v === 0) fail(p); };
-const bool: Validator = (v,p) => { if (typeof v !== 'boolean') fail(p); };
-const digest: Validator = (v,p) => { if (typeof v !== 'string' || !/^[a-f0-9]{64}$/.test(v)) fail(p); };
+export const integer: Validator = (v, p) => { number(v,p); if (!Number.isSafeInteger(v)) fail(p); };
+export const id: Validator = (v,p) => { integer(v,p); if (v === 0) fail(p); };
+export const bool: Validator = (v,p) => { if (typeof v !== 'boolean') fail(p); };
+export const digest: Validator = (v,p) => { if (typeof v !== 'string' || !/^[a-f0-9]{64}$/.test(v)) fail(p); };
 const semver: Validator = (v,p) => { if (typeof v !== 'string' || !/^\d+\.\d+\.\d+$/.test(v)) fail(p); };
-const sha: Validator = (v,p) => { if (typeof v !== 'string' || !/^[a-f0-9]{40}$/.test(v)) fail(p); };
-const timestamp: Validator = (v,p) => { if (typeof v !== 'string' || !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{3})?Z$/.test(v) || !Number.isFinite(Date.parse(v)) || new Date(v).toISOString().replace('.000Z','Z') !== v.replace('.000Z','Z')) fail(p); };
-const path: Validator = (v,p) => { text(v,p); safeRelativePath(v as string); };
-const repo: Validator = (v,p) => { if (typeof v !== 'string' || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(v)) fail(p); };
-const literal = (...values: unknown[]): Validator => (v,p) => { if (!values.includes(v)) fail(p); };
-const nullable = (validate: Validator): Validator => (v,p) => { if (v !== null) validate(v,p); };
-const array = (validate: Validator, uniqueKey?: string): Validator => (v,p) => {
+export const sha: Validator = (v,p) => { if (typeof v !== 'string' || !/^[a-f0-9]{40}$/.test(v)) fail(p); };
+export const timestamp: Validator = (v,p) => { if (typeof v !== 'string' || !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{3})?Z$/.test(v) || !Number.isFinite(Date.parse(v)) || new Date(v).toISOString().replace('.000Z','Z') !== v.replace('.000Z','Z')) fail(p); };
+export const path: Validator = (v,p) => { text(v,p); safeRelativePath(v as string); };
+export const repo: Validator = (v,p) => { if (typeof v !== 'string' || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(v)) fail(p); };
+export const literal = (...values: unknown[]): Validator => (v,p) => { if (!values.includes(v)) fail(p); };
+export const nullable = (validate: Validator): Validator => (v,p) => { if (v !== null) validate(v,p); };
+export const array = (validate: Validator, uniqueKey?: string): Validator => (v,p) => {
   if (!Array.isArray(v) || v.length > 10000) fail(p);
   const seen = new Set<string>(); v.forEach((entry,i) => { validate(entry, `${p}[${i}]`); if (uniqueKey !== undefined) { const key = canonicalJson(uniqueKey ? (entry as Record<string, unknown>)[uniqueKey] : entry); if (seen.has(key)) fail(p); seen.add(key); } });
 };
-const object = (fields: Record<string, Validator>): Validator => (v,p) => {
+export const object = (fields: Record<string, Validator>): Validator => (v,p) => {
   if (v === null || typeof v !== 'object' || Array.isArray(v) || Object.keys(v).length !== Object.keys(fields).length) fail(p);
   for (const [key,validator] of Object.entries(fields)) { if (!Object.hasOwn(v,key)) fail(`${p}.${key}`); validator((v as Record<string, unknown>)[key],`${p}.${key}`); }
 };
-const record = (validate: Validator): Validator => (v,p) => { if (v === null || typeof v !== 'object' || Array.isArray(v)) fail(p); for (const [key, entry] of Object.entries(v)) { text(key,p); validate(entry,`${p}.${key}`); } };
-const uniqueStrings = array(text,'');
+export const record = (validate: Validator): Validator => (v,p) => { if (v === null || typeof v !== 'object' || Array.isArray(v)) fail(p); for (const [key, entry] of Object.entries(v)) { text(key,p); validate(entry,`${p}.${key}`); } };
+export const uniqueStrings = array(text,'');
 const provenanceValidator = object({ repositoryId:id, repository:repo, baseSha:sha, workflowBlobSha:sha, workflowPath:path, workflowHash:digest, jobId:text, stepIndex:integer, lockfileHash:digest, sourceTreeDigest:digest, verificationProfileHash:digest, toolSourceSha:sha, bundleDigest:digest });
 const operationValidator = object({ type:literal('enable-pnpm-cache'), jobId:text, stepIndex:integer });
 const profileValidator = object({ schemaVersion:literal(1), commands:array(array(text)), testReportPath:path, coverageReportPath:path, nodeVersion:semver, pnpmVersion:semver, timeoutSeconds:id, sourcePaths:array(path,'') });
@@ -59,16 +60,23 @@ const coverageValidator = object({ path, statements:integer, coveredStatements:i
 const qualityValidator = object({ commandDigest:digest, tests:array(object({ id:text, outcome:literal('passed','failed','skipped') }),'id'), coverage:array(coverageValidator,'path') });
 const baselineValidator = object({ runId:id, attempt:id, jobId:id, headSha:sha, conclusion:literal('success'), startedAt:timestamp, completedAt:timestamp, elapsedMs:number, installStepNumber:id, installElapsedMs:number, runnerLabels:uniqueStrings, runnerImage:nullable(text), requiredChecks:uniqueStrings });
 const sampleValidator = object({ role:literal('base','candidate'), runId:id, attempt:id, jobId:id, headSha:sha, startedAt:timestamp, completedAt:timestamp, elapsedMs:number, roundedMinutes:integer, queueMs:number, endToEndMs:number, conclusion:literal('success','failure','cancelled','skipped'), runnerOs:text, runnerArchitecture:text, runnerImage:text, nodeVersion:text, pnpmVersion:text, workflowContractDigest:digest, sourceTreeDigest:digest, lockfileHash:digest, requiredChecks:array(object({ name:text, conclusion:text }),'name'), cacheObservation:literal('cold','hit','miss','not-applicable','unknown'), quality:qualityValidator });
-const candidate = { candidateSha:sha, patchHash:digest };
+export const candidate = { candidateSha:sha, patchHash:digest };
+export const structuralFacts = record((v,p) => { if (v !== null && typeof v !== 'boolean' && typeof v !== 'string' && typeof v !== 'number') fail(p); if (typeof v === 'number') number(v,p); if (typeof v === 'string') text(v,p); });
+export const imageValidator = object({ uuid:text, digest, recipeHash:digest, manifestHash:digest });
+export const sandboxOperation = (role: Validator): Validator => object({ id:text, status:literal('PENDING','ASSIGNED','EXECUTING','SUCCESS','FAILED','CANCELLED'), role, exitCode:nullable(integer), signal:nullable(text), timedOut:bool, truncated:bool });
+export const usageValidator = nullable(object({ value:number, unit:text, currency:nullable(text) }));
+export const inferenceFields = { requestedModel:text, returnedModel:nullable(text), endpointHost:text, completionId:nullable(text), requestHash:digest, responseHash:nullable(digest), startedAt:timestamp, completedAt:timestamp, latencyMs:number, finishReason:nullable(text), usage:nullable(object({ promptTokens:integer, completionTokens:integer, totalTokens:integer })), quoteIdentity:nullable(text), costStatus:literal('known','unavailable','unknown'), cost:nullable(object({ amount:number, currency:text })), status:literal('completed','not-run','failed','outcome-unknown') };
+export const reportFields = { ...candidate, proposalDigest:digest, sandboxDigest:digest, measurementDigest:digest, status:literal('ready-to-publish','no-improvement','rejected'), markdown:text, markdownHash:digest, marker:text, baseRef:text, headRef:text };
+export const publicationFields = { ...candidate, reportHash:digest, authorizationDigest:digest, repository:repo, baseRef:text, headRef:text, baseSha:sha, headSha:sha, marker:text, status:literal('published','outcome-unknown','rejected'), number:nullable(id), url:nullable(text) };
 const validators: Record<ArtifactKind, Validator> = {
-  input: object({ schemaVersion:literal(1), kind:literal('input'), provenance:provenanceValidator, status:literal('collected','no-change','unsupported'), baselines:array(baselineValidator), structuralFacts:record((v,p) => { if (v !== null && typeof v !== 'boolean' && typeof v !== 'string' && typeof v !== 'number') fail(p); if (typeof v === 'number') number(v,p); if (typeof v === 'string') text(v,p); }), evidence:record(text), operations:array(operationValidator), requiredChecks:uniqueStrings }),
+  input: object({ schemaVersion:literal(1), kind:literal('input'), provenance:provenanceValidator, status:literal('collected','no-change','unsupported'), baselines:array(baselineValidator), structuralFacts, evidence:record(text), operations:array(operationValidator), requiredChecks:uniqueStrings }),
   diagnosis: object({ schemaVersion:literal(1), kind:literal('diagnosis'), provenance:provenanceValidator, status:literal('proposal','abstain'), reason:text, uncertainty:text, evidenceIds:uniqueStrings, operation:nullable(operationValidator), promptVersion:text, schemaVersionId:text, inferenceReceiptDigest:digest }),
-  inference: object({ schemaVersion:literal(1), kind:literal('inference'), provenance:provenanceValidator, requestedModel:text, returnedModel:nullable(text), endpointHost:text, completionId:nullable(text), requestHash:digest, responseHash:nullable(digest), startedAt:timestamp, completedAt:timestamp, latencyMs:number, finishReason:nullable(text), usage:nullable(object({ promptTokens:integer, completionTokens:integer, totalTokens:integer })), quoteIdentity:nullable(text), costStatus:literal('known','unavailable','unknown'), cost:nullable(object({ amount:number, currency:text })), status:literal('completed','not-run','failed','outcome-unknown') }),
+  inference: object({ schemaVersion:literal(1), kind:literal('inference'), provenance:provenanceValidator, ...inferenceFields }),
   proposal: object({ schemaVersion:literal(1), kind:literal('proposal'), provenance:provenanceValidator, ...candidate, candidateSha:nullable(sha), candidateWorkflowHash:digest, status:literal('proposed','no-change','rejected'), operation:operationValidator, beforeStructuralDigest:digest, afterStructuralDigest:digest, permittedDiff:object({ cache:literal('pnpm'), cacheDependencyPath:literal('pnpm-lock.yaml') }), preconditions:uniqueStrings, verificationProfile:profileValidator, diagnosisDigest:digest }),
-  sandbox: object({ schemaVersion:literal(1), kind:literal('sandbox'), provenance:provenanceValidator, ...candidate, proposalDigest:digest, status:literal('sandbox-verified','failed','outcome-unknown'), image:object({ uuid:text, digest, recipeHash:digest, manifestHash:digest }), operations:array(object({ id:text, status:literal('PENDING','ASSIGNED','EXECUTING','SUCCESS','FAILED','CANCELLED'), role:literal('base','candidate'), exitCode:nullable(integer), signal:nullable(text), timedOut:bool, truncated:bool }),'id'), networkEnabled:literal(false), baseQuality:nullable(qualityValidator), candidateQuality:nullable(qualityValidator), startedAt:timestamp, completedAt:nullable(timestamp), elapsedMs:nullable(number), usage:nullable(object({ value:number, unit:text, currency:nullable(text) })), truncated:bool, cleanupState:literal('disposable-confirmed','pending','unknown'), retainedImage:literal(true) }),
+  sandbox: object({ schemaVersion:literal(1), kind:literal('sandbox'), provenance:provenanceValidator, ...candidate, proposalDigest:digest, status:literal('sandbox-verified','failed','outcome-unknown'), image:imageValidator, operations:array(sandboxOperation(literal('base','candidate')),'id'), networkEnabled:literal(false), baseQuality:nullable(qualityValidator), candidateQuality:nullable(qualityValidator), startedAt:timestamp, completedAt:nullable(timestamp), elapsedMs:nullable(number), usage:usageValidator, truncated:bool, cleanupState:literal('disposable-confirmed','pending','unknown'), retainedImage:literal(true) }),
   measurement: object({ schemaVersion:literal(1), kind:literal('measurement'), provenance:provenanceValidator, ...candidate, proposalDigest:digest, sandboxDigest:digest, cohortDigest:digest, status:literal('measured-improvement','no-improvement','rejected'), samples:array(sampleValidator), baselineMinutes:integer, candidateMinutes:integer, baselineMedianMs:number, candidateMedianMs:number, maximumQueueMs:number, maximumEndToEndMs:number, limits:uniqueStrings, claimLevel:literal('sample-execution-only','none'), githubListSavingUsd:number }),
-  report: object({ schemaVersion:literal(1), kind:literal('report'), provenance:provenanceValidator, ...candidate, proposalDigest:digest, sandboxDigest:digest, measurementDigest:digest, status:literal('ready-to-publish','no-improvement','rejected'), markdown:text, markdownHash:digest, marker:text, baseRef:text, headRef:text }),
-  publication: object({ schemaVersion:literal(1), kind:literal('publication'), provenance:provenanceValidator, ...candidate, reportHash:digest, authorizationDigest:digest, repository:repo, baseRef:text, headRef:text, baseSha:sha, headSha:sha, marker:text, status:literal('published','outcome-unknown','rejected'), number:nullable(id), url:nullable(text) }),
+  report: object({ schemaVersion:literal(1), kind:literal('report'), provenance:provenanceValidator, ...reportFields }),
+  publication: object({ schemaVersion:literal(1), kind:literal('publication'), provenance:provenanceValidator, ...publicationFields }),
 };
 export function decodeProvenance(value: unknown): Provenance { canonicalJson(value); provenanceValidator(value,'provenance'); return value as Provenance; }
 export function decodeVerificationProfile(value: unknown): VerificationProfile { canonicalJson(value); profileValidator(value,'profile'); const profile = value as VerificationProfile; if (!profile.commands.length || profile.commands.some(command => !command.length) || profile.timeoutSeconds > 600) fail('profile.commands/timeout'); return profile; }
@@ -77,34 +85,38 @@ export function decodeArtifact<K extends ArtifactKind>(kind: K, value: unknown):
   canonicalJson(value); validators[kind](value,kind); const artifact = value as ArtifactMap[K];
   if ('operation' in artifact && artifact.operation !== null && (artifact.operation.jobId !== artifact.provenance.jobId || artifact.operation.stepIndex !== artifact.provenance.stepIndex)) fail(`${kind}.operation.target`);
   if (artifact.kind === 'diagnosis' && ((artifact.status === 'proposal') !== (artifact.operation !== null) || (artifact.status === 'proposal' && !artifact.evidenceIds.length))) fail('diagnosis.operation/status');
-  if (artifact.kind === 'inference' && artifact.usage !== null && artifact.usage.totalTokens !== artifact.usage.promptTokens + artifact.usage.completionTokens) fail('inference.usage.totalTokens');
-  if (artifact.kind === 'inference' && (artifact.costStatus === 'known') !== (artifact.cost !== null)) fail('inference.costStatus');
+  if (artifact.kind === 'inference') checkInference(artifact);
   if (artifact.kind === 'proposal') decodeVerificationProfile(artifact.verificationProfile);
   if (artifact.kind === 'sandbox') { if (artifact.baseQuality) decodeQualityEvidence(artifact.baseQuality); if (artifact.candidateQuality) decodeQualityEvidence(artifact.candidateQuality); if (artifact.status === 'sandbox-verified' && (!artifact.baseQuality || !artifact.candidateQuality || artifact.truncated || artifact.cleanupState !== 'disposable-confirmed' || artifact.operations.length !== 2 || artifact.operations.some(op => op.status !== 'SUCCESS' || op.exitCode !== 0 || op.signal || op.timedOut || op.truncated))) fail('sandbox.verified'); }
   if (artifact.kind === 'measurement') artifact.samples.forEach(sample => decodeQualityEvidence(sample.quality));
-  if (artifact.kind === 'publication' && artifact.status === 'published' && (!artifact.number || artifact.url !== `https://github.com/${artifact.repository}/pull/${artifact.number}`)) fail('publication.readback');
+  if (artifact.kind === 'publication') checkPublication(artifact);
   if (artifact.kind === 'input') {
     if (artifact.operations.some(operation=>operation.jobId!==artifact.provenance.jobId||operation.stepIndex!==artifact.provenance.stepIndex)) fail('input.operation.target');
     if (artifact.status==='collected' && (!artifact.baselines.length || !artifact.requiredChecks.length || !Object.keys(artifact.evidence).length || artifact.operations.length!==1 || artifact.baselines.some(baseline=>!baseline.requiredChecks.length||baseline.requiredChecks.some(check=>!artifact.requiredChecks.includes(check))))) fail('input.collected.prerequisites');
     const attempts=new Set<string>();
     for (const baseline of artifact.baselines) { validateTiming(baseline.startedAt,baseline.completedAt,baseline.elapsedMs); if (baseline.headSha!==artifact.provenance.baseSha || baseline.installElapsedMs>baseline.elapsedMs) fail('input.baseline.identity'); const key=`${baseline.runId}:${baseline.attempt}:${baseline.jobId}`; if (attempts.has(key)) fail('input.baseline.duplicate'); attempts.add(key); }
   }
-  if (artifact.kind === 'inference') {
-    validateTiming(artifact.startedAt,artifact.completedAt,artifact.latencyMs);
-    if (artifact.status==='completed' && (!artifact.requestedModel.startsWith('nvidia/') || artifact.returnedModel!==artifact.requestedModel || artifact.finishReason!=='stop' || !artifact.responseHash || !artifact.completionId || !['api.tokenfactory.nebius.com'].includes(artifact.endpointHost))) fail('inference.completed.identity');
-  }
   if (artifact.kind === 'sandbox' && artifact.status==='sandbox-verified') {
     if (!artifact.completedAt || artifact.elapsedMs===null || artifact.operations.filter(op=>op.role==='base').length!==1 || artifact.operations.filter(op=>op.role==='candidate').length!==1 || !artifact.baseQuality?.tests.length || !artifact.candidateQuality?.tests.length || !artifact.baseQuality.coverage.length || !artifact.candidateQuality.coverage.length) fail('sandbox.verified.pair');
     validateTiming(artifact.startedAt,artifact.completedAt,artifact.elapsedMs);
   }
   if (artifact.kind === 'measurement') { const attempts=new Set<string>(); for (const sample of artifact.samples) { validateTiming(sample.startedAt,sample.completedAt,sample.elapsedMs); const key=`${sample.runId}:${sample.attempt}:${sample.jobId}`; if (attempts.has(key)) fail('measurement.duplicate'); attempts.add(key); } }
-  if (artifact.kind === 'report' && sha256(artifact.markdown)!==artifact.markdownHash) fail('report.markdownHash');
+  if (artifact.kind === 'report') checkReport(artifact);
   return artifact;
 }
 export function assertSameProvenance(left: Provenance, right: Provenance): void { if (canonicalJson(decodeProvenance(left)) !== canonicalJson(decodeProvenance(right))) throw new OptimizationInputError('Immutable provenance drift; recollect input'); }
 export function validateDiagnosisEvidence(diagnosis: DiagnosisArtifact, input: InputArtifact): void { assertSameProvenance(diagnosis.provenance,input.provenance); if (diagnosis.evidenceIds.some(id => !Object.hasOwn(input.evidence,id))) fail('diagnosis.evidenceIds.unknown'); if (diagnosis.operation && !input.operations.some(operation => canonicalJson(operation) === canonicalJson(diagnosis.operation))) fail('diagnosis.operation.unsupported'); }
 
-function validateTiming(startedAt:string,completedAt:string,elapsedMs:number):void { if (Date.parse(completedAt)-Date.parse(startedAt)!==elapsedMs) fail('timing.elapsedMs'); }
+export function validateTiming(startedAt:string,completedAt:string,elapsedMs:number):void { if (Date.parse(completedAt)-Date.parse(startedAt)!==elapsedMs) fail('timing.elapsedMs'); }
+type Shared<T> = Omit<T,'provenance'>;
+export function checkInference(artifact:Shared<InferenceArtifact>):void {
+  if (artifact.usage !== null && artifact.usage.totalTokens !== artifact.usage.promptTokens + artifact.usage.completionTokens) fail('inference.usage.totalTokens');
+  if ((artifact.costStatus === 'known') !== (artifact.cost !== null)) fail('inference.costStatus');
+  validateTiming(artifact.startedAt,artifact.completedAt,artifact.latencyMs);
+  if (artifact.status==='completed' && (!artifact.requestedModel.startsWith('nvidia/') || artifact.returnedModel!==artifact.requestedModel || artifact.finishReason!=='stop' || !artifact.responseHash || !artifact.completionId || !['api.tokenfactory.nebius.com'].includes(artifact.endpointHost))) fail('inference.completed.identity');
+}
+export function checkPublication(artifact:Shared<PublicationArtifact>):void { if (artifact.status === 'published' && (!artifact.number || artifact.url !== `https://github.com/${artifact.repository}/pull/${artifact.number}`)) fail('publication.readback'); }
+export function checkReport(artifact:Shared<ReportArtifact>):void { if (sha256(artifact.markdown)!==artifact.markdownHash) fail('report.markdownHash'); }
 export function decodeActionReceipt(value:unknown):ActionReceipt {
   canonicalJson(value); object({repository:literal('actions/setup-node'),commitSha:sha,releaseTag:literal('v7.0.0'),releaseId:id,immutable:literal(true),actionHash:digest,inputs:uniqueStrings,outputs:uniqueStrings,retrievedAt:timestamp})(value,'actionReceipt');
   const receipt=value as ActionReceipt;

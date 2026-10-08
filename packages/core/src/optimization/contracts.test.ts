@@ -24,25 +24,10 @@ describe('strict artifact provenance', () => {
   });
 });
 
-import type { ArtifactMap, VerificationProfile } from './contracts.js';
+import type { ArtifactMap } from './contracts.js';
 import { decodeQualityEvidence, decodeVerificationProfile, validateDiagnosisEvidence } from './contracts.js';
 import { sha256 } from './canonical.js';
-const timestamp='2026-09-29T00:00:00Z';
-const profile:VerificationProfile={ schemaVersion:1, commands:[['pnpm','test']],testReportPath:'test.json',coverageReportPath:'coverage.json',nodeVersion:'22.20.0',pnpmVersion:'10.11.0',timeoutSeconds:600,sourcePaths:['package.json','pnpm-lock.yaml','src/a.ts'] };
-const quality={ commandDigest:'a'.repeat(64),tests:[{id:'suite:case',outcome:'passed' as const}],coverage:[{path:'src/a.ts',statements:1,coveredStatements:1,branches:0,coveredBranches:0,functions:1,coveredFunctions:1,lines:1,coveredLines:1}] };
-const baseline={runId:1,attempt:1,jobId:1,headSha:provenance.baseSha,conclusion:'success' as const,startedAt:timestamp,completedAt:timestamp,elapsedMs:0,installStepNumber:4,installElapsedMs:0,runnerLabels:['ubuntu-24.04'],runnerImage:'ubuntu24-20260929',requiredChecks:['test']};
-const input={schemaVersion:1 as const,kind:'input' as const,provenance,status:'collected' as const,baselines:[baseline],structuralFacts:{nodeVersion:'22.20.0'},evidence:{'install:1':'install timing'},operations:[{type:'enable-pnpm-cache' as const,jobId:'test',stepIndex:2}],requiredChecks:['test']};
-const candidate={candidateSha:'4'.repeat(40),patchHash:'5'.repeat(64)};
-const artifacts:ArtifactMap={
-  input,
-  diagnosis:{schemaVersion:1,kind:'diagnosis',provenance,status:'proposal',reason:'cache install',uncertainty:'sample only',evidenceIds:['install:1'],operation:input.operations[0]!,promptVersion:'1',schemaVersionId:'1',inferenceReceiptDigest:'3'.repeat(64)},
-  inference:{schemaVersion:1,kind:'inference',provenance,requestedModel:'nvidia/nvidia-nemotron-3-nano-30b-a3b',returnedModel:'nvidia/nvidia-nemotron-3-nano-30b-a3b',endpointHost:'api.tokenfactory.nebius.com',completionId:'completion-1',requestHash:'1'.repeat(64),responseHash:'2'.repeat(64),startedAt:timestamp,completedAt:timestamp,latencyMs:0,finishReason:'stop',usage:{promptTokens:2,completionTokens:3,totalTokens:5},quoteIdentity:null,costStatus:'unavailable',cost:null,status:'completed'},
-  proposal:{schemaVersion:1,kind:'proposal',provenance,...candidate,candidateWorkflowHash:'6'.repeat(64),status:'proposed',operation:input.operations[0]!,beforeStructuralDigest:'1'.repeat(64),afterStructuralDigest:'1'.repeat(64),permittedDiff:{cache:'pnpm',cacheDependencyPath:'pnpm-lock.yaml'},preconditions:['root lockfile'],verificationProfile:profile,diagnosisDigest:'2'.repeat(64)},
-  sandbox:{schemaVersion:1,kind:'sandbox',provenance,...candidate,proposalDigest:'1'.repeat(64),status:'sandbox-verified',image:{uuid:'01234567-89ab-cdef-0123-456789abcdef',digest:'1'.repeat(64),recipeHash:'2'.repeat(64),manifestHash:'3'.repeat(64)},operations:[{id:'base-1',status:'SUCCESS',role:'base',exitCode:0,signal:null,timedOut:false,truncated:false},{id:'candidate-1',status:'SUCCESS',role:'candidate',exitCode:0,signal:null,timedOut:false,truncated:false}],networkEnabled:false,baseQuality:quality,candidateQuality:quality,startedAt:timestamp,completedAt:timestamp,elapsedMs:0,usage:null,truncated:false,cleanupState:'disposable-confirmed',retainedImage:true},
-  measurement:{schemaVersion:1,kind:'measurement',provenance,...candidate,proposalDigest:'1'.repeat(64),sandboxDigest:'2'.repeat(64),cohortDigest:'3'.repeat(64),status:'no-improvement',samples:[],baselineMinutes:0,candidateMinutes:0,baselineMedianMs:0,candidateMedianMs:0,maximumQueueMs:0,maximumEndToEndMs:0,limits:['no live samples'],claimLevel:'none',githubListSavingUsd:0},
-  report:{schemaVersion:1,kind:'report',provenance,...candidate,proposalDigest:'1'.repeat(64),sandboxDigest:'2'.repeat(64),measurementDigest:'3'.repeat(64),status:'no-improvement',markdown:'No improvement',markdownHash:sha256('No improvement'),marker:'cirujano-1',baseRef:'develop',headRef:'candidate'},
-  publication:{schemaVersion:1,kind:'publication',provenance,...candidate,reportHash:'1'.repeat(64),authorizationDigest:'2'.repeat(64),repository:provenance.repository,baseRef:'develop',headRef:'candidate',baseSha:provenance.baseSha,headSha:candidate.candidateSha,marker:'cirujano-1',status:'published',number:1,url:'https://github.com/public-example/benchmark/pull/1'},
-};
+import { profile, quality, baseline, input, artifacts } from './contracts.test-helper.js';
 describe('all-stage decoders and recovery boundaries',()=>{
   for (const kind of Object.keys(artifacts) as (keyof ArtifactMap)[]) {
     it(`decodes complete ${kind} and rejects extras/missing/version drift`,()=>{

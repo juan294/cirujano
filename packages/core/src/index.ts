@@ -59,6 +59,30 @@ export type {
   TestOutcome,
   VerificationProfile,
 } from './optimization/contracts.js';
+export {
+  artifactFamily,
+  assertSamePushProvenance,
+  decodeFamilyArtifact,
+  decodePushArtifact,
+  decodePushProvenance,
+  validatePushDiagnosisEvidence,
+} from './optimization/push-contracts.js';
+export type {
+  OptimizationFamily,
+  PushArtifactMap,
+  PushDiagnosisArtifact,
+  PushHistoryEntry,
+  PushInputArtifact,
+  PushMeasurementArtifact,
+  PushMeasurementSample,
+  PushOperation,
+  PushProposalArtifact,
+  PushProvenance,
+  PushSandboxArtifact,
+} from './optimization/push-contracts.js';
+export { CLASSIFIER_JOB_ID } from './optimization/push-guard.js';
+export { inspectPushWorkflow } from './optimization/push-workflow.js';
+export type { PushWorkflowEligibility, PushWorkflowEvidence } from './optimization/push-workflow.js';
 export { inspectWorkflow, parseWorkflowSource, protectedWorkflowDigest } from './optimization/workflow.js';
 export type { WorkflowEligibility, WorkflowEvidence } from './optimization/workflow.js';
 export { createPnpmCachePatch, validateCacheOnlyChange } from './optimization/patch.js';

@@ -1,0 +1,207 @@
+{
+  "cases": [
+    {
+      "name": "eligible-multi-job",
+      "file": "eligible-multi-job.yml",
+      "status": "eligible",
+      "reason": "eligible",
+      "branch": "main",
+      "guardedJobIds": [
+        "build",
+        "lint",
+        "test"
+      ],
+      "inventory": [
+        "inventory/unrelated-consumer.yml"
+      ]
+    },
+    {
+      "name": "eligible-matrix",
+      "file": "eligible-matrix.yml",
+      "status": "eligible",
+      "reason": "eligible",
+      "branch": "develop",
+      "guardedJobIds": [
+        "test"
+      ]
+    },
+    {
+      "name": "already-guarded",
+      "file": "already-guarded.yml",
+      "status": "no-change",
+      "reason": "already-guarded",
+      "branch": "main"
+    },
+    {
+      "name": "yaml-alias",
+      "file": "yaml-alias.yml",
+      "status": "unsupported",
+      "reason": "yaml-alias",
+      "branch": "main"
+    },
+    {
+      "name": "event-list",
+      "file": "event-list.yml",
+      "status": "unsupported",
+      "reason": "branch-filter-missing",
+      "branch": "main"
+    },
+    {
+      "name": "pull-request-unfiltered",
+      "file": "pull-request-unfiltered.yml",
+      "status": "unsupported",
+      "reason": "branch-filter-missing",
+      "branch": "main"
+    },
+    {
+      "name": "branch-ignore",
+      "file": "branch-ignore.yml",
+      "status": "unsupported",
+      "reason": "branch-ignore",
+      "branch": "main"
+    },
+    {
+      "name": "branch-glob",
+      "file": "branch-glob.yml",
+      "status": "unsupported",
+      "reason": "branch-glob",
+      "branch": "main"
+    },
+    {
+      "name": "multiple-branches",
+      "file": "multiple-branches.yml",
+      "status": "unsupported",
+      "reason": "multiple-branches",
+      "branch": "main"
+    },
+    {
+      "name": "branch-mismatch",
+      "file": "branch-mismatch.yml",
+      "status": "unsupported",
+      "reason": "branch-mismatch",
+      "branch": "main"
+    },
+    {
+      "name": "collected-branch-mismatch",
+      "file": "eligible-multi-job.yml",
+      "status": "unsupported",
+      "reason": "branch-mismatch",
+      "branch": "develop"
+    },
+    {
+      "name": "pull-request-target",
+      "file": "pull-request-target.yml",
+      "status": "unsupported",
+      "reason": "pull-request-target",
+      "branch": "main"
+    },
+    {
+      "name": "workflow-run-consumer",
+      "file": "eligible-multi-job.yml",
+      "status": "unsupported",
+      "reason": "workflow-run-consumer",
+      "branch": "main",
+      "inventory": [
+        "inventory/consumer.yml"
+      ]
+    },
+    {
+      "name": "no-jobs",
+      "file": "no-jobs.yml",
+      "status": "unsupported",
+      "reason": "no-guarded-jobs",
+      "branch": "main"
+    },
+    {
+      "name": "reusable-job",
+      "file": "reusable-job.yml",
+      "status": "unsupported",
+      "reason": "reusable-job",
+      "branch": "main"
+    },
+    {
+      "name": "job-environment",
+      "file": "job-environment.yml",
+      "status": "unsupported",
+      "reason": "job-environment",
+      "branch": "main"
+    },
+    {
+      "name": "write-permissions",
+      "file": "write-permissions.yml",
+      "status": "unsupported",
+      "reason": "permissions-not-read-only",
+      "branch": "main"
+    },
+    {
+      "name": "missing-permissions",
+      "file": "missing-permissions.yml",
+      "status": "unsupported",
+      "reason": "permissions-not-read-only",
+      "branch": "main"
+    },
+    {
+      "name": "secret-reference",
+      "file": "secret-reference.yml",
+      "status": "unsupported",
+      "reason": "secret-reference",
+      "branch": "main"
+    },
+    {
+      "name": "status-function",
+      "file": "status-function.yml",
+      "status": "unsupported",
+      "reason": "status-function-condition",
+      "branch": "main"
+    },
+    {
+      "name": "unparseable-condition",
+      "file": "unparseable-condition.yml",
+      "status": "unsupported",
+      "reason": "unparseable-condition",
+      "branch": "main"
+    },
+    {
+      "name": "event-context",
+      "file": "event-context.yml",
+      "status": "unsupported",
+      "reason": "event-context-reference",
+      "branch": "main"
+    },
+    {
+      "name": "runner-ref-variable",
+      "file": "runner-ref-variable.yml",
+      "status": "unsupported",
+      "reason": "event-context-reference",
+      "branch": "main"
+    },
+    {
+      "name": "job-continue-on-error",
+      "file": "job-continue-on-error.yml",
+      "status": "unsupported",
+      "reason": "job-continue-on-error",
+      "branch": "main"
+    },
+    {
+      "name": "workflow-call",
+      "file": "workflow-call.yml",
+      "status": "unsupported",
+      "reason": "workflow-call",
+      "branch": "main"
+    },
+    {
+      "name": "local-action",
+      "file": "local-action.yml",
+      "status": "unsupported",
+      "reason": "local-action",
+      "branch": "main"
+    },
+    {
+      "name": "pull-request-types",
+      "file": "pull-request-types.yml",
+      "status": "unsupported",
+      "reason": "pull-request-types",
+      "branch": "main"
+    }
+  ]
+}
