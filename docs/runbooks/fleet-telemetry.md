@@ -35,13 +35,25 @@ The default locations are:
 | --- | --- |
 | Daily snapshots | `~/.local/share/cirujano/telemetry/YYYY-MM-DD.json` |
 | Cumulative report | `~/.local/share/cirujano/telemetry/latest.md` |
+| Fleet report (with a registry) | `~/.local/share/cirujano/telemetry/fleet-latest.md` |
 | Standard log | `~/Library/Logs/cirujano/telemetry.log` |
 | Error log | `~/Library/Logs/cirujano/telemetry-error.log` |
 
 The wrapper accepts `CIRUJANO_TELEMETRY_OWNER`,
-`CIRUJANO_TELEMETRY_STORE`, `CIRUJANO_TELEMETRY_SINCE`, and
-`CIRUJANO_TELEMETRY_LOOKBACK_HOURS`. The defaults use the current `gh` account,
-the paths above, a start date of 2026-09-13, and a 48-hour overlap.
+`CIRUJANO_TELEMETRY_STORE`, `CIRUJANO_TELEMETRY_SINCE`,
+`CIRUJANO_TELEMETRY_LOOKBACK_HOURS`, and `CIRUJANO_FLEET_REGISTRY`. The defaults
+use the current `gh` account, the paths above, a start date of 2026-09-13, a
+48-hour overlap, and the registry at `fleet-registry.json` in the store. When
+that registry exists, or `CIRUJANO_FLEET_REGISTRY` names one, the wrapper also
+writes the fleet report; a `CIRUJANO_FLEET_REGISTRY` that names a missing file
+fails every run after `latest.md` is written. A failed report exits non-zero, and the error log names
+the conflicting job key and the fields that differ.
+
+A job seen in several snapshots must match in every field. Two drifts are
+accepted. A retry's `createdAt` can be corrected to the attempt's own time. A
+repository whose visibility changed reprices its old jobs (`visibility` and the
+two cost fields); the report keeps the earliest observation, which records the
+visibility the job ran under.
 
 GitHub lists runs by the workflow run's original creation time. A retry of an
 older run can fall outside that overlap even when its jobs ran today. The

@@ -1,7 +1,7 @@
 import { execFile as execFileCallback, spawn } from 'node:child_process';
-import { chmod, mkdir, mkdtemp, readFile, stat, utimes, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readdir, readFile, stat, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { resolve } from 'node:path';
+import { dirname, resolve } from 'node:path';
 import { promisify } from 'node:util';
 
 import { describe, expect, it } from 'vitest';
@@ -83,6 +83,49 @@ describe('telemetry scheduler', () => {
     expect(separated.stderr).toBe('provider failure\nprovider failure\n');
   });
 
+  it.each([
+    ['the default store registry', false],
+    ['CIRUJANO_FLEET_REGISTRY', true],
+  ])('writes the fleet report with %s (report-with-registry-from-wrapper)', async (_name, explicit) => {
+    const fixture = await wrapperFixture();
+    const registry = explicit ? resolve(fixture.store, 'elsewhere', 'registry.json') : resolve(fixture.store, 'fleet-registry.json');
+    await mkdir(dirname(registry), { recursive: true });
+    await writeFile(registry, '{}');
+
+    await execFile(fixture.script, { env: { ...fixture.env, ...(explicit ? { CIRUJANO_FLEET_REGISTRY: registry } : {}) } });
+
+    expect(await fixture.reports()).toEqual([
+      '--store STORE --since 2026-09-13 --format markdown',
+      `--store STORE --since 2026-09-13 --format markdown --registry ${registry.replace(fixture.store, 'STORE')}`,
+    ]);
+    await expect(readFile(resolve(fixture.store, 'latest.md'), 'utf8')).resolves.toBe('# plain\n');
+    await expect(readFile(resolve(fixture.store, 'fleet-latest.md'), 'utf8')).resolves.toBe('# fleet\n');
+  });
+
+  it('writes only the cumulative report when no fleet registry exists', async () => {
+    const fixture = await wrapperFixture();
+
+    await execFile(fixture.script, { env: fixture.env });
+
+    expect(await fixture.reports()).toEqual(['--store STORE --since 2026-09-13 --format markdown']);
+    await expect(readFile(resolve(fixture.store, 'latest.md'), 'utf8')).resolves.toBe('# plain\n');
+    await expect(stat(resolve(fixture.store, 'fleet-latest.md'))).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('exits non-zero and names the failing key when the fleet report fails', async () => {
+    const fixture = await wrapperFixture();
+    await writeFile(resolve(fixture.store, 'fleet-registry.json'), '{}');
+    await writeFile(resolve(fixture.store, 'fleet-latest.md'), 'old fleet\n');
+
+    const failure = await execFile(fixture.script, { env: { ...fixture.env, MOCK_FAIL_FLEET: '1' } })
+      .then(() => undefined, (error: unknown) => error as { code: number; stderr: string });
+
+    expect(failure).toMatchObject({ code: 1, stderr: expect.stringContaining('conflicting duplicate telemetry job juan294/app:1:1:1 (conclusion)') });
+    await expect(readFile(resolve(fixture.store, 'latest.md'), 'utf8')).resolves.toBe('# plain\n');
+    await expect(readFile(resolve(fixture.store, 'fleet-latest.md'), 'utf8')).resolves.toBe('old fleet\n');
+    expect((await readdir(fixture.store)).filter((name) => name.endsWith('.tmp'))).toEqual([]);
+  });
+
   macIt('installs one stable private bundle and verifies fresh evidence', async () => {
     const fixture = await installerFixture();
     const result = await execFile(resolve(root, 'scripts/install-telemetry-agent.sh'), { env: fixture.env, timeout: 10_000 });
@@ -118,6 +161,43 @@ describe('telemetry scheduler', () => {
     } catch {}
   });
 });
+
+/** Runs the wrapper inside its lock against a fixture store with a mock CLI that records each report call. */
+async function wrapperFixture() {
+  const store = await mkdtemp(resolve(tmpdir(), 'cirujano-telemetry-wrapper-'));
+  const mockCli = resolve(store, 'mock-cli.mjs');
+  const calls = resolve(store, 'calls.log');
+  await writeFile(mockCli, `
+    import { appendFileSync } from 'node:fs';
+    const args = process.argv.slice(2);
+    if (args[1] === 'report') {
+      appendFileSync(process.env.MOCK_CALLS, args.slice(2).join(' ') + '\\n');
+      if (args.includes('--registry')) {
+        if (process.env.MOCK_FAIL_FLEET === '1') {
+          process.stderr.write('telemetry report failed: conflicting duplicate telemetry job juan294/app:1:1:1 (conclusion)\\n');
+          process.exit(1);
+        }
+        process.stdout.write('# fleet\\n');
+      } else process.stdout.write('# plain\\n');
+    }
+  `);
+  return {
+    store,
+    script: resolve(root, 'scripts/collect-actions-telemetry.sh'),
+    env: {
+      ...process.env,
+      CIRUJANO_CLI_PATH: mockCli,
+      CIRUJANO_TELEMETRY_LOCKED: '1',
+      CIRUJANO_TELEMETRY_OWNER: 'juan294',
+      CIRUJANO_TELEMETRY_STORE: store,
+      CIRUJANO_FLEET_REGISTRY: '',
+      CIRUJANO_TELEMETRY_SINCE: '',
+      CIRUJANO_TELEMETRY_LOOKBACK_HOURS: '',
+      MOCK_CALLS: calls,
+    },
+    reports: async () => (await readFile(calls, 'utf8')).trimEnd().split('\n').map((line) => line.replaceAll(store, 'STORE')),
+  };
+}
 
 async function installerFixture() {
   const home = await mkdtemp(resolve(tmpdir(), 'cirujano-installer-'));

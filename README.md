@@ -30,13 +30,18 @@ reused the stopped VM with a fresh registration, the controller drained and
 stopped the VM after the idle grace, survived being killed mid-job, and cleaned
 up every resource. The full matrix and its limits are in
 [docs/research/2026-09-15-nebius-runner-pilot-r14.md](docs/research/2026-09-15-nebius-runner-pilot-r14.md).
-Fleet enrollment and the 45-day savings evidence come next. The bounded pnpm
-cache optimizer is implemented locally: collection, NVIDIA inference transport,
+Most enrolled private repositories have since cut over to these runners; their 45-day
+savings window closes on 2026-10-28, and no fleet savings are claimed before
+then. The bounded pnpm cache optimizer covers collection, NVIDIA inference,
 two-field patch validation, paired Sandbox verification, six-attempt GitHub
-measurement, reporting and authorized unmerged PR delivery. Its local tests use
-synthetic provider transports. The complete live model-to-Sandbox-to-GitHub-to-PR
-proof remains pending, and no optimizer savings are claimed. Setup, limits and
-the reproducible evaluation are in
+measurement, reporting and authorized unmerged PR delivery. On 2026-10-02 it
+completed its live chain on the proof repository: a real NVIDIA Nemotron
+decision, the exact two-line patch, paired Sandbox verification and a six-run
+GitHub measurement. The truthful result was **no-improvement** (3 rounded
+minutes against 3), so no savings PR was opened and no optimizer savings are
+claimed. The run is recorded in
+[the plan notes](docs/plans/2026-09-29-nemotron-workflow-optimization-notes.md#outcome-later-on-2026-10-02-complete-live-chain-truthful-no-improvement).
+Setup, limits and the reproducible evaluation are in
 [the optimization demo](docs/demo/nemotron-optimization.md). Broader workflow
 patch families remain future work. The measured starting point that
 motivates the project is in

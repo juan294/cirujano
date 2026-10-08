@@ -2,6 +2,10 @@
 
 Cirujano implements one bounded optimization: enable pnpm store caching on an existing immutable `actions/setup-node` step. It collects GitHub evidence, obtains a structured NVIDIA model decision through Nebius Token Factory, constructs the two-field patch, verifies quality in paired Sandboxes, measures a predefined GitHub cohort, and prepares an authorized unmerged PR. Local implementation and replay checks do not establish a live improvement or close H1.
 
+## Live outcome
+
+On 2026-10-02 the complete live chain ran on the proof repository: an NVIDIA Nemotron decision proposed the cache, Sandbox verification passed with identical tests and coverage, and the six-run GitHub measurement returned **no-improvement** (3 rounded minutes against 3). No savings PR was opened, and H1 stays open on the measurement criterion. The run and the fixes it required are recorded in [the plan notes](../plans/2026-09-29-nemotron-workflow-optimization-notes.md#outcome-later-on-2026-10-02-complete-live-chain-truthful-no-improvement).
+
 ## Try the local evaluation
 
 Requires Node 22 and the installed workspace dependencies:

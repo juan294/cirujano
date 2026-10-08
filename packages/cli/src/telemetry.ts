@@ -323,6 +323,15 @@ function groupJobsByRun(jobs: readonly TelemetryJob[]): ReadonlyMap<string, Tele
   return groups;
 }
 
+const VISIBILITY_DRIFT_FIELDS: ReadonlySet<keyof TelemetryJob> = new Set(['visibility', 'actualGithubListCostUsd', 'counterfactualHostedCostUsd']);
+
+/** Sorted names of the fields whose values differ between two observations of one job. */
+function differingFields(left: TelemetryJob, right: TelemetryJob): Array<keyof TelemetryJob> {
+  return [...new Set([...Object.keys(left), ...Object.keys(right)] as Array<keyof TelemetryJob>)]
+    .filter((field) => JSON.stringify(left[field]) !== JSON.stringify(right[field]))
+    .sort();
+}
+
 function runKey(repository: string, runId: number, attempt: number): string {
   return `${repository}:${runId}:${attempt}`;
 }
@@ -363,25 +372,32 @@ export function aggregateTelemetry(
   let throughMs = sinceMs;
   // With a registry the measurement window bounds the report; jobs created after it are out.
   const windowEndMs = registry === undefined ? Number.POSITIVE_INFINITY : Date.parse(`${registry.measurementWindow.through}T23:59:59.999Z`);
-  for (const snapshot of snapshots) {
+  // Merge in collection order, so the job already kept is always the earlier observation.
+  const chronological = [...snapshots].sort((left, right) => Date.parse(left.collectedAt) - Date.parse(right.collectedAt));
+  for (const snapshot of chronological) {
     throughMs = Math.max(throughMs, Math.min(windowEndMs, Date.parse(snapshot.collectedAt)));
     if (latestSnapshot === undefined || Date.parse(snapshot.collectedAt) > Date.parse(latestSnapshot.collectedAt)) latestSnapshot = snapshot;
     for (const job of snapshot.jobs) {
       if (Date.parse(job.completedAt ?? job.startedAt ?? job.createdAt) < sinceMs) continue;
       if (Date.parse(job.createdAt) > windowEndMs) continue;
       const existing = byKey.get(job.key);
-      if (existing !== undefined && JSON.stringify(existing) !== JSON.stringify(job)) {
-        // Older snapshots used the workflow run's creation time for retries.
-        // Attempt details give the later, attempt-specific time. Accept only
-        // this timestamp correction, while still rejecting every other drift.
-        const sameExceptCreatedAt = Object.keys(existing).length === Object.keys(job).length
-          && Object.entries(existing).every(([key, value]) => key === 'createdAt'
-            || JSON.stringify(value) === JSON.stringify(job[key as keyof TelemetryJob]));
-        if (job.runAttempt === 1 || !sameExceptCreatedAt) throw new Error(`conflicting duplicate telemetry job ${job.key}`);
-        if (Date.parse(job.createdAt) > Date.parse(existing.createdAt)) byKey.set(job.key, job);
+      if (existing === undefined) {
+        byKey.set(job.key, job);
         continue;
       }
-      byKey.set(job.key, job);
+      if (JSON.stringify(existing) === JSON.stringify(job)) continue;
+      const differing = differingFields(existing, job);
+      if (differing.length === 0) continue;
+      // A repository whose visibility changed reprices its earlier jobs. The
+      // first observation records the visibility the job ran under, so keep it.
+      if (differing.includes('visibility') && differing.every((field) => VISIBILITY_DRIFT_FIELDS.has(field))) continue;
+      // Older snapshots used the workflow run's creation time for retries.
+      // Attempt details give the later, attempt-specific time. Accept only
+      // this timestamp correction, while still rejecting every other drift.
+      if (job.runAttempt === 1 || differing.length !== 1 || differing[0] !== 'createdAt') {
+        throw new Error(`conflicting duplicate telemetry job ${job.key} (${differing.join(', ')})`);
+      }
+      if (Date.parse(job.createdAt) > Date.parse(existing.createdAt)) byKey.set(job.key, job);
     }
   }
   const jobs = [...byKey.values()];

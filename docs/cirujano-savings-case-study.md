@@ -23,12 +23,15 @@ verifies that proposed changes remain green and preserve test coverage.
 
 For jobs that cannot be made smaller, Cirujano keeps GitHub Actions as the
 control plane but runs the compute on Nebius. The runner starts only when work
-is queued, handles concurrent jobs, and stops when the queue is empty.
+is queued, runs one job at a time for each enrollment, and stops when the queue
+is empty.
 
 On the measured workload, this is modeled to replace about $155 per month of
 GitHub-hosted compute with approximately $30 of on-demand Nebius compute. That
-is roughly $120 in monthly savings, or more than $1,400 per year, before
-counting further workflow optimizations.
+is a modeled saving of roughly $120 per month, or more than $1,400 per year,
+before counting further workflow optimizations. The model assumes four
+concurrent runner slots; the implemented runner has one slot per enrollment,
+so the figure is a projection, not a measured result.
 
 ## Measured economics
 
@@ -38,13 +41,14 @@ counting further workflow optimizations.
   workflows.
 - Those heavy workflows represented about 430 runner-hours per month and
   approximately $155 of GitHub-hosted compute.
-- Four concurrent runner slots can consolidate that work into an estimated
-  110 to 150 Nebius VM-hours.
-- At current compute rates, the replacement compute is approximately $25 to
-  $30 per month before persistent storage. A conservative target is about $120
-  in net monthly savings.
-- That equals roughly 31 percent of the recent average Actions bill and more
-  than $1,400 per year.
+- Modeled: four concurrent runner slots could consolidate that work into an
+  estimated 110 to 150 Nebius VM-hours. The implemented runner has one slot per
+  enrollment, so this consolidation is not built.
+- Modeled: at current compute rates, the replacement compute is approximately
+  $25 to $30 per month before persistent storage. A conservative modeled target
+  is about $120 in net monthly savings.
+- Modeled: that equals roughly 31 percent of the recent average Actions bill
+  and more than $1,400 per year.
 
 ## Why Cirujano saves money
 
@@ -66,8 +70,9 @@ counting further workflow optimizations.
 
 A permanently running self-hosted machine does not solve the problem. An
 8-vCPU, 32-GiB VM running continuously costs close to the GitHub-hosted workload
-it replaces. Cirujano creates the advantage by consolidating concurrent jobs
-and turning the machine off when there is no eligible work.
+it replaces. Cirujano creates the advantage by turning the machine off when
+there is no eligible work. Consolidating concurrent jobs onto one machine is
+part of the savings model, not of the implemented one-slot runner.
 
 ## Joint pitch: Sutura and Cirujano
 
@@ -133,13 +138,19 @@ Sutura and Cirujano is not yet an implemented integration.
 ## Evidence status
 
 - **Verified for Cirujano:** A measured account baseline, billable-minute
-  calculation, workflow ranking, daily fleet telemetry, and an implemented
-  on-demand runner controller.
+  calculation, workflow ranking, daily fleet telemetry, and an on-demand runner
+  controller that passed its live pilot on 2026-09-15. Most enrolled private
+  repositories have cut over to it, one slot per enrollment. Enrollment refuses
+  a public repository, because its hosted minutes are free and migration would
+  only add provider cost, and the fleet report flags an enrolled repository that
+  later becomes public. The workflow optimizer completed its live chain on
+  2026-10-02 (NVIDIA decision, Sandbox verification and GitHub measurement) and
+  measured no improvement, so no savings pull request was opened.
 - **Modeled for Cirujano:** Approximately $120 in monthly net savings from the
-  first heavy-workload migration.
-- **Pending for Cirujano:** A successful live self-hosted workload pilot and
-  measured before-and-after savings from real project migrations. Automated
-  workflow patch proposal and verification are also future work.
+  first heavy-workload migration, assuming four concurrent runner slots.
+- **Pending for Cirujano:** Measured before-and-after savings from the enrolled
+  migrations, whose 45-day window closes on 2026-10-28, and a workflow
+  optimization with a measured saving.
 - **Verified for Sutura:** Public dogfood evidence shows a seeded CI failure, a
   Sutura-authored repair pull request, human merge, and a green repaired commit.
 - **Pending for the joint story:** Real projects operating with both products,

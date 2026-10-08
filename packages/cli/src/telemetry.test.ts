@@ -199,6 +199,37 @@ describe('fleet telemetry', () => {
     expect(() => aggregateTelemetry([first, conflict], 0)).toThrow(/conflicting duplicate telemetry job/u);
   });
 
+  it('keeps the first observation of a job whose repository later changed visibility (visibility-flip-keeps-first-observation)', () => {
+    const [publicRun, privateRun] = visibilityFlip();
+
+    const report = aggregateTelemetry([publicRun, privateRun], 0);
+
+    expect(report).toMatchObject({ jobs: 1, githubHostedMinutes: 2, githubHostedListCostUsd: 0 });
+    expect(report.byRepository).toEqual([expect.objectContaining({ repository: 'juan294/repo', githubHostedListCostUsd: 0 })]);
+  });
+
+  it('keeps the first observation of a visibility flip whatever the snapshot order (visibility-flip-order-independent)', () => {
+    const [publicRun, privateRun] = visibilityFlip();
+
+    expect(aggregateTelemetry([privateRun, publicRun], 0)).toEqual(aggregateTelemetry([publicRun, privateRun], 0));
+    expect(aggregateTelemetry([privateRun, publicRun], 0).githubHostedListCostUsd).toBe(0);
+  });
+
+  it('names the key and the differing fields of a conflicting duplicate (conflict-names-fields)', () => {
+    const [publicRun] = visibilityFlip();
+    const conflict = snapshot([telemetryJob({ conclusion: 'failure' })]);
+    conflict.collectedAt = '2026-09-30T04:16:42.715Z';
+
+    expect(() => aggregateTelemetry([publicRun, conflict], 0)).toThrow(
+      'conflicting duplicate telemetry job repo:1:1:1 (actualGithubListCostUsd, conclusion, counterfactualHostedCostUsd, visibility)',
+    );
+    const repriced = snapshot([telemetryJob({ visibility: 'public', actualGithubListCostUsd: 0.012 })]);
+    repriced.collectedAt = '2026-09-30T04:16:42.715Z';
+    expect(() => aggregateTelemetry([publicRun, repriced], 0)).toThrow(
+      'conflicting duplicate telemetry job repo:1:1:1 (actualGithubListCostUsd, counterfactualHostedCostUsd)',
+    );
+  });
+
   it('writes snapshots atomically and renders a cumulative Markdown report', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'cirujano-telemetry-'));
     const value = snapshot([
@@ -246,6 +277,15 @@ describe('fleet telemetry', () => {
     expect(report.byRepository.map(({ repository }) => repository)).toEqual(['juan294/active', 'juan294/empty']);
   });
 });
+
+/** The same job seen while its repository was public, then again after it was made private. */
+function visibilityFlip(): [TelemetrySnapshot, TelemetrySnapshot] {
+  const publicRun = snapshot([telemetryJob({ visibility: 'public', actualGithubListCostUsd: 0, counterfactualHostedCostUsd: 0 })]);
+  publicRun.collectedAt = '2026-09-28T09:38:37.185Z';
+  const privateRun = snapshot([telemetryJob({})]);
+  privateRun.collectedAt = '2026-09-30T04:16:42.715Z';
+  return [publicRun, privateRun];
+}
 
 function job(id: number, labels: string[], runnerName: string, overrides: Partial<TelemetryJobInput> = {}): TelemetryJobInput {
   return { ...baseJob(id, labels, runnerName), ...overrides };

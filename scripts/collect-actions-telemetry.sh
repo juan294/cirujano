@@ -13,6 +13,9 @@ LOOKBACK_HOURS="${CIRUJANO_TELEMETRY_LOOKBACK_HOURS:-48}"
 LOCK_PATH="$STORE_PATH/.collect.lock"
 REPORT_PATH="$STORE_PATH/latest.md"
 REPORT_TEMP="$REPORT_PATH.$$.tmp"
+REGISTRY_PATH="${CIRUJANO_FLEET_REGISTRY:-$STORE_PATH/fleet-registry.json}"
+FLEET_REPORT_PATH="$STORE_PATH/fleet-latest.md"
+FLEET_REPORT_TEMP="$FLEET_REPORT_PATH.$$.tmp"
 
 mkdir -p "$STORE_PATH"
 
@@ -30,7 +33,7 @@ if [ "${CIRUJANO_TELEMETRY_LOCKED:-0}" != "1" ]; then
 fi
 
 cleanup() {
-  rm -f "$REPORT_TEMP"
+  rm -f "$REPORT_TEMP" "$FLEET_REPORT_TEMP"
 }
 trap cleanup EXIT
 
@@ -60,3 +63,13 @@ node "$CLI_PATH" telemetry report \
 mv "$REPORT_TEMP" "$REPORT_PATH"
 
 echo "telemetry: report updated at $REPORT_PATH"
+
+if [ -n "${CIRUJANO_FLEET_REGISTRY:-}" ] || [ -e "$REGISTRY_PATH" ]; then
+  node "$CLI_PATH" telemetry report \
+    --store "$STORE_PATH" \
+    --since "$SINCE" \
+    --format markdown \
+    --registry "$REGISTRY_PATH" > "$FLEET_REPORT_TEMP"
+  mv "$FLEET_REPORT_TEMP" "$FLEET_REPORT_PATH"
+  echo "telemetry: fleet report updated at $FLEET_REPORT_PATH"
+fi
