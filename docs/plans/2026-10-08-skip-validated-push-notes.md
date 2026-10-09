@@ -413,6 +413,50 @@ Plan: [2026-10-08-skip-validated-push.md](2026-10-08-skip-validated-push.md).
   - Skipped: recomputing the comparison inside the report render stays (it is the core
     self-check, as in the cache family).
 
+### Phase 7
+
+- **Owner authority.** On 2026-10-09 the owner said "go ahead with phase 7 as you see fit"
+  after approving the Phase 6 push. That was taken as authority for the plan's eight external
+  steps. Each paid or public action was announced as it ran. No failed remote result was
+  retried with changed inputs: the one failure was local, before any remote call.
+- **A fresh proof repository.** Plan said: bootstrap the public proof repository. The cache
+  family's `juan294/cirujano-optimization-proof` already holds that family's
+  `workflow_dispatch` history and an unpushed-candidate state. Chose: a new public benchmark,
+  `juan294/cirujano-push-proof`, seeded with the same pinned workload (about 1,850 packages).
+  Its three-job `Push proof` workflow runs on pull requests into, and pushes to, `develop`.
+  The cache family's evidence stays untouched.
+- **Pinned publication branches (the Phase 6 contract adjustment, decided by the agent under
+  the owner's "as you see fit").** `cirujano/base` at the collected base `d5dc444` and
+  `cirujano/skip-validated-push` at the candidate `b359f3b` were pushed and locked before
+  integration. The candidate reached `develop` through integration PR #4. Evidence PR #8
+  runs between the locked branches.
+- **Image build.** Plan said: build the context "with both harnesses". Phase 5 already
+  changed that to a separate push-guard image. The context generator writes a digest-pinned
+  `FROM`, which `contree build` cannot use, so line 1 was pointed at the imported tag of the
+  same digest (`cirujano-base/node:22.20.0-c190e697`), as the cache family's live run did. The
+  profile binds the import operation, the four build operations and the manifest read back
+  from the image.
+- **Sandbox permit count.** The first `verify` was rejected locally (no store, no remote
+  call). The shared permit decoder requires `maxOperations` between 2 and 8, because the cache
+  pair verifier makes two creates, and the permit said 1. The rewritten permit said 2; the
+  push verifier made exactly one create.
+- **Order of the live model cases.** Plan said: run the six evaluation cases with the held-out
+  diagnosis in step 4. No live push runner existed (a Phase 6 handoff need). Chose: run the
+  chain on the pinned tool `49c934d`. The runner (`evaluate.mjs --live-push-models`) was then
+  built with TDD on this phase's branch and run once. It runs from its own checkout, so it
+  changes no provenance in the chain.
+- **Not done:** the cache family's `--validate-proof` validator does not cover the push
+  family. H1 for this family rests on the retained artifacts and readbacks listed in the
+  handoff, not on a validator run.
+- **Added in this phase:**
+  - The live push runner. Its own single-use-permit test found that the first draft scored a
+    call that never ran as a passed injection case. Every case now requires a received response bound to
+    the exact request.
+  - The report prints a known inference cost to six significant digits, and says
+    "minute(s)" in the modeled line.
+  - A regression test pins the observed skipped-job timing.
+  - The family docs (demo section, README status) and the sanitized live proof.
+
 ## Phase 1 handoff (2026-10-08)
 
 - **Objective and scope:** H2 telemetry report repair and H5 truth fixes, as in
@@ -846,3 +890,30 @@ Plan: [2026-10-08-skip-validated-push.md](2026-10-08-skip-validated-push.md).
   - **The push-guard image context**, built from this phase's bundle (owner-authorized
     build and import).
   - **A live push-model evaluation runner.**
+
+## Phase 7 handoff (2026-10-09)
+
+- **Outcome:** H1 is met for skip-validated-push. VERIFIED live:
+  - the real NVIDIA decision;
+  - the provider-read-back `sandbox-verified` result;
+  - `measured-improvement` on real GitHub runs;
+  - PR #8 read back as open and unmerged.
+
+  The run IDs and limits are in
+  [the live proof](../research/2026-10-09-skip-validated-push-live-proof.md).
+- **Identity:** the chain tool is `49c934d` (pushed `develop`, CI run 37916191047 green), from
+  the detached worktree `../cirujano-worktrees/svp-p7-tool`, on Node 22.20.0. Phase 7 code and
+  docs are on `feat/skip-validated-push-p7` in `../cirujano-worktrees/svp-p7`.
+- **External effects (all VERIFIED by readback):**
+  - The public repository `juan294/cirujano-push-proof` (ID 1411671111), with `develop`
+    protected and two locked publication branches.
+  - PRs #1-#7 merged by the owner's account. Evidence PR #8 is open and unmerged.
+  - One Sandbox image build (image `6f46c988…`, retained).
+  - One Sandbox verification.
+  - Seven Nemotron Nano calls: the held-out diagnosis and six evaluation cases.
+- **Private evidence:** `~/.local/share/cirujano/optimization/push-live-20261009/` (mode 700),
+  with the collect, diagnose, propose, verify, measure, report and publication operations, the
+  cohort, the permits and the live model evaluation.
+- **Next:**
+  - After review and the local gate, integrate into `develop`. The push needs the owner's go.
+  - H6 (the judge package) follows in its own plan.

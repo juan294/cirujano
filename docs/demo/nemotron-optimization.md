@@ -1,6 +1,6 @@
 # Nemotron workflow optimization
 
-Cirujano implements one bounded optimization: enable pnpm store caching on an existing immutable `actions/setup-node` step. It collects GitHub evidence, obtains a structured NVIDIA model decision through Nebius Token Factory, constructs the two-field patch, verifies quality in paired Sandboxes, measures a predefined GitHub cohort, and prepares an authorized unmerged PR. Local implementation and replay checks do not establish a live improvement or close H1.
+Cirujano implements two bounded optimizations. The first, described in the sections below, enables pnpm store caching on an existing immutable `actions/setup-node` step. The second, [skip validated pushes](#skip-validated-pushes), is described at the end. It collects GitHub evidence, obtains a structured NVIDIA model decision through Nebius Token Factory, constructs the two-field patch, verifies quality in paired Sandboxes, measures a predefined GitHub cohort, and prepares an authorized unmerged PR. Local implementation and replay checks do not establish a live improvement or close H1.
 
 ## Live outcome
 
@@ -52,3 +52,34 @@ node scripts/optimization/evaluate.mjs --validate-proof live-proof.json
 ```
 
 The read-only validator rereads retained product evidence and rejects missing or altered model decisions, paired Sandbox quality, six-run measurements and confirmed PR identities. Injected transports remain explicit replay with `live: false` and cannot qualify as a native proof. Exit zero means the retained structure is complete; the result still reports `passed: false`, `live: false`, `h1Closed: false` and the required native gates. Final acceptance requires actual provider readback of the Sandbox boundary operations and current GitHub publication readback. Refresh the actual PR through `optimize status` before a public claim; a local manifest does not establish current remote state. Save a sanitized feature proof in `docs/research/` only after the live chain passes. Until then, H1 remains open, no workflow saving or hackathon proof is claimed, and broader optimization families, fleet savings and H2-H6 remain future work.
+
+## Skip validated pushes
+
+**The rule.** A push to the integration branch skips the workflow's jobs only when it lands one merged pull request whose own run of the same workflow already passed on the exact same tree. Every other push (a direct push, a forced push, a merge of a red or stale pull request, or any case the classifier cannot decide) runs every job.
+
+**How it stays safe.** The patch adds one job, `cirujano_validated_push`, and one operand to each guarded job's `if`. Nothing else in the workflow changes, and an inverse proof checks that removing the operand restores the original. The classifier job reads GitHub with read-only permissions, and proves four things: the push was not forced, the pushed tree equals the tree of the pull request head whose run passed, the branch tip before the merge is an ancestor of that head, and no other pull request claims the head. Any error, timeout or ambiguity sets `validated=false`, so the jobs run. Eligibility refuses workflows the guard could change in meaning: status functions, `continue-on-error`, environments, reusable jobs, secrets, event-context reads, workflow-level run defaults and `needs` reads beyond the declared needs. A Sandbox verifier evaluates the guarded and original workflows over a decision matrix of events, classifier outcomes and need results, and runs the exact embedded classifier script on 60 scripted GitHub API scenarios.
+
+**Measurement.** The cohort is fixed before reading results: three merged-PR pushes on the original workflow, three on the guarded one, and one direct push as the control. Each candidate must be validated with every guarded job skipped and bill at least one minute below the baseline median. The control must run every job, and every pull request run must pass the same job set. The report always discloses the classifier's one-minute overhead, and labels the history projection as modeled.
+
+**Live result.** On 2026-10-09 the chain passed on the public proof repository [`juan294/cirujano-push-proof`](https://github.com/juan294/cirujano-push-proof). Merged-PR pushes billed 1 minute instead of 3, and the direct push ran every job. The evidence pull request #8 is open and unmerged. The runs and limits are in [the live proof](../research/2026-10-09-skip-validated-push-live-proof.md).
+
+**Reproduce.** The CLI takes `--family skip-validated-push` at collection. The rest of the chain uses the same commands as the cache family.
+
+```sh
+cirujano optimize collect --family skip-validated-push --repository <owner/repo> --ref <sha> --workflow .github/workflows/ci.yml --branch develop --output <dir>
+cirujano optimize diagnose --input <dir>/input.json --config config.json --permit permit.json --output <diagnosis>
+cirujano optimize propose --input <dir>/input.json --diagnosis <diagnosis>/diagnosis.json --output <proposal>
+cirujano optimize verify --proposal <proposal>/proposal.json --profile push-guard-profile.json --permit sandbox-permit.json --output <verify>
+cirujano optimize measure --proposal <proposal>/proposal.json --sandbox <verify>/sandbox.json --cohort cohort.json --output <measure>
+cirujano optimize report --proposal <proposal>/proposal.json --sandbox <verify>/sandbox.json --measurement <measure>/measurement.json --output <report> --base-ref <base-branch> --head-ref <head-branch>
+```
+
+- **Image:** the push-guard Sandbox image comes from `node scripts/optimization/image-context.mjs --push-guard <recipe.json> <new-context-directory>`, and carries only the base Node image and the committed harness bundle.
+- **Publication branches:** publication needs two branches that never move, one at the collected base and one at the candidate commit, because the measured pushes have already moved the integration branch.
+- **Live model cases:** `node scripts/optimization/evaluate.mjs --live-push-models <permit-batch.json> <new-private-directory>` runs the six push evaluation cases against the live model, with one single-use permit each.
+
+**Limits.**
+
+- **Fixed overhead:** the classifier adds one billed minute to every push, so a workflow whose push already bills about one minute saves nothing, and the model is expected to abstain.
+- **Coverage moves to the pull request:** the guarded jobs no longer run on validated pushes, so the pull request run is the only run of them for that tree.
+- **What is measured:** the saving is measured per sampled push, not per month, and provider inference and Sandbox costs are not netted.

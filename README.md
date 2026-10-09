@@ -41,16 +41,25 @@ GitHub measurement. The truthful result was **no-improvement** (3 rounded
 minutes against 3), so no savings PR was opened and no optimizer savings are
 claimed. The run is recorded in
 [the plan notes](docs/plans/2026-09-29-nemotron-workflow-optimization-notes.md#outcome-later-on-2026-10-02-complete-live-chain-truthful-no-improvement).
-Setup, limits and the reproducible evaluation are in
-[the optimization demo](docs/demo/nemotron-optimization.md). Broader workflow
+The second family, skip-validated-push, lets a push that lands an already-green
+pull request skip re-running the same jobs on the same tree. On 2026-10-09 its
+live chain passed on the public proof repository: a real NVIDIA Nemotron
+proposal, a Sandbox-verified guard, and a per-push GitHub measurement of
+**1 billed minute instead of 3** on each of three merged-PR pushes, while a
+direct push still ran every job. The evidence pull request is open and unmerged;
+the runs are listed in
+[the live proof](docs/research/2026-10-09-skip-validated-push-live-proof.md).
+Setup, limits and the reproducible evaluation for both families are in
+[the optimization demo](docs/demo/nemotron-optimization.md). Further workflow
 patch families remain future work. The measured starting point that
 motivates the project is in
 [docs/research/2026-09-08-github-actions-cost-baseline.md](docs/research/2026-09-08-github-actions-cost-baseline.md).
 
 ## How it works
 
-The implemented workflow optimizer supports only the two-field pnpm cache
-change described in the demo. The diagnosis and prescription examples below
+The implemented workflow optimizer supports two bounded patch families,
+described in the demo: the two-field pnpm cache change and the
+skip-validated-push guard. The diagnosis and prescription examples below
 describe intended broader capabilities that remain future work.
 
 ```mermaid
