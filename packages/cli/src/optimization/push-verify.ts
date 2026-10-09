@@ -170,8 +170,16 @@ async function readBoundArtifact(path: string, run: PushGuardRun): Promise<PushS
   return sandbox;
 }
 /** The push-guard counterpart of `readSandboxContext`, for measurement and report. */
-export async function readPushSandboxContext(path: string): Promise<PushGuardRun & { sandbox: PushSandboxArtifact }> {
+export async function readPushSandboxContext(path: string): Promise<PushSandboxContext> {
   const run = await readRun(dirname(path)); return { ...run, sandbox: await readBoundArtifact(path, run) };
+}
+export type PushSandboxContext = PushGuardRun & { sandbox: PushSandboxArtifact };
+/** Retains the verified run beside a later stage under the same file names, so that stage re-reads the same bound evidence. */
+export async function retainPushSandboxEvidence(store: OperationStore, path: string, pair: PushSandboxContext): Promise<void> {
+  await withOperationStore(join(store.directory, 'sandbox-evidence'), async nested => {
+    await copyPushProposalContext(nested, pair.context); await nested.writeJson('push-guard-profile.json', pair.profile); await nested.writeJson('sandbox-permit.json', pair.permit);
+    await nested.writeJson('image-readback.json', await readPrivateJson(join(dirname(path), 'image-readback.json'))); await nested.writeJson(basename(path), pair.sandbox); await nested.writeJson('intent.json', pair.journal);
+  });
 }
 async function recover(directory: string, options: VerificationOptions, cancelPermit?: unknown): Promise<VerificationDisposition> {
   try {

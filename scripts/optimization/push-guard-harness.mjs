@@ -471,9 +471,9 @@ var require_anchors = __commonJS({
          */
         setAnchors: () => {
           for (const source of aliasObjects) {
-            const ref = sourceObjects.get(source);
-            if (typeof ref === "object" && ref.anchor && (identity.isScalar(ref.node) || identity.isCollection(ref.node))) {
-              ref.node.anchor = ref.anchor;
+            const ref2 = sourceObjects.get(source);
+            if (typeof ref2 === "object" && ref2.anchor && (identity.isScalar(ref2.node) || identity.isCollection(ref2.node))) {
+              ref2.node.anchor = ref2.anchor;
             } else {
               const error = new Error("Failed to resolve repeated object (this should not happen)");
               error.source = source;
@@ -790,15 +790,15 @@ var require_createNode = __commonJS({
         value = value.valueOf();
       }
       const { aliasDuplicateObjects, onAnchor, onTagObj, schema, sourceObjects } = ctx;
-      let ref = void 0;
+      let ref2 = void 0;
       if (aliasDuplicateObjects && value && typeof value === "object") {
-        ref = sourceObjects.get(value);
-        if (ref) {
-          ref.anchor ?? (ref.anchor = onAnchor(value));
-          return new Alias.Alias(ref.anchor);
+        ref2 = sourceObjects.get(value);
+        if (ref2) {
+          ref2.anchor ?? (ref2.anchor = onAnchor(value));
+          return new Alias.Alias(ref2.anchor);
         } else {
-          ref = { anchor: null, node: null };
-          sourceObjects.set(value, ref);
+          ref2 = { anchor: null, node: null };
+          sourceObjects.set(value, ref2);
         }
       }
       if (tagName?.startsWith("!!"))
@@ -810,8 +810,8 @@ var require_createNode = __commonJS({
         }
         if (!value || typeof value !== "object") {
           const node2 = new Scalar.Scalar(value);
-          if (ref)
-            ref.node = node2;
+          if (ref2)
+            ref2.node = node2;
           return node2;
         }
         tagObj = value instanceof Map ? schema[identity.MAP] : Symbol.iterator in Object(value) ? schema[identity.SEQ] : schema[identity.MAP];
@@ -825,8 +825,8 @@ var require_createNode = __commonJS({
         node.tag = tagName;
       else if (!tagObj.default)
         node.tag = tagObj.tag;
-      if (ref)
-        ref.node = node;
+      if (ref2)
+        ref2.node = node;
       return node;
     }
     exports.createNode = createNode;
@@ -7680,6 +7680,11 @@ var validators2 = {
   report: object({ ...base("report"), ...reportFields }),
   publication: object({ ...base("publication"), ...publicationFields })
 };
+function decodePushProvenance(value) {
+  canonicalJson(value);
+  provenanceValidator2(value, "provenance");
+  return value;
+}
 
 // ../core/dist/optimization/push-classifier-source.js
 var CLASSIFIER_SOURCE = "// Cirujano skip-validated-push classifier. Plain ES2022 for Node 22, no dependencies.\n// A push is validated only when the merged pull request's CI run of this same workflow\n// already tested the exact pushed tree green. Any error, timeout, ambiguity or unexpected\n// shape returns validated=false, so the push runs the full suite. It always exits 0. This module\n// has no side effects; the embedded step script is this file followed by CLASSIFIER_ENTRY.\nimport { appendFileSync, readFileSync } from 'node:fs';\n\nconst SHA = /^[a-f0-9]{40}$/;\nconst REPOSITORY = /^[A-Za-z0-9_.-]+\\/[A-Za-z0-9_.-]+$/;\nconst WORKFLOW_PATH = /^\\.github\\/workflows\\/[A-Za-z0-9_.-]+\\.ya?ml$/;\nconst CLASSIFIER_JOB_ID = 'cirujano_validated_push';\nconst PAGE = 100;\nconst REQUEST_TIMEOUT_MS = 15000;\nconst DEADLINE_MS = 75000;\nconst MAX_BODY_CHARS = 8 * 1024 * 1024;\n\nclass Refusal extends Error {\n  constructor(reason) { super(reason); this.reason = reason; }\n}\nfunction refuse(reason) { throw new Refusal(reason); }\nfunction isObject(value) { return value !== null && typeof value === 'object' && !Array.isArray(value); }\nfunction object(value) { if (!isObject(value)) refuse('api-unexpected-shape'); return value; }\nfunction list(value) { if (!Array.isArray(value)) refuse('api-unexpected-shape'); return value; }\nfunction sha(value) { if (typeof value !== 'string' || !SHA.test(value)) refuse('api-unexpected-shape'); return value; }\nfunction positive(value) { if (!Number.isSafeInteger(value) || value < 1) refuse('api-unexpected-shape'); return value; }\nfunction unvalidated(reasonCode) { return { validated: false, reasonCode, prNumber: null, prHeadSha: null, prRunId: null }; }\n\n/** One GET through the injected reader; every failure becomes a fixed reason code. */\nasync function read(get, path) {\n  let response;\n  try { response = await get(path); } catch (error) { refuse(error && error.name === 'TimeoutError' ? 'api-timeout' : 'api-error'); }\n  if (!isObject(response) || !Number.isSafeInteger(response.status) || typeof response.body !== 'string') refuse('api-error');\n  if (response.status !== 200) refuse(response.status >= 400 && response.status <= 599 ? `api-http-${response.status}` : 'api-unexpected-status');\n  try { return JSON.parse(response.body); } catch { refuse('api-malformed-json'); }\n}\n\n/**\n * `context`: { eventName, ref, sha, forced, repository, repositoryId, workflowPath }; `forced` is the push\n * event's own flag, and only an explicit `false` is accepted.\n * `get(path)`: resolves `{ status, body }` for a GitHub REST path relative to the API root.\n */\nexport async function classify(context, get) {\n  const outcome = unvalidated('classifier-error');\n  try {\n    const { eventName, ref, sha: pushSha, forced, repository, repositoryId, workflowPath } = isObject(context) ? context : {};\n    if (eventName !== 'push') refuse('not-push-event');\n    if (typeof ref !== 'string' || !ref.startsWith('refs/heads/') || ref.length === 'refs/heads/'.length) refuse('not-branch-ref');\n    const branch = ref.slice('refs/heads/'.length);\n    // A forced push can replace the tree the pull request tested, even on a fast-forward of its head.\n    if (forced === true) refuse('forced-push');\n    if (forced !== false) refuse('push-event-unreadable');\n    if (typeof pushSha !== 'string' || !SHA.test(pushSha) || typeof repository !== 'string' || !REPOSITORY.test(repository) || !Number.isSafeInteger(repositoryId) || repositoryId < 1 || typeof workflowPath !== 'string' || !WORKFLOW_PATH.test(workflowPath)) refuse('invalid-context');\n    const repo = `repos/${repository}`;\n\n    // Rule 2: exactly one merged pull request into this branch whose merge commit is this push.\n    const pulls = list(await read(get, `${repo}/commits/${pushSha}/pulls?per_page=${PAGE}`));\n    if (pulls.length >= PAGE) refuse('pulls-paginated');\n    const merged = pulls.map(object).filter(pr => typeof pr.merged_at === 'string' && pr.merged_at !== '' && pr.merge_commit_sha === pushSha && isObject(pr.base) && pr.base.ref === branch);\n    if (merged.length === 0) refuse('no-merged-pr');\n    if (merged.length > 1) refuse('multiple-merged-prs');\n    const pr = merged[0];\n    outcome.prNumber = positive(pr.number);\n    const head = object(pr.head);\n    if (!isObject(head.repo) || head.repo.id !== repositoryId) refuse('fork-pr');\n    const headSha = sha(head.sha);\n    outcome.prHeadSha = headSha;\n\n    // Rule 3: the pushed tree is the tested head's tree.\n    const pushCommit = object(await read(get, `${repo}/git/commits/${pushSha}`));\n    const headCommit = pushSha === headSha ? pushCommit : object(await read(get, `${repo}/git/commits/${headSha}`));\n    if (pushCommit.sha !== pushSha || headCommit.sha !== headSha) refuse('api-unexpected-shape');\n    if (sha(object(pushCommit.tree).sha) !== sha(object(headCommit.tree).sha)) refuse('tree-mismatch');\n\n    // Rule 4: a fast-forward, or the base tip at merge time is an ancestor of the tested head.\n    if (pushSha !== headSha) {\n      const parents = list(pushCommit.parents);\n      if (parents.length === 0) refuse('base-not-ancestor');\n      const comparison = object(await read(get, `${repo}/compare/${sha(object(parents[0]).sha)}...${headSha}`));\n      if (comparison.status !== 'ahead' && comparison.status !== 'identical') refuse('base-not-ancestor');\n    }\n\n    // The pull_request run must be this pull request's: no other pull request may share the tested head.\n    const sameHead = pushSha === headSha ? pulls : list(await read(get, `${repo}/commits/${headSha}/pulls?per_page=${PAGE}`));\n    if (sameHead.length >= PAGE) refuse('pulls-paginated');\n    if (sameHead.map(object).some(other => other.number !== pr.number && isObject(other.head) && other.head.sha === headSha)) refuse('other-pr-at-head');\n\n    // Rule 5: the one pull_request run of this workflow at the tested head, and all its jobs, succeeded.\n    const runs = object(await read(get, `${repo}/actions/runs?event=pull_request&head_sha=${headSha}&per_page=${PAGE}`));\n    const runList = list(runs.workflow_runs);\n    if (runs.total_count !== runList.length || runList.length >= PAGE) refuse('pr-runs-paginated');\n    const sameWorkflow = runList.map(object).filter(run => run.path === workflowPath);\n    if (sameWorkflow.length === 0) refuse('pr-run-missing');\n    if (sameWorkflow.length > 1) refuse('pr-run-ambiguous');\n    const run = sameWorkflow[0];\n    outcome.prRunId = positive(run.id);\n    if (run.event !== 'pull_request' || run.head_sha !== headSha || !isObject(run.head_repository) || run.head_repository.id !== repositoryId) refuse('pr-run-identity');\n    // When the run names its pull requests, it must name only this one (GitHub may leave the list empty).\n    if (Array.isArray(run.pull_requests) && run.pull_requests.some(other => !isObject(other) || other.number !== pr.number || !isObject(other.base) || other.base.ref !== branch)) refuse('pr-run-identity');\n    if (run.status !== 'completed' || run.conclusion !== 'success') refuse('pr-run-not-successful');\n    const jobs = object(await read(get, `${repo}/actions/runs/${run.id}/jobs?filter=latest&per_page=${PAGE}`));\n    const jobList = list(jobs.jobs);\n    if (jobs.total_count !== jobList.length || jobList.length >= PAGE) refuse('pr-jobs-paginated');\n    // A pull_request run reports the push-only classifier job (at most one) as skipped; every other job must pass.\n    const all = jobList.map(object), classifierJobs = all.filter(job => job.name === CLASSIFIER_JOB_ID), tested = all.filter(job => job.name !== CLASSIFIER_JOB_ID);\n    if (tested.length === 0) refuse('pr-jobs-empty');\n    if (classifierJobs.length > 1 || classifierJobs.some(job => job.conclusion !== 'skipped') || tested.some(job => job.status !== 'completed' || job.conclusion !== 'success')) refuse('pr-job-not-successful');\n\n    outcome.validated = true;\n    outcome.reasonCode = 'validated';\n  } catch (error) {\n    outcome.reasonCode = error instanceof Refusal ? error.reason : 'classifier-error';\n  }\n  return outcome;\n}\n\nfunction append(path, text) {\n  try { if (path) appendFileSync(path, text); } catch { /* A missing output leaves validated unset, so the guarded jobs run. */ }\n}\n\n/** The workflow step: reads the runner environment, writes `validated` and `reason`, never throws. */\nexport async function main(env = process.env, fetchImpl = globalThis.fetch) {\n  let result = unvalidated('invalid-context');\n  try {\n    const repository = env.GITHUB_REPOSITORY || '', workflowRef = env.GITHUB_WORKFLOW_REF || '', api = env.GITHUB_API_URL || '', token = env.GH_TOKEN || '';\n    const at = workflowRef.lastIndexOf('@');\n    const workflowPath = workflowRef.startsWith(`${repository}/`) && at > repository.length + 1 ? workflowRef.slice(repository.length + 1, at) : '';\n    if (/^https:\\/\\/[A-Za-z0-9.-]+(?::\\d+)?(?:\\/[A-Za-z0-9._~-]+)*$/.test(api) && token && typeof fetchImpl === 'function') {\n      const deadline = AbortSignal.timeout(DEADLINE_MS);\n      const get = async path => {\n        const response = await fetchImpl(`${api}/${path}`, {\n          headers: { Accept: 'application/vnd.github+json', Authorization: `Bearer ${token}`, 'X-GitHub-Api-Version': '2022-11-28' },\n          redirect: 'error',\n          signal: AbortSignal.any([deadline, AbortSignal.timeout(REQUEST_TIMEOUT_MS)]),\n        });\n        const body = await response.text();\n        if (body.length > MAX_BODY_CHARS) throw new Error('response too large');\n        return { status: response.status, body };\n      };\n      let forced;\n      try { forced = JSON.parse(readFileSync(env.GITHUB_EVENT_PATH || '', 'utf8')).forced; } catch { forced = undefined; }\n      result = await classify({ eventName: env.GITHUB_EVENT_NAME, ref: env.GITHUB_REF, sha: env.GITHUB_SHA, forced, repository, repositoryId: Number(env.GITHUB_REPOSITORY_ID), workflowPath }, get);\n    }\n  } catch {\n    result = unvalidated('classifier-error');\n  }\n  append(env.GITHUB_OUTPUT, `validated=${result.validated ? 'true' : 'false'}\\nreason=${result.reasonCode}\\n`);\n  append(env.GITHUB_STEP_SUMMARY, result.validated\n    ? `Cirujano: pull request #${result.prNumber} already tested this exact tree green; the duplicate jobs are skipped.\\n`\n    : `Cirujano: not validated (${result.reasonCode}); the full suite runs.\\n`);\n  console.log(`cirujano-classifier validated=${result.validated} reason=${result.reasonCode}`);\n  return result;\n}\nawait main();\n";
@@ -8203,11 +8208,11 @@ function guardMatrix(base2, candidate2, operation, listed = Infinity) {
   };
   const classifier = candidateJobs[CLASSIFIER_JOB_ID] ?? {}, classifierIf = condition(classifier) ?? { type: "literal", value: true };
   const branchRef = `refs/heads/${operation.integrationBranch}`;
-  for (const [event, ref, expected] of [["push", branchRef, true], ["push", "refs/heads/other", false], ["push", "refs/tags/v1", false], ["pull_request", "refs/pull/1/merge", false], ["workflow_dispatch", branchRef, false], ["schedule", branchRef, false]]) {
+  for (const [event, ref2, expected] of [["push", branchRef, true], ["push", "refs/heads/other", false], ["push", "refs/tags/v1", false], ["pull_request", "refs/pull/1/merge", false], ["workflow_dispatch", branchRef, false], ["schedule", branchRef, false]]) {
     cells++;
-    const runs = isTruthy(evaluateExpression(classifierIf, { contexts: { github: { event_name: event, ref } }, status: { success: true, failure: false, cancelled: false } }));
+    const runs = isTruthy(evaluateExpression(classifierIf, { contexts: { github: { event_name: event, ref: ref2 } }, status: { success: true, failure: false, cancelled: false } }));
     if (runs !== expected)
-      report(() => `${CLASSIFIER_JOB_ID} event=${event} ref=${ref}: runs=${runs} expected=${expected}`);
+      report(() => `${CLASSIFIER_JOB_ID} event=${event} ref=${ref2}: runs=${runs} expected=${expected}`);
   }
   for (const id2 of operation.guardedJobIds) {
     const baseJob = baseJobs[id2] ?? {}, guard = condition(candidateJobs[id2] ?? {}) ?? { type: "literal", value: true };
@@ -8297,6 +8302,21 @@ var baseSha = "c".repeat(40);
 var treeSha = "d".repeat(40);
 var repo2 = `repos/${repository}`;
 var NULL_BODY_STATUSES = [204, 205, 304];
+
+// ../core/dist/optimization/push-measurement.js
+var entryFields = { role: literal("baseline", "candidate", "control"), pushRunId: id, attempt: id, headSha: sha, prNumber: nullable(id), prRunId: nullable(id) };
+var cohortValidator = object({ schemaVersion: literal(1), kind: literal("push-measurement-cohort"), family: literal(PUSH_FAMILY), provenance: (v) => decodePushProvenance(v), proposalDigest: digest, sandboxDigest: digest, candidateSha: sha, recordedAt: timestamp, entries: array(object(entryFields)) });
+var conclusion2 = (v, p) => {
+  if (v !== null)
+    text(v, p);
+};
+var evidenceValidator = object({
+  ...entryFields,
+  workflowHash: digest,
+  classifier: nullable(object({ validated: literal(true, false), reasonCode: text })),
+  jobs: array(object({ jobId: text, name: text, conclusion: conclusion2, startedAt: nullable(timestamp), completedAt: nullable(timestamp) })),
+  prJobs: array(object({ name: text, conclusion: text }), "name")
+});
 
 // src/optimization/push-guard-harness-entry.ts
 var PAYLOAD_PATH = "/tmp/cirujano-payload.json";

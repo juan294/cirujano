@@ -85,6 +85,8 @@ export type {
   PushOperation,
   PushProposalArtifact,
   PushProvenance,
+  PushPublicationArtifact,
+  PushReportArtifact,
   PushSandboxArtifact,
   PushSourceManifest,
 } from './optimization/push-contracts.js';
@@ -111,3 +113,7 @@ export type { ComparisonInputs, CohortManifest, GitHubPricing } from './optimiza
 export { renderOptimizationReport } from './optimization/report.js';
 export type { ReportRenderInputs } from './optimization/report.js';
 export { normalizeQualityReports } from './optimization/quality-reporter.js';
+export { assertPushMeasuredEvidence, comparePushMeasurement, decodePushCohortManifest, PUSH_COHORT_ROLES } from './optimization/push-measurement.js';
+export type { PushCohortEntry, PushCohortManifest, PushComparisonInputs, PushRunEvidence, PushRunJob } from './optimization/push-measurement.js';
+export { renderPushReport } from './optimization/push-report.js';
+export type { PushReportRenderInputs } from './optimization/push-report.js';

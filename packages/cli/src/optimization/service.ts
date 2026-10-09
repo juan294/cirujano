@@ -22,6 +22,8 @@ import { verifyPair, reconcileSandbox, cancelSandbox } from './verify.js';
 import {runMeasure,readMeasurementContext,type GitHubBinaryRunner} from './measure.js';
 import {runReport,readReportContext} from './report-service.js';
 import {runPublish,reconcilePublication,type GitHubMutationRunner} from './publish.js';
+import { readPushMeasurementContext, runPushMeasure } from './push-measure.js';
+import { readPushReportContext, runPushReport } from './push-report-service.js';
 
 declare const CIRUJANO_TOOL_SOURCE_SHA: string | undefined;
 export interface OptimizationService { run(args: OptimizeArguments, io: CliIo): Promise<0 | 1 | 2> }
@@ -52,11 +54,14 @@ export function createOptimizationService(options: OptimizationServiceOptions = 
     try {
       if (args.action === 'propose') return await runPropose(args, io);
       if(args.action==='measure'){
-        const result=await runMeasure(flag(args,'proposal'),flag(args,'sandbox'),await readPrivateJson(flag(args,'cohort')),flag(args,'output'),options);
+        // A push proposal (by its retained input's family) takes the per-push measurement and report.
+        const measure=await retainedFamily(join(dirname(flag(args,'proposal')),'input.json'))===PUSH_FAMILY?runPushMeasure:runMeasure;
+        const result=await measure(flag(args,'proposal'),flag(args,'sandbox'),await readPrivateJson(flag(args,'cohort')),flag(args,'output'),options);
         emit(args,io,result.status,result.reasonCode,result.artifactPath?`cirujano optimize status --operation ${shellQuote(dirname(result.artifactPath))}`:statusCommand);return ['measured-improvement','no-improvement'].includes(result.status)?0:1;
       }
       if(args.action==='report'){
-        const result=await runReport(flag(args,'proposal'),flag(args,'sandbox'),flag(args,'measurement'),flag(args,'output'));
+        const report=await retainedFamily(join(dirname(flag(args,'proposal')),'input.json'))===PUSH_FAMILY?runPushReport:runReport;
+        const result=await report(flag(args,'proposal'),flag(args,'sandbox'),flag(args,'measurement'),flag(args,'output'));
         emit(args,io,result.status,result.reasonCode,result.artifactPath?`cirujano optimize status --operation ${shellQuote(dirname(result.artifactPath))}`:statusCommand);return ['ready-to-publish','no-improvement'].includes(result.status)?0:1;
       }
       if(args.action==='publish'){
@@ -69,11 +74,11 @@ export function createOptimizationService(options: OptimizationServiceOptions = 
           const result=await reconcilePublication(directory,options);emit(args,io,result.status,result.reasonCode,statusCommand,undefined,result);return result.status==='published'?0:1;
         }
         if(intent&&typeof intent==='object'&&(intent as {kind?:unknown}).kind==='measurement-intent'){
-          const context=await readMeasurementContext(join(directory,'measurement.json'));emit(args,io,context.measurement.status,context.measurement.status,statusCommand);return context.measurement.status==='rejected'?1:0;
+          const path=join(directory,'measurement.json'),context=await retainedFamily(path)===PUSH_FAMILY?await readPushMeasurementContext(path):await readMeasurementContext(path);emit(args,io,context.measurement.status,context.measurement.status,statusCommand);return context.measurement.status==='rejected'?1:0;
         }
         const operation=await optionalJson(join(directory,'operation.json'));
         if(operation&&typeof operation==='object'&&(operation as {action?:unknown}).action==='report'){
-          const context=await readReportContext(join(directory,'report.json'));emit(args,io,context.report.status,context.report.status,statusCommand);return context.report.status==='rejected'?1:0;
+          const path=join(directory,'report.json'),context=await retainedFamily(path)===PUSH_FAMILY?await readPushReportContext(path):await readReportContext(path);emit(args,io,context.report.status,context.report.status,statusCommand);return context.report.status==='rejected'?1:0;
         }
       }
 
