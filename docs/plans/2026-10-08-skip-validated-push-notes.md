@@ -311,6 +311,108 @@ Plan: [2026-10-08-skip-validated-push.md](2026-10-08-skip-validated-push.md).
     reconcile after a lost result, cancel on a verified run, drifted journal, readback and
     artifact, and an unconfirmed create (`outcome-unknown`, inspection required).
 
+### Phase 6
+
+- **The Phase 5 deferrals stay deferred.** The Phase 5 handoff said: start Phase 6 with the
+  shared `sandbox-journal.ts` and a per-family handler table. Chose: neither. Phase 6 adds
+  no Sandbox journal code; the extraction would touch the cache verifier just before the live
+  run for no Phase 6 deliverable. Family dispatch stays inline in `service.ts`: one family
+  check each for `measure`, `report` and the measurement and report `status` branches, the
+  same as `verify`.
+- **Cohort and evidence shape.** The cohort manifest is its own kind,
+  `push-measurement-cohort`, with seven fixed entries (3 baseline, 3 candidate, 1 control).
+  Each entry is `{role, pushRunId, attempt, headSha, prNumber, prRunId}`; push runs, heads and
+  PR numbers are unique. The CLI reads each entry into a `PushRunEvidence` (the workflow hash
+  at the head, every job mapped to its workflow job id, the classifier's log verdict, the PR
+  run's jobs). Core `comparePushMeasurement` alone judges it.
+- **Gate outcomes.** Rejected: provenance or artifact binding drift, cohort membership
+  drift, invalid run evidence (unknown job, missing guarded job, untimed job, a classifier job
+  where none belongs), a run on the wrong workflow, a failed classifier job, a red baseline,
+  a control that skipped or validated, a validated candidate that ran a guarded job, an
+  unvalidated candidate that skipped one, a red PR run or a PR job set unequal to the
+  baseline's. No improvement: a candidate the classifier did not validate, or a candidate
+  billing more than the baseline median minus one minute. The decoder's
+  `checkMeasurement` holds on every `measured-improvement`.
+- **Modeled projection.** Over the collected history: validated pushes save their billed
+  minutes less one classifier overhead each; unvalidated pushes pay the overhead on top. The
+  overhead is the control push's classifier minutes. The report labels it "Modeled, not
+  measured".
+- **Classifier verdict from logs.** Job outputs are not in the REST API, so the CLI reads the
+  classifier job's log and requires exactly one `cirujano-classifier validated=… reason=…`
+  line (the echoed script text cannot match the pattern). A classifier job that did not
+  succeed is recorded as not validated, and the gate rejects it.
+- **Report refs (Phase 7 contract adjustment, owner decision).** Plan said: a PR between
+  authorized refs, with the cache report's fixed `main` and `develop`. Found (review B1):
+  the measured pushes need the guard live on the integration branch, which then moves past
+  the candidate, so publication's exact ref readback could never pass without a force reset.
+  Chose: `optimize report` takes optional `--base-ref` and `--head-ref` (defaults `main` and
+  `develop`, so the cache family is unchanged). Phase 7 needs two owner-created branches,
+  pinned at the collected base and at the candidate commit before integration and never
+  moved: at publish time the head branch must point exactly at `candidateSha` and the base
+  branch exactly at `provenance.baseSha`, as publication's ref readback requires. The
+  published PR is the evidence-backed proposal between them, not a request to merge code that
+  is already live on the proof repository. The cache family's `optimize report` gains the
+  same optional flags; without them its output is byte-identical.
+- **Publish adapts by family.** Plan said: `publish.ts` reused unchanged. Chose: the same
+  module with a family adapter. The decode, the title and the publication artifact follow
+  the report's family. The base-source proof is per family: the cache family keeps its
+  full-tree readback of both commits; the push family checks that the base commit's tree is
+  the collected tree. The shared compare check then proves the head changes only the
+  workflow, to the candidate's blob. Cache requests, reads and artifacts are unchanged; the
+  publish tests run unmodified.
+- **Golden report.** `push-report-golden` uses Vitest's `toMatchFileSnapshot` on
+  `fixtures/optimization/push/report/golden.md`; any change to the classifier digest, the
+  patch or the template changes it.
+- **Harness bundle churn.** The harness imports the core index, so the regenerated
+  `scripts/optimization/push-guard-harness.mjs` now also carries the new push measurement
+  validators and renamed identifiers (inert; no harness behavior change). Its hash changed,
+  so the Phase 7 image must be built from this phase's bundle.
+- **Not done here, carried to Phase 7:**
+  - That the jobs API lists a skipped job (Phase 2) is still INFERRED. If GitHub omitted
+    skipped jobs, every candidate would be rejected as `run-evidence-invalid`. The read-only
+    API shape check in the Phase 7 preflight must confirm it on a real skipped job.
+  - Comparing the workflow step's real reason with the history verdict (Phase 3) is not
+    built; the live cohort's classifier log lines give that comparison for seven pushes.
+- **Added after independent review:**
+  - The control must be a push the classifier found without a merged PR
+    (`control-not-direct`); a merged-PR push that failed open is not a control.
+  - The report states the control and PR-coverage results only when the gate passed, and the
+    control's PR column reads `none`.
+  - Private reports withhold the integration branch name.
+  - Measure also checks the PR run's head repository, requires exact UTC job times, refuses a
+    workflow job displayed as the classifier, and reads each validated candidate's push tree
+    and PR head tree independently of the classifier.
+- **Simplify (four reviewers: reuse, simplification, efficiency, altitude).**
+  - Adopted:
+    - Push pricing reuses the cache `validatePricing` (exported); the push gate had accepted
+      control characters in `priceBasis` and lacked the finite list-estimate guard.
+    - The gate groups each run's jobs once; a dead `unvalidated` clause and the nested
+      uniqueness ternary are gone; the report derives `ready` from `passed` and has a `prRun`
+      helper; the report reuses `fail` from `report.ts`.
+    - The CLI reuses the cache `exact` companion checks (exported from `measure.ts` and
+      `report-service.ts`) and one `treeOf` (publish's push base proof uses it too).
+    - Each commit's workflow is read once per measurement; a candidate's two tree reads run
+      together; the push run identity also checks `head_repository.full_name`.
+    - The publish adapter copies only the values its source proof needs and derives the
+      workflow path from the report's provenance.
+    - `service.ts` has one `isPush` check and passes the optional refs straight through, so
+      `main` and `develop` are defaulted in one place per family.
+  - Recorded for later (each touches cache code or the shared core surface):
+    - The deferred `sandbox-journal.ts` and a per-family handler table now cover more sites:
+      the four push retainers and readers mirror the cache ones line for line, and
+      `service.ts` checks the family in five places.
+    - The harness bundle imports the core index, so unrelated core changes move its hash; a
+      narrow core subpath for the harness would stop that.
+    - One shared `exact(value, keys, code)` for the CLI's seven copies, a core `isSafeRef`,
+      a core UTC-timestamp predicate for `nullableTime`, and an exported `blobBytes` for the
+      contents read.
+    - A shared push-run identity check between history collection and measure.
+    - Re-reads of already-checked companion files (`sandbox-evidence/intent.json`,
+      `image-readback.json`, `measurement-receipt.json`), and the family check reading the
+      artifact once more, as `propose.ts` already does.
+  - Skipped: recomputing the comparison inside the report render stays (it is the core
+    self-check, as in the cache family).
+
 ## Phase 1 handoff (2026-10-08)
 
 - **Objective and scope:** H2 telemetry report repair and H5 truth fixes, as in
@@ -672,3 +774,71 @@ Plan: [2026-10-08-skip-validated-push.md](2026-10-08-skip-validated-push.md).
 - **Next phase entry:** Phase 6 needs an explicit owner go. Start it with the deferred journal
   extraction and the family handler table, then the push-cohort measurement, using
   `readPushSandboxContext`.
+
+## Phase 6 handoff (2026-10-09)
+
+- **Objective and scope:** push-cohort measurement, the push report and family-aware
+  publication, as in [phase-6](2026-10-08-skip-validated-push-phases/phase-6.md). No GitHub
+  write, Sandbox or model call; every GitHub read in tests is a local fake. Phase 7 owns the
+  live cohort.
+- **Identity:** branch `feat/skip-validated-push-p6` in `../cirujano-worktrees/svp-p6`, from
+  pushed-and-green `develop` `17830e7` (CI run 37904072923 and CodeQL green). Code commits:
+  `d0c9481` (implementation), `fe0eb65` (review fixes), `7960423` (simplify); this notes
+  commit follows.
+- **Delivered:**
+  - Core:
+    - `push-measurement.ts`: `decodePushCohortManifest` and `comparePushMeasurement`, the
+      per-push gate (reasons in the deviations), and `assertPushMeasuredEvidence`.
+    - `push-report.ts`: `renderPushReport` with the golden at
+      `fixtures/optimization/push/report/golden.md`.
+    - Exported: `validatePricing`, and the report text helpers.
+  - CLI:
+    - `push-measure.ts`: `runPushMeasure` and `readPushMeasurementContext`.
+    - `push-report-service.ts`: `runPushReport` and `readPushReportContext`.
+    - `retainPushSandboxEvidence`.
+    - `publish.ts` adapts by family.
+    - `optimize report --base-ref/--head-ref`.
+    - Family dispatch for `measure`, `report` and `status`.
+  - The regenerated harness bundle.
+- **TDD:**
+  - The core gate and report tests were written first and failed on the missing module.
+  - One fixture arithmetic error in the shortfall test was fixed: 11 minutes against a median
+    of 12 saves exactly one minute.
+  - Each review fix got a failing test first: `control-not-direct`, the report claims, the
+    private branch, and the four CLI read checks.
+  - The CLI end-to-end test covers collect → diagnose → propose → verify → measure → report
+    → publish → status on fakes.
+- **Gate:** one full run on `7960423`, all green on the first try at load average about 38.
+  - Exit 0: `build`, `typecheck`, `lint`, `test`, `test:coverage`,
+    `verify:optimization-actionlint`, `verify:optimization-harness-linux`,
+    `evaluate.mjs --offline`, `verify-bundle` and `git diff --check`.
+  - The Linux push harness ran 509 cells and 60 cases, and detected the tampered candidate,
+    on node:22-bookworm `sha256:0e5f9065…`.
+  - Test counts: core 564, runner 393, action 6, CLI 763.
+  - Existing cache measurement, report and publish test files are unmodified.
+- **Review:**
+  - First pass, CHANGES REQUESTED:
+    - B1: publication refs could not be met in the Phase 7 sequence.
+    - S1: the control was not proven direct.
+    - S2: report claims were printed on a failed gate.
+    - S3: deferrals were not recorded.
+    - Six nits.
+  - All fixed or recorded. The re-review was APPROVED; its two nits are recorded (the cache
+    report's new optional flags, and the exact ref targets at publish time).
+- **Simplify:** see the deviations; the adopted items are in `7960423`.
+- **Risks carried forward:**
+  - The Phase 3 to 5 residuals.
+  - That the jobs API lists skipped jobs is INFERRED.
+  - The classifier verdict comes from a log line, so a GitHub log format change fails the
+    read closed.
+  - The PR-run workflow is bound by path only, since GitHub runs the merge-ref version.
+  - The harness hash changed, so the image must be built from this bundle.
+- **Next phase entry (Phase 7, live):** needs an explicit owner go, plus:
+  - **The owner's decision on the pinned publication branches.** The base branch sits at the
+    collected base and the head branch at the candidate. Both are created before
+    integration and never moved.
+  - **Force-push disabled** on the proof repository's integration branch.
+  - **A read-only API shape check**, including a real skipped job in the jobs listing.
+  - **The push-guard image context**, built from this phase's bundle (owner-authorized
+    build and import).
+  - **A live push-model evaluation runner.**
