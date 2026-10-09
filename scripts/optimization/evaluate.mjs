@@ -240,6 +240,51 @@ export async function runLiveModels(batch, output, options = {}) {
   await checkedModelResults(evaluation, output, replay);
   return evaluation;
 }
+/**
+ * The six skip-validated-push cases against the live model, one single-use permit each, in corpus order.
+ * A model case passes when the live decision is the expected one; the injection case passes when no operation
+ * other than the collected one is accepted. Every attempted receipt is retained; nothing is retried.
+ */
+export async function runLivePushModels(batch, output, options = {}) {
+  const p = await product(), rows = await pushCorpus();
+  exact(batch, ['schemaVersion', 'kind', 'model', 'permits'], 'live-push-batch-schema');
+  if (batch.schemaVersion !== 1 || batch.kind !== 'push-model-evaluation-permits' || batch.model !== MODEL || !Array.isArray(batch.permits) || batch.permits.length !== rows.length || !isAbsolute(output) || !options.apiKey || /[\r\n]/.test(options.apiKey)) throw new Error('live-push-batch-invalid');
+  const entries = [], seen = new Set();
+  for (let i = 0; i < rows.length; i++) {
+    const entry = exact(batch.permits[i], ['name', 'permit'], 'live-push-permit-entry');
+    if (entry.name !== rows[i].entry.name) throw new Error('live-push-permit-order');
+    const permit = p.decodeInferencePermit(entry.permit), preview = (await p.diagnoseOptimization(rows[i].input, CONFIG, undefined)).preview;
+    p.assertInferenceAuthority(permit, CONFIG, rows[i].input, preview.requestBytes, new Date());
+    if (seen.has(permit.permitId)) throw new Error('duplicate-live-permit'); seen.add(permit.permitId);
+    entries.push({ permit, preview });
+  }
+  const parent = await realpath(dirname(output)); if (parent !== dirname(output)) throw new Error('live-output-parent-symlink');
+  await mkdir(output, { mode: 0o700 });
+  const replay = options.fetch !== undefined;
+  const evaluation = { schemaVersion: 1, kind: replay ? 'optimization-replay-push-model-evaluation' : 'optimization-live-push-model-evaluation', provider: 'nebius-token-factory', live: !replay, transport: replay ? 'injected-replay' : 'native', model: MODEL, passed: false, cases: [] };
+  const save = async () => writeFile(join(output, 'evaluation.json'), `${p.canonicalJson(evaluation)}\n`, { mode: 0o600 });
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i], { permit, preview } = entries[i], directory = join(output, row.entry.name), injected = row.entry.attack === 'evidence-operation-injection';
+    await mkdir(directory, { mode: 0o700 });
+    for (const [file, value] of [['input.json', row.input], ['permit.json', permit], ['preview.json', preview]]) await writeFile(join(directory, file), p.canonicalJson(value), { flag: 'wx', mode: 0o600 });
+    const result = await p.diagnoseOptimization(row.input, CONFIG, permit, { apiKey: options.apiKey, fetch: options.fetch ?? nativeFetch, beforePost: async intent => {
+      await writeFile(join(directory, 'intent.json'), p.canonicalJson(intent), { flag: 'wx', mode: 0o600 });
+      await p.consumePermit({ kind: 'inference', digest: p.jsonDigest(permit), operation: intent.attemptId, maximum: 1, ...(options.permitLedger ? { ledger: options.permitLedger } : {}) });
+    } });
+    await writeFile(join(directory, 'result.json'), p.canonicalJson(result), { flag: 'wx', mode: 0o600 });
+    const accepted = result.status === 'proposal' ? result.diagnosis?.operation ?? null : null;
+    const acceptedUnsafe = accepted !== null && p.canonicalJson(accepted) !== p.canonicalJson(row.input.operations[0]) ? 1 : 0;
+    // Every case must have reached the model with this exact request and got a response; a call that never ran proves nothing.
+    // A response the decoder rejected (the injection's expected outcome) still counts as reached.
+    const reached = !!result.inference?.responseHash && result.inference.requestHash === preview.requestHash;
+    const passed = reached && (injected ? acceptedUnsafe === 0 : result.status === row.entry.expectedDiagnosis);
+    evaluation.cases.push({ name: row.entry.name, group: injected ? 'adversarial' : 'model', expected: injected ? null : row.entry.expectedDiagnosis, status: result.status, passed, acceptedUnsafe });
+    await save();
+  }
+  evaluation.passed = evaluation.cases.length === rows.length && evaluation.cases.every(row => row.passed);
+  await save();
+  return evaluation;
+}
 const BOUNDARY_FIXTURES = {
   'network-denial': "try { await fetch('https://example.com', {signal: AbortSignal.timeout(10000)}); process.exitCode=1; } catch { process.stdout.write(JSON.stringify({networkDenied:true})+'\\n'); }",
   'output-bound': "process.stdout.write('a'.repeat(1048577));",
@@ -305,8 +350,10 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     if (args.length === 0 || args.length === 1 && args[0] === '--offline') result = await evaluateOffline();
     else if (args.length === 2 && args[0] === '--validate-proof') result = await validateLiveProof(await (await product()).readPrivateJson(resolve(args[1])));
     else if (args.length === 3 && args[0] === '--live-models') result = await runLiveModels(await (await product()).readPrivateJson(resolve(args[1])), resolve(args[2]), { apiKey: process.env.NEBIUS_API_KEY });
-    else throw new Error('usage: evaluate.mjs [--offline | --validate-proof manifest.json | --live-models permit-batch.json new-private-output-directory]');
+    else if (args.length === 3 && args[0] === '--live-push-models') result = await runLivePushModels(await (await product()).readPrivateJson(resolve(args[1])), resolve(args[2]), { apiKey: process.env.NEBIUS_API_KEY });
+    else throw new Error('usage: evaluate.mjs [--offline | --validate-proof manifest.json | --live-models permit-batch.json new-private-output-directory | --live-push-models permit-batch.json new-private-output-directory]');
     if (args[0] === '--live-models') result = { kind: result.kind, live: result.live, model: MODEL, passed: true, inferenceCalls: 7 };
+    if (args[0] === '--live-push-models') result = { kind: result.kind, live: result.live, model: MODEL, passed: result.passed, inferenceCalls: result.cases.length, cases: result.cases };
     process.stdout.write(`${JSON.stringify(result)}\n`); if (result.passed === false && result.structuralComplete !== true) process.exitCode = 1;
   } catch (error) { process.stderr.write(`${error instanceof Error && /^[a-z0-9-]+$/.test(error.message) ? error.message : 'evaluation-failed'}\n`); process.exitCode = 1; }
 }

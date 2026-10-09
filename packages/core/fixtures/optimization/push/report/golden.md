@@ -32,7 +32,7 @@ Sandbox elapsed time is separate verification overhead; it is not a GitHub savin
 Baseline median billed minutes per push: 12; candidate pushes: 1, 1, 1.
 Classifier overhead: 1 billed minute(s) on every push to main, measured on the direct control push, which ran every guarded job.
 PR coverage: every sampled PR run passed the same 3 jobs.
-Modeled, not measured: across the last 10 collected pushes, 8 would have validated, projecting 88 minutes saved and 2 minutes of classifier overhead on the rest.
+Modeled, not measured: across the last 10 collected pushes, 8 would have validated, projecting 88 minute(s) saved and 2 minute(s) of classifier overhead on the rest.
 GitHub list estimate: 0 USD; public repository list saving is zero.
 Measured claims apply only to these seven sampled pushes. List estimates are not invoice savings. Provider and inference costs are not netted; no fleet, annual or net saving is established.
 Comparison limitations: sample-execution-only, per-push-gate, classifier-overhead-disclosed, modeled-history-projection, list-price-estimate-not-invoice, provider-inference-costs-not-netted, public-github-list-saving-zero.

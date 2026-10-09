@@ -48,7 +48,8 @@ export function renderPushReport(inputs: PushReportRenderInputs): PushReportArti
     '',
     `Model requested: ${safeModel(inference.requestedModel)}; returned: ${safeModel(inference.returnedModel)}; status: ${inference.status}; finish: ${finish(inference.finishReason)}.`,
     `Tokens (prompt / completion / total): ${inference.usage ? `${inference.usage.promptTokens} / ${inference.usage.completionTokens} / ${inference.usage.totalTokens}` : 'unavailable'}.`,
-    `Inference cost: ${inference.costStatus}${inference.cost ? `; ${inference.cost.amount} ${currency(inference.cost.currency)}` : ''}.`,
+    // Six significant digits keep provider float noise (0.00012251999999999999) out of the public text.
+    `Inference cost: ${inference.costStatus}${inference.cost ? `; ${Number(inference.cost.amount.toPrecision(6))} ${currency(inference.cost.currency)}` : ''}.`,
     `Sandbox: ${sandbox.status}; network disabled; cleanup: ${sandbox.cleanupState}.`,
     `Sandbox guard matrix: ${sandbox.matrixCells} cells, ${sandbox.mismatches} mismatches; classifier cases: ${sandbox.classifierCases}.`,
     `Sandbox usage: ${sandbox.usage ? `${sandbox.usage.value}; ${sandbox.usage.unit === 'undocumented-provider-unit' ? 'undocumented-provider-unit' : 'provider unit retained in private evidence'}; ${sandbox.usage.currency === null ? 'currency unavailable' : currency(sandbox.usage.currency)}` : 'unavailable'}.`,
@@ -61,7 +62,7 @@ export function renderPushReport(inputs: PushReportRenderInputs): PushReportArti
     `Baseline median billed minutes per push: ${measurement.baselineMedianMinutes}; candidate pushes: ${candidates.map(push => push.billedMinutes).join(', ')}.`,
     `Classifier overhead: ${measurement.classifierOverheadMinutes} billed minute(s) on every push to ${branch}, ${passed ? 'measured on the direct control push, which ran every guarded job' : 'read from the control push; the gate did not pass'}.`,
     `PR coverage: ${passed ? `every sampled PR run passed the same ${measurement.pushes[0]?.prJobs.length ?? 0} jobs` : 'not established; see the comparison limitations'}.`,
-    `Modeled, not measured: across the last ${measurement.modeled.pushes} collected pushes, ${measurement.modeled.validatedPushes} would have validated, projecting ${measurement.modeled.projectedSavedMinutes} minutes saved and ${measurement.modeled.projectedOverheadMinutes} minutes of classifier overhead on the rest.`,
+    `Modeled, not measured: across the last ${measurement.modeled.pushes} collected pushes, ${measurement.modeled.validatedPushes} would have validated, projecting ${measurement.modeled.projectedSavedMinutes} minute(s) saved and ${measurement.modeled.projectedOverheadMinutes} minute(s) of classifier overhead on the rest.`,
     `GitHub list estimate: ${measurement.githubListSavingUsd} USD; ${publicRepository ? 'public repository list saving is zero' : inputs.pricing === null ? 'price unavailable' : inputs.pricing.allowanceKnown ? 'explicit owner-supplied price basis' : 'allowance unknown; no positive list estimate'}.`,
     'Measured claims apply only to these seven sampled pushes. List estimates are not invoice savings. Provider and inference costs are not netted; no fleet, annual or net saving is established.',
     `Comparison limitations: ${measurement.limits.map(limit => /^[a-z0-9-]{1,100}$/.test(limit) ? limit : 'unsupported limit retained privately').join(', ')}.`,

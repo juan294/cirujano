@@ -42,6 +42,12 @@ describe('per-push measurement gate', () => {
     const failed = pushComparisonFixture(); failed.runs[0]!.prJobs[1] = { name: 'lint', conclusion: 'failure' };
     expect(comparePushMeasurement(failed)).toMatchObject({ status: 'rejected', limits: expect.arrayContaining(['pr-run-not-green']) });
   });
+  it('bills a skipped job zero even when GitHub reports it completing before it started', () => {
+    // Observed live on 2026-10-09: skipped jobs report completed_at one second before started_at.
+    const inputs = pushComparisonFixture();
+    for (const run of inputs.runs.filter(entry => entry.role === 'candidate')) run.jobs = run.jobs.map(entry => entry.conclusion === 'skipped' ? { ...entry, startedAt: '2026-10-10T10:00:01Z', completedAt: '2026-10-10T10:00:00Z' } : entry);
+    expect(comparePushMeasurement(inputs)).toMatchObject({ status: 'measured-improvement' });
+  });
   it('reports no improvement when a candidate saves less than one billed minute', () => {
     const inputs = pushComparisonFixture(); inputs.runs[3]!.jobs[0] = job(CLASSIFIER_JOB_ID, 'success', 12);
     expect(comparePushMeasurement(inputs)).toMatchObject({ status: 'no-improvement', limits: expect.arrayContaining(['saving-below-one-minute']) });
