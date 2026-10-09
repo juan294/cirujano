@@ -439,3 +439,76 @@ Plan: [2026-10-08-skip-validated-push.md](2026-10-08-skip-validated-push.md).
 - **Next phase entry:** Phase 4 needs an explicit owner go; revalidate `develop` HEAD. Phase 4
   must give the classifier job no `name:` (the rule matches the job id) and pin
   `refs/heads/<branch>` in its `if`.
+
+## Phase 4 handoff (2026-10-09)
+
+- **Objective and scope:** deterministic guard patch, classifier job generation, actionlint,
+  and `propose` for the family, as in [phase-4](2026-10-08-skip-validated-push-phases/phase-4.md).
+  No Sandbox, measurement, remote write or model call.
+- **Identity:** base `develop` `5338a71` (pushed; CI, CodeQL and Dependabot green, Sutura
+  skipped); branch `feat/skip-validated-push-p4` in `../cirujano-worktrees/svp-p4`, commit
+  `b860cbf`.
+- **Delivered:**
+  - Core:
+    - `push-patch.ts`: `createSkipValidatedPushPatch`, `validateGuardOnlyChange`,
+      `extractClassifierScript`, `classifierJob`, `inspectRenderablePushWorkflow`.
+    - `patch.ts` exports `unifiedPatch`.
+    - `guard-expression.ts` adds `conditionText` (exact `${{ }}` wrapper).
+    - `push-workflow.ts` gains new refusals and exports `list` and `triggerBranch`.
+  - CLI:
+    - `push-propose.ts`, with family dispatch in `propose.ts` (`retainedFamily`).
+    - `push-context.ts` adds `pushWorkflowEvidence`.
+    - `stage-output.ts` holds the shared `shellQuote` and `emitStage`.
+    - Collection and retained re-derivation use renderable eligibility.
+  - Fixtures:
+    - `push/patch/shapes.yml`, with goldens for 3 fixtures;
+    - `workflow-run-defaults.yml` and `workflow-runtime-env.yml`, added to the push manifest.
+  - Gate: `check-actionlint.mjs` lints 3 guarded workflows and requires shellcheck.
+- **TDD:**
+  - The patch, propose and new eligibility tests each failed first because the module or
+    rule was missing.
+  - Goldens were generated from the implementation and reviewed line by line before being
+    pinned. The one later golden change, `needs` moved onto the key line, was reviewed as a
+    diff.
+- **Gate (final tree, first run, load average about 22):** `build`, `typecheck`, `lint`,
+  `test`, `test:coverage`, `verify:optimization-actionlint` (11 cache plus 3 push
+  workflows), `evaluate.mjs --offline` (27 cases) and `git diff --check` all exited 0.
+  Test counts: core 518, runner 393, action 6, CLI 715. After the commit, `verify-bundle`
+  passed (the Action bundle is unchanged).
+- **Review:**
+  - First pass, CHANGES REQUESTED:
+    - B1 blocker: a `${{ }}` condition with surrounding characters (GitHub always-true) was
+      turned into the real condition.
+    - Should-fix: S1, a key-indented block `needs` gave invalid YAML; S2, inherited workflow
+      `defaults.run`/`env`; S3, shellcheck not enforced.
+    - Nits: N1 duplicate needs; N2 branch binding; N3 deep comment; N4 latency wording;
+      N5 test independence and an unreachable digest check.
+  - All were fixed or recorded, and the re-review was APPROVED.
+  - Its one nit, explicit-key YAML, is now refused in eligibility using YAML tokens.
+- **Simplify (3 reviewers: reuse, simplification, efficiency plus altitude):**
+  - Adopted:
+    - Renderable eligibility (the altitude finding: unrenderable workflows used to pass
+      eligibility and fail after inference).
+    - The create path renders once and proves the tree once.
+    - The redundant re-validation in `readPushProposalContext` is dropped.
+    - `list` and `triggerBranch` are reused.
+    - `pushWorkflowEvidence` is shared.
+    - One family probe.
+    - Shared `shellQuote`/`emitStage`; the disposition logic is simplified.
+    - The actionlint `lint` helper.
+  - Skipped:
+    - One copier for both families, and shared newline/indent helpers: both touch
+      cache-family code and bytes.
+    - A single strict parse returning document and tree: millisecond-scale under the 256 KiB
+      cap.
+    - Passing validated contexts through `readBoundDiagnosis`: a shared signature change.
+    - A family table in `service.ts`: do it in Phase 5 with the verify branch.
+    - Pinning the shellcheck version: the gate is local only.
+    - Test-helper consolidation in `push-patch.test.ts`: test-only churn.
+- **Risks carried forward:** the Phase 3 residuals; touched block `needs` lose inline
+  comments; one large diff hunk for multi-edit workflows; GitHub runtime semantics of the
+  guard are modeled, not observed (the Phase 7 control push).
+- **Next phase entry:** Phase 5 needs an explicit owner go; revalidate `develop` HEAD. Phase 5
+  must define the `push-guard` profile, bind it at verify time, and dispatch `verify` (and
+  the later `measure`/`report`) by family; `extractClassifierScript` and
+  `validateGuardOnlyChange` are its inputs.
