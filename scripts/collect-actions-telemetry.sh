@@ -37,8 +37,18 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# The owner lookup is the first GitHub read; retry it like the collector's own reads.
 if [ -z "$OWNER" ]; then
-  OWNER="$(gh api user --jq .login)"
+  for DELAY in 2 8 -; do
+    if OWNER="$(gh api user --jq .login)" && [ -n "$OWNER" ]; then
+      break
+    fi
+    if [ "$DELAY" = "-" ]; then
+      echo "telemetry: could not read the GitHub owner" >&2
+      exit 1
+    fi
+    sleep "$DELAY"
+  done
 fi
 
 CLI_PATH="${CIRUJANO_CLI_PATH:-}"

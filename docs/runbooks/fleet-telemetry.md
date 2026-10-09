@@ -49,6 +49,15 @@ writes the fleet report; a `CIRUJANO_FLEET_REGISTRY` that names a missing file
 fails every run after `latest.md` is written. A failed report exits non-zero, and the error log names
 the conflicting job key and the fields that differ.
 
+Collection is all or nothing: one failed GitHub read fails the day's snapshot.
+Each read is therefore retried twice, after 2 and 8 seconds, when the failure is
+transient (a timeout, a dropped or reset connection, a 5xx response, or truncated
+output). Authorization and not-found errors fail at once. The timeout covers a
+whole paginated read, and a retry starts again from page 1, so it is 2 minutes for
+the first attempt and 4 minutes for each retry. The wrapper's owner lookup retries
+the same way; setting `CIRUJANO_TELEMETRY_OWNER` skips it. A read that still fails
+is logged with its endpoint and attempt count.
+
 A job seen in several snapshots must match in every field. Two drifts are
 accepted. A retry's `createdAt` can be corrected to the attempt's own time. A
 repository whose visibility changed reprices its old jobs (`visibility` and the

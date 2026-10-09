@@ -11,6 +11,21 @@ const execFile = promisify(execFileCallback);
 const macIt = process.platform === 'darwin' ? it : it.skip;
 
 describe('telemetry scheduler', () => {
+  macIt('retries the owner lookup once GitHub answers, and never accepts an empty owner', { timeout: 30_000 }, async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'cirujano-owner-retry-')), bin = resolve(directory, 'bin');
+    await mkdir(bin);
+    await writeFile(resolve(bin, 'gh'), `#!/bin/bash\ncount=$(cat "${directory}/calls" 2>/dev/null || echo 0); echo $((count + 1)) > "${directory}/calls"\nif [ "$count" -eq 0 ]; then echo 'Get "https://api.github.com/user": net/http: TLS handshake timeout' >&2; exit 1; fi\necho "$GH_OWNER"\n`);
+    await chmod(resolve(bin, 'gh'), 0o700);
+    const mockCli = resolve(directory, 'cli.mjs');
+    await writeFile(mockCli, `const fs = await import('node:fs'); if (process.argv.includes('collect')) fs.writeFileSync(process.env.OWNER_SEEN, process.argv[process.argv.indexOf('--owner') + 1] ?? ''); if (process.argv.includes('report')) process.stdout.write('# report\\n');`);
+    const script = resolve(root, 'scripts/collect-actions-telemetry.sh');
+    const env = { PATH: `${bin}:${process.env['PATH'] ?? ''}`, HOME: directory, CIRUJANO_CLI_PATH: mockCli, CIRUJANO_TELEMETRY_STORE: resolve(directory, 'store'), OWNER_SEEN: resolve(directory, 'owner'), GH_OWNER: 'example-owner' };
+    await execFile(script, { env, timeout: 25_000 });
+    expect(await readFile(resolve(directory, 'calls'), 'utf8')).toBe('2\n');
+    expect(await readFile(resolve(directory, 'owner'), 'utf8')).toBe('example-owner');
+    await writeFile(resolve(directory, 'calls'), '1');
+    await expect(execFile(script, { env: { ...env, GH_OWNER: '' }, timeout: 25_000 })).rejects.toMatchObject({ stderr: expect.stringContaining('could not read the GitHub owner') });
+  });
   it('keeps credentials out of the launchd template and runs at login and daily', async () => {
     const template = await readFile(resolve(root, 'scripts/launchd/com.thecreativetoken.cirujano-telemetry.plist.in'), 'utf8');
     expect(template).toContain('<key>RunAtLoad</key>');

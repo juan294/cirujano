@@ -21,29 +21,44 @@ export function githubCliPath(environment: NodeJS.ProcessEnv): string {
   return environment['CIRUJANO_GH_PATH'] ?? '/opt/homebrew/bin/gh';
 }
 
-/** Read-only paginated GitHub read through the authenticated CLI; retries one transient timeout. */
-export async function githubPages(ghPath: string, endpoint: string, pageRunner: GitHubPageRunner): Promise<unknown[]> {
-  for (let attempt = 1; attempt <= 2; attempt += 1) {
+/**
+ * Read-only paginated GitHub read through the authenticated CLI. A transient failure (a timeout,
+ * a dropped or reset connection, a 5xx, or truncated output) is retried up to three attempts in
+ * all, so one network hiccup does not abort a whole collection; any other failure is final.
+ */
+export async function githubPages(ghPath: string, endpoint: string, pageRunner: GitHubPageRunner, retryDelaysMs: readonly number[] = [2_000, 8_000]): Promise<unknown[]> {
+  for (let attempt = 0; ; attempt += 1) {
     try {
+      // The timeout covers the whole paginated read, so a retry after a timeout gets twice as long.
       const { stdout } = await pageRunner(ghPath, ['api', '--paginate', '--slurp', endpoint], {
         encoding: 'utf8',
         maxBuffer: 64 * 1024 * 1024,
-        timeout: 60_000,
+        timeout: attempt === 0 ? 120_000 : 240_000,
       });
       const parsed: unknown = JSON.parse(stdout);
       return array(parsed, 'GitHub paginated response');
     } catch (error) {
-      if (attempt === 2 || !isTimeout(error)) throw error;
+      if (!isTransient(error)) throw error;
+      if (attempt >= retryDelaysMs.length) throw finalError(endpoint, error, attempt + 1);
+      await new Promise(resolve => setTimeout(resolve, retryDelaysMs[attempt]));
     }
   }
-  throw new Error('unreachable GitHub retry state');
 }
 
-function isTimeout(error: unknown): boolean {
+/** Gh's own transport errors (Go net/http and JSON), 5xx replies, and output cut short. */
+const TRANSIENT = /TLS handshake timeout|unexpected EOF|end of JSON input|connection reset|connection refused|i\/o timeout|Client\.Timeout|stream error|Server Error|HTTP 5\d\d/iu;
+function isTransient(error: unknown): boolean {
+  if (error instanceof SyntaxError) return true;
   if (typeof error !== 'object' || error === null) return false;
   const value = error as { killed?: unknown; signal?: unknown; message?: unknown; stderr?: unknown };
   if (value.killed === true || value.signal === 'SIGTERM') return true;
-  return [value.message, value.stderr].some((part) => typeof part === 'string' && /TLS handshake timeout/iu.test(part));
+  return [value.message, value.stderr].some((part) => typeof part === 'string' && TRANSIENT.test(part));
+}
+/** The last transient failure, with what the error log needs to trace it. */
+function finalError(endpoint: string, error: unknown, attempts: number): Error {
+  const value = error as { message?: unknown; killed?: unknown; signal?: unknown };
+  const details = [`${attempts} attempts`, ...(value.killed === true ? ['killed'] : []), ...(typeof value.signal === 'string' ? [`signal ${value.signal}`] : [])];
+  return new Error(`${endpoint}: ${String(value.message ?? error).trim()} (${details.join(', ')})`, { cause: error });
 }
 
 export function record(value: unknown, name: string): Record<string, unknown> {
