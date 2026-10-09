@@ -940,6 +940,15 @@ Plan: [2026-10-08-skip-validated-push.md](2026-10-08-skip-validated-push.md).
 - **Private evidence:** `~/.local/share/cirujano/optimization/push-live-20261009/` (mode 700),
   with the collect, diagnose, propose, verify, measure, report and publication operations, the
   cohort, the permits and the live model evaluation.
+- **Review:**
+  - First pass: no blockers, three should-fix items (the injection pass rule, stale demo
+    wording, and the authorization deviation) and nits.
+  - All were fixed or recorded, and the re-review APPROVED.
+- **Gate:** one full run on `f704213`, all green at load average about 9.
+  - Exit 0: `build`, `typecheck`, `lint`, `test`, `test:coverage`, actionlint, the Linux
+    harness proof (509 cells and 60 cases), `evaluate.mjs --offline`, `verify-bundle` and
+    `git diff --check`.
+  - Test counts: core 566, runner 393, action 6, CLI 770.
 - **Next:**
-  - After review and the local gate, integrate into `develop`. The push needs the owner's go.
+  - Local `develop` is integrated; the push needs the owner's go.
   - H6 (the judge package) follows in its own plan.
