@@ -42,7 +42,7 @@ export function decodeCohortManifest(value: unknown): CohortManifest {
   return value as CohortManifest;
 }
 
-function validatePricing(pricing: GitHubPricing | null): void {
+export function validatePricing(pricing: GitHubPricing | null): void {
   if (pricing === null) return;
   const value = exactObject(pricing, ['usdPerMinute', 'priceBasis', 'allowanceKnown'], 'pricing');
   if (typeof value.usdPerMinute !== 'number' || !Number.isFinite(value.usdPerMinute) || value.usdPerMinute < 0 || !boundedText(value.priceBasis) || typeof value.allowanceKnown !== 'boolean') invalid('pricing');

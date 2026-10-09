@@ -3,6 +3,7 @@ import {dirname,join,isAbsolute,resolve} from 'node:path';
 import {artifactFamily,canonicalJson,decodeFamilyArtifact,jsonDigest,sha256,gitBlobSha,PUSH_FAMILY,type ReportArtifact,type PublicationArtifact,type PushReportArtifact,type PushPublicationArtifact} from '@cirujano/core';
 import {array,record,positiveInteger} from '../github-api.js';
 import {githubGet,githubReadJson,readGitHubSource,type GitHubReadOptions} from './github-read.js';
+import {treeOf} from './push-measure.js';
 import {readPushReportContext} from './push-report-service.js';
 import {readReportContext} from './report-service.js';
 import {consumePermit,readPrivateJson,withOperationStore,type OperationStore} from './store.js';
@@ -13,7 +14,7 @@ export interface PublicationDisposition{status:'published'|'outcome-unknown'|'re
 interface PublicationIntent{schemaVersion:1;kind:'publication-intent';permitDigest:string;reportDigest:string;reportPath:string;requestHash:string;status:'intent'|'published'|'outcome-unknown'|'rejected';startedAt:string;latestArtifact:string|null;artifactDigest:string|null}
 type AnyReport=ReportArtifact|PushReportArtifact;
 /** What publication needs from either family's reviewed report: the report, its visibility, the candidate workflow and how to prove the base source. */
-interface Reviewed{report:AnyReport;visibility:'public'|'private';workflowPath:string;candidate:string;baseSource:(permit:PublicationPermit,options:PublicationOptions)=>Promise<void>}
+interface Reviewed{report:AnyReport;visibility:'public'|'private';candidate:string;baseSource:(permit:PublicationPermit,options:PublicationOptions)=>Promise<void>}
 function knownPublicationReason(error:unknown):string|null{return error instanceof Error&&/^publication-(?:ref-drift|marker-conflict|permit-invalid)$/.test(error.message)?error.message:null;}
 function exact(value:unknown,keys:string[]){canonicalJson(value);if(!value||typeof value!=='object'||Array.isArray(value)||Object.keys(value).sort().join(',')!==[...keys].sort().join(','))throw new Error('publication-companion-invalid');return value as Record<string,unknown>;}
 function ref(value:string):string{if(typeof value!=='string'||! /^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$/.test(value)||value.includes('..')||value.includes('//')||value.endsWith('/')||value.endsWith('.lock'))throw new Error('publication-ref-invalid');return value;}
@@ -27,19 +28,19 @@ async function refsReadback(permit:PublicationPermit,options:PublicationOptions)
 }
 async function readReviewed(path:string):Promise<Reviewed>{
  if(artifactFamily(await readPrivateJson(path))===PUSH_FAMILY){
-  const reviewed=await readPushReportContext(path),p=reviewed.context.proposal.provenance;
+  const reviewed=await readPushReportContext(path),treeSha=reviewed.context.input.structuralFacts.treeSha;
   // The base commit's whole tree is the collected one; the compare check then proves the head adds only the candidate workflow.
-  return{report:reviewed.report,visibility:reviewed.evidence.visibility,workflowPath:p.workflowPath,candidate:reviewed.context.candidate,baseSource:async(permit,options)=>{const commit=await githubGet(`repos/${permit.repository}/git/commits/${permit.baseSha}`,options);if(commit.sha!==permit.baseSha||record(commit.tree,'commit tree').sha!==reviewed.context.input.structuralFacts.treeSha)throw new Error('publication-source-drift');}};
+  return{report:reviewed.report,visibility:reviewed.evidence.visibility,candidate:reviewed.context.candidate,baseSource:async(permit,options)=>{if(await treeOf(`repos/${permit.repository}`,permit.baseSha,options)!==treeSha)throw new Error('publication-source-drift');}};
  }
- const reviewed=await readReportContext(path);
- return{report:reviewed.report,visibility:reviewed.evidence.visibility,workflowPath:reviewed.context.proposal.provenance.workflowPath,candidate:reviewed.context.candidate,baseSource:async(permit,options)=>{
-  for(const [sha,candidate]of [[permit.baseSha,false],[permit.headSha,true]]as const){const actual=await readGitHubSource(permit.repository,sha,options),expected=reviewed.context.source.files.map(file=>candidate&&file.path===reviewed.context.proposal.provenance.workflowPath?{...file,hash:sha256(reviewed.context.candidate),bytesBase64:Buffer.from(reviewed.context.candidate).toString('base64')}:file);if(actual.repositoryId!==permit.repositoryId||canonicalJson(actual.files)!==canonicalJson(expected))throw new Error('publication-source-drift');}
+ const reviewed=await readReportContext(path),files=reviewed.context.source.files,workflowPath=reviewed.context.proposal.provenance.workflowPath,candidate=reviewed.context.candidate;
+ return{report:reviewed.report,visibility:reviewed.evidence.visibility,candidate,baseSource:async(permit,options)=>{
+  for(const [sha,isCandidate]of [[permit.baseSha,false],[permit.headSha,true]]as const){const actual=await readGitHubSource(permit.repository,sha,options),expected=files.map(file=>isCandidate&&file.path===workflowPath?{...file,hash:sha256(candidate),bytesBase64:Buffer.from(candidate).toString('base64')}:file);if(actual.repositoryId!==permit.repositoryId||canonicalJson(actual.files)!==canonicalJson(expected))throw new Error('publication-source-drift');}
  }};
 }
 async function publicationSource(report:Reviewed,permit:PublicationPermit,options:PublicationOptions):Promise<void>{
  await refsReadback(permit,options);const repo=await githubGet(`repos/${permit.repository}`,options);if(repo.id!==permit.repositoryId||repo.full_name!==permit.repository||typeof repo.private!=='boolean'||(repo.private?'private':'public')!==report.visibility)throw new Error('publication-repository-drift');
  await report.baseSource(permit,options);
- const comparison=await githubGet(`repos/${permit.repository}/compare/${permit.baseSha}...${permit.headSha}`,options),files=array(comparison.files,'compare files').map(file=>record(file,'compare file'));if(comparison.status!=='ahead'||record(comparison.base_commit,'compare base').sha!==permit.baseSha||record(comparison.merge_base_commit,'merge base').sha!==permit.baseSha||files.length!==1||files[0]!.filename!==report.workflowPath||files[0]!.status!=='modified'||files[0]!.sha!==gitBlobSha(report.candidate))throw new Error('publication-diff-drift');
+ const comparison=await githubGet(`repos/${permit.repository}/compare/${permit.baseSha}...${permit.headSha}`,options),files=array(comparison.files,'compare files').map(file=>record(file,'compare file'));if(comparison.status!=='ahead'||record(comparison.base_commit,'compare base').sha!==permit.baseSha||record(comparison.merge_base_commit,'merge base').sha!==permit.baseSha||files.length!==1||files[0]!.filename!==report.report.provenance.workflowPath||files[0]!.status!=='modified'||files[0]!.sha!==gitBlobSha(report.candidate))throw new Error('publication-diff-drift');
 }
 function validPull(raw:unknown,permit:PublicationPermit,report:AnyReport):Record<string,unknown>{
  const pull=record(raw,'pull readback'),base=record(pull.base,'pull base'),head=record(pull.head,'pull head'),baseRepo=record(base.repo,'base repo'),headRepo=record(head.repo,'head repo'),number=positiveInteger(pull.number,'pull number');

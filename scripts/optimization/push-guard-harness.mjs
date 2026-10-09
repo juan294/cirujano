@@ -8335,7 +8335,7 @@ globalThis.fetch = async url => {
   return new Response(${JSON.stringify(NULL_BODY_STATUSES)}.includes(response.status) ? null : response.body, { status: response.status });
 };
 `;
-function fail3(code) {
+function fail4(code) {
   throw new Error(code);
 }
 async function runClassifierCase(script, testCase, timeoutMs = CASE_TIMEOUT_MS) {
@@ -8371,17 +8371,17 @@ async function runClassifierCase(script, testCase, timeoutMs = CASE_TIMEOUT_MS) 
   }
 }
 async function runPushGuardHarness(path2, expectedDigest, allowedPath = PAYLOAD_PATH) {
-  if (path2 !== allowedPath) fail3("push-harness-payload-path");
+  if (path2 !== allowedPath) fail4("push-harness-payload-path");
   const handle = await open(path2, constants.O_RDONLY | constants.O_NOFOLLOW);
   let bytes;
   try {
     const stat = await handle.stat();
-    if (!stat.isFile() || stat.size > PAYLOAD_BYTES) fail3("push-harness-payload-size");
+    if (!stat.isFile() || stat.size > PAYLOAD_BYTES) fail4("push-harness-payload-size");
     bytes = await handle.readFile();
   } finally {
     await handle.close();
   }
-  if (typeof expectedDigest !== "string" || sha256(bytes) !== expectedDigest) fail3("push-harness-payload-digest");
+  if (typeof expectedDigest !== "string" || sha256(bytes) !== expectedDigest) fail4("push-harness-payload-digest");
   const deadline = Date.now() + CASES_BUDGET_MS;
   const result = await verifyPushGuards(decodePushGuardPayload(parseStrictJson(bytes.toString("utf8"), PAYLOAD_BYTES)), async (script, testCase) => {
     const remaining = deadline - Date.now();
@@ -8389,7 +8389,7 @@ async function runPushGuardHarness(path2, expectedDigest, allowedPath = PAYLOAD_
   });
   const output = `${canonicalJson(result)}
 `;
-  if (Buffer.byteLength(output) > RESULT_BYTES) fail3("push-harness-result-size");
+  if (Buffer.byteLength(output) > RESULT_BYTES) fail4("push-harness-result-size");
   return output;
 }
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

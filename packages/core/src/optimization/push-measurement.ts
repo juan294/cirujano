@@ -3,7 +3,7 @@ import { canonicalJson, jsonDigest, OptimizationInputError } from './canonical.j
 import { array, digest, fail, id, literal, nullable, object, sha, text, timestamp } from './contracts.js';
 import type { Validator } from './contracts.js';
 import type { GitHubPricing } from './measurement.js';
-import { median } from './measurement.js';
+import { median, validatePricing } from './measurement.js';
 import { decodePushArtifact, decodePushProvenance, PUSH_FAMILY } from './push-contracts.js';
 import type { PushInputArtifact, PushMeasurementArtifact, PushMeasurementSample, PushProposalArtifact, PushProvenance, PushSandboxArtifact } from './push-contracts.js';
 import { CLASSIFIER_JOB_ID } from './push-guard.js';
@@ -39,10 +39,8 @@ export function decodePushCohortManifest(value: unknown): PushCohortManifest {
   const cohort = value as PushCohortManifest;
   if (cohort.entries.length !== PUSH_COHORT_ROLES.length) fail('cohort.entries');
   cohort.entries.forEach((entry, index) => { if (entry.role !== PUSH_COHORT_ROLES[index] || (entry.role === 'control') !== (entry.prNumber === null) || (entry.prNumber === null) !== (entry.prRunId === null)) fail(`cohort.entries[${index}]`); });
-  for (const key of ['run', 'head', 'pr'] as const) {
-    const values = cohort.entries.map(entry => key === 'run' ? `${entry.pushRunId}:${entry.attempt}` : key === 'head' ? entry.headSha : entry.prNumber).filter(value => value !== null);
-    if (new Set(values).size !== values.length) fail(`cohort.entries.${key}.duplicate`);
-  }
+  const unique = (key: string, values: unknown[]) => { const present = values.filter(value => value !== null); if (new Set(present).size !== present.length) fail(`cohort.entries.${key}.duplicate`); };
+  unique('run', cohort.entries.map(entry => `${entry.pushRunId}:${entry.attempt}`)); unique('head', cohort.entries.map(entry => entry.headSha)); unique('pr', cohort.entries.map(entry => entry.prNumber));
   return cohort;
 }
 
@@ -59,7 +57,8 @@ function guardedConclusion(jobs: PushRunJob[]): Conclusion {
  */
 export function comparePushMeasurement(inputs: PushComparisonInputs): PushMeasurementArtifact {
   canonicalJson(inputs);
-  object({ input: () => {}, proposal: () => {}, sandbox: () => {}, cohort: () => {}, runs: array(evidenceValidator), visibility: literal('public', 'private'), pricing: nullable(object({ usdPerMinute: (v, p) => { if (typeof v !== 'number' || !Number.isFinite(v) || v < 0) fail(p); }, priceBasis: text, allowanceKnown: literal(true, false) })) })(inputs, 'inputs');
+  object({ input: () => {}, proposal: () => {}, sandbox: () => {}, cohort: () => {}, runs: array(evidenceValidator), visibility: literal('public', 'private'), pricing: () => {} })(inputs, 'inputs');
+  validatePricing(inputs.pricing);
   const input = decodePushArtifact('input', inputs.input), proposal = decodePushArtifact('proposal', inputs.proposal), sandbox = decodePushArtifact('sandbox', inputs.sandbox), cohort = decodePushCohortManifest(inputs.cohort);
   const errors = new Set<string>(), shortfalls = new Set<string>();
   const reject = (condition: boolean, reason: string) => { if (condition) errors.add(reason); };
@@ -74,9 +73,9 @@ export function comparePushMeasurement(inputs: PushComparisonInputs): PushMeasur
   reject(inputs.runs.length !== cohort.entries.length || inputs.runs.some((run, index) => identity(run) !== identity(cohort.entries[index]!)), 'cohort-membership-drift');
 
   for (const run of inputs.runs) {
-    const unvalidated = run.role === 'control' || run.classifier?.validated === false;
-    const classifierJobs = run.jobs.filter(job => job.jobId === CLASSIFIER_JOB_ID);
-    const legs = (jobId: string) => run.jobs.filter(job => job.jobId === jobId);
+    const byJob = new Map<string, PushRunJob[]>();
+    for (const job of run.jobs) byJob.set(job.jobId, [...byJob.get(job.jobId) ?? [], job]);
+    const legs = (jobId: string) => byJob.get(jobId) ?? [], classifierJobs = legs(CLASSIFIER_JOB_ID);
     const minutes = run.jobs.map(job => job.conclusion === 'skipped' ? 0 : billableMinutesForJob(job));
     reject(run.jobs.some(job => job.jobId !== CLASSIFIER_JOB_ID && !guardedIds.includes(job.jobId)) || guardedIds.some(jobId => !legs(jobId).length) || minutes.includes(null)
       || (run.role === 'baseline' ? run.classifier !== null || classifierJobs.length !== 0 : run.classifier === null || classifierJobs.length !== 1)
@@ -91,7 +90,7 @@ export function comparePushMeasurement(inputs: PushComparisonInputs): PushMeasur
     reject(run.role === 'control' && run.classifier?.reasonCode !== 'no-merged-pr', 'control-not-direct');
     reject(run.role === 'candidate' && run.classifier?.validated === true && guardedIds.some(jobId => legs(jobId).some(job => job.conclusion !== 'skipped')), 'guard-not-honored');
     reject(run.role === 'candidate' && run.classifier?.validated === false && !ran, 'unvalidated-push-not-full');
-    if (run.role === 'candidate' && unvalidated) shortfalls.add('candidate-not-validated');
+    if (run.role === 'candidate' && run.classifier?.validated === false) shortfalls.add('candidate-not-validated');
     reject(run.prJobs.some(job => job.conclusion !== 'success'), 'pr-run-not-green');
     const billed = minutes.reduce<number>((sum, value) => sum + (value ?? 0), 0);
     const classifierMinutes = classifierJobs.reduce<number>((sum, job) => sum + (billableMinutesForJob(job) ?? 0), 0);
@@ -114,7 +113,7 @@ export function comparePushMeasurement(inputs: PushComparisonInputs): PushMeasur
   if (inputs.visibility === 'public') result.limits.push('public-github-list-saving-zero');
   else if (inputs.pricing === null) result.limits.push('github-pricing-unavailable');
   else if (!inputs.pricing.allowanceKnown) result.limits.push('github-allowance-unknown');
-  else if (result.status === 'measured-improvement') result.githubListSavingUsd = role('candidate').reduce((sum, push) => sum + result.baselineMedianMinutes - push.billedMinutes, 0) * inputs.pricing.usdPerMinute;
+  else if (result.status === 'measured-improvement') { result.githubListSavingUsd = role('candidate').reduce((sum, push) => sum + result.baselineMedianMinutes - push.billedMinutes, 0) * inputs.pricing.usdPerMinute; if (!Number.isFinite(result.githubListSavingUsd)) fail('list-estimate'); }
   result.limits.push(...shortfalls, ...errors);
   return decodePushArtifact('measurement', result);
 }

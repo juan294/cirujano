@@ -3,7 +3,7 @@ import { assertSameProvenance, decodeArtifact, validateDiagnosisEvidence, type D
 import { assertMeasuredEvidence, type ComparisonInputs } from './measurement.js';
 
 export interface ReportRenderInputs extends ComparisonInputs { diagnosis: DiagnosisArtifact; inference: InferenceArtifact; measurement: MeasurementArtifact; patch: string; baseRef: string; headRef: string }
-function fail(message: string): never { throw new OptimizationInputError(`Invalid optimization report: ${message}`); }
+export function fail(message: string): never { throw new OptimizationInputError(`Invalid optimization report: ${message}`); }
 export function ref(value: string): string { if (!/^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$/.test(value) || value.includes('..') || value.includes('//') || value.endsWith('/') || value.endsWith('.lock')) fail('unsafe ref'); return value; }
 // Only fixed text and typed identities may enter public Markdown. Free-form model,
 // provider, report-path and pricing strings remain in private immutable artifacts.

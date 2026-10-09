@@ -1,12 +1,11 @@
-import { canonicalJson, jsonDigest, OptimizationInputError, sha256 } from './canonical.js';
+import { canonicalJson, jsonDigest, sha256 } from './canonical.js';
 import { assertSamePushProvenance, decodePushArtifact, isLiteralWorkflowPath, PUSH_FAMILY, validatePushDiagnosisEvidence } from './push-contracts.js';
 import type { PushDiagnosisArtifact, PushInferenceArtifact, PushMeasurementArtifact, PushReportArtifact } from './push-contracts.js';
 import { CLASSIFIER_JOB_ID } from './push-guard.js';
 import { assertPushMeasuredEvidence, type PushComparisonInputs } from './push-measurement.js';
-import { currency, finish, ref, safeModel } from './report.js';
+import { currency, fail, finish, ref, safeModel } from './report.js';
 
 export interface PushReportRenderInputs extends PushComparisonInputs { diagnosis: PushDiagnosisArtifact; inference: PushInferenceArtifact; measurement: PushMeasurementArtifact; patch: string; baseRef: string; headRef: string }
-function fail(message: string): never { throw new OptimizationInputError(`Invalid optimization report: ${message}`); }
 const knownEvidenceIds = new Set(['classifier-reasons', 'push-history', 'workflow-eligibility']);
 
 /** The skip-validated-push report: fixed text and typed identities only, rendered from recomputed, bound evidence. */
@@ -25,12 +24,12 @@ export function renderPushReport(inputs: PushReportRenderInputs): PushReportArti
   const baseRef = ref(inputs.baseRef), headRef = ref(inputs.headRef);
   const proposalDigest = jsonDigest(proposal), sandboxDigest = jsonDigest(sandbox), measurementDigest = jsonDigest(measurement);
   const marker = `<!-- cirujano-optimization:${proposalDigest}:${measurementDigest} -->`;
-  const ready = measurement.status === 'measured-improvement' && inference.status === 'completed' && sandbox.status === 'sandbox-verified' && diagnosis.status === 'proposal';
+  // Control and coverage sentences are claims only the passed gate supports; a passed gate implies a verified Sandbox.
+  const passed = measurement.status === 'measured-improvement', ready = passed && inference.status === 'completed' && diagnosis.status === 'proposal';
   const status: PushReportArtifact['status'] = ready ? 'ready-to-publish' : measurement.status === 'no-improvement' ? 'no-improvement' : 'rejected';
   const publicRepository = inputs.visibility === 'public', repository = input.provenance.repository, branch = publicRepository ? input.provenance.integrationBranch : 'the integration branch';
-  // Control and coverage sentences are claims only the passed gate supports.
-  const passed = measurement.status === 'measured-improvement';
   const run = (id: number, attempt: number) => publicRepository ? `[${id} / ${attempt}](https://github.com/${repository}/actions/runs/${id}/attempts/${attempt})` : `${id} / ${attempt}`;
+  const prRun = (id: number | null) => id === null ? 'none' : publicRepository ? `[${id}](https://github.com/${repository}/actions/runs/${id})` : String(id);
   const guarded = input.provenance.guardedJobIds;
   const candidates = measurement.pushes.filter(push => push.role === 'candidate');
   const lines = [
@@ -57,7 +56,7 @@ export function renderPushReport(inputs: PushReportRenderInputs): PushReportArti
     '',
     '| Role | Push run / attempt | PR run | Validated | Guarded jobs | Billed min | Classifier min |',
     '| --- | --- | --- | --- | --- | ---: | ---: |',
-    ...measurement.pushes.map(push => `| ${push.role} | ${run(push.pushRunId, push.attempt)} | ${push.prRunId === null ? 'none' : publicRepository ? `[${push.prRunId}](https://github.com/${repository}/actions/runs/${push.prRunId})` : push.prRunId} | ${push.validated} | ${[...new Set(push.guardedJobs.map(job => job.conclusion))].join(' / ')} | ${push.billedMinutes} | ${push.classifierMinutes} |`),
+    ...measurement.pushes.map(push => `| ${push.role} | ${run(push.pushRunId, push.attempt)} | ${prRun(push.prRunId)} | ${push.validated} | ${[...new Set(push.guardedJobs.map(job => job.conclusion))].join(' / ')} | ${push.billedMinutes} | ${push.classifierMinutes} |`),
     '',
     `Baseline median billed minutes per push: ${measurement.baselineMedianMinutes}; candidate pushes: ${candidates.map(push => push.billedMinutes).join(', ')}.`,
     `Classifier overhead: ${measurement.classifierOverheadMinutes} billed minute(s) on every push to ${branch}, ${passed ? 'measured on the direct control push, which ran every guarded job' : 'read from the control push; the gate did not pass'}.`,

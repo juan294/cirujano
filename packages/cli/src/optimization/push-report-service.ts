@@ -3,11 +3,10 @@ import { canonicalJson, jsonDigest, renderPushReport, type PushReportArtifact, t
 import { readPushMeasurementContext, type PushMeasurementContext } from './push-measure.js';
 import { copyPushProposalContext, readPushProposalContext } from './push-propose.js';
 import { readPushSandboxContext, retainPushSandboxEvidence } from './push-verify.js';
-import type { ReportDisposition } from './report-service.js';
+import { exact, type ReportDisposition } from './report-service.js';
 import { readPrivateJson, readPrivateText, readPushArtifact, withOperationStore, type OperationStore } from './store.js';
 
 export interface PushReportContext extends PushMeasurementContext { report: PushReportArtifact; render: PushReportRenderInputs }
-function exact(value: unknown, keys: string[]): Record<string, unknown> { canonicalJson(value); if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).sort().join(',') !== [...keys].sort().join(',')) throw new Error('report-companion-invalid'); return value as Record<string, unknown>; }
 function renderInputs(measured: PushMeasurementContext, baseRef: string, headRef: string): PushReportRenderInputs {
   return { ...measured.comparison, diagnosis: measured.context.diagnosis, inference: measured.context.inference, measurement: measured.measurement, patch: measured.context.patch, baseRef, headRef };
 }

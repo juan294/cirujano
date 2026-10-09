@@ -36,6 +36,8 @@ function emit(args: OptimizeArguments, io: CliIo, status: string, reasonCode: st
   const result = { status, reasonCode, nextCommand,...(recovery?{recovery}:{}),...details };
   io.stdout(args.format === 'json' ? `${JSON.stringify(result)}\n` : `${status}: ${reasonCode}\nNext: ${nextCommand}\n${recovery?`Recovery: ${recovery}\n`:''}${details?.artifactPath?`Artifact: ${details.artifactPath}\n`:''}${details?.url?`Pull request: ${details.url}\n`:''}`);
 }
+/** Whether a retained artifact (by its `family` field) belongs to the skip-validated-push family. */
+const isPush = async (path: string) => await retainedFamily(path) === PUSH_FAMILY;
 function missing(error: unknown): boolean { return (error as NodeJS.ErrnoException).code === 'ENOENT'; }
 async function optionalJson(path: string): Promise<unknown | null> { try { return await readPrivateJson(path); } catch (error) { if (missing(error)) return null; throw error; } }
 async function moduleSourceIdentity(): Promise<{ toolSourceSha: string; bundleDigest: string }> {
@@ -55,14 +57,14 @@ export function createOptimizationService(options: OptimizationServiceOptions = 
       if (args.action === 'propose') return await runPropose(args, io);
       if(args.action==='measure'){
         // A push proposal (by its retained input's family) takes the per-push measurement and report.
-        const measure=await retainedFamily(join(dirname(flag(args,'proposal')),'input.json'))===PUSH_FAMILY?runPushMeasure:runMeasure;
+        const measure=await isPush(join(dirname(flag(args,'proposal')),'input.json'))?runPushMeasure:runMeasure;
         const result=await measure(flag(args,'proposal'),flag(args,'sandbox'),await readPrivateJson(flag(args,'cohort')),flag(args,'output'),options);
         emit(args,io,result.status,result.reasonCode,result.artifactPath?`cirujano optimize status --operation ${shellQuote(dirname(result.artifactPath))}`:statusCommand);return ['measured-improvement','no-improvement'].includes(result.status)?0:1;
       }
       if(args.action==='report'){
-        const report=await retainedFamily(join(dirname(flag(args,'proposal')),'input.json'))===PUSH_FAMILY?runPushReport:runReport;
-        // The PR refs default to the proof repository's main and develop; the push family's Phase 7 run pins its own.
-        const result=await report(flag(args,'proposal'),flag(args,'sandbox'),flag(args,'measurement'),flag(args,'output'),optionalFlag(args,'base-ref')??'main',optionalFlag(args,'head-ref')??'develop');
+        const report=await isPush(join(dirname(flag(args,'proposal')),'input.json'))?runPushReport:runReport;
+        // Without --base-ref/--head-ref the report keeps the proof repository's main and develop.
+        const result=await report(flag(args,'proposal'),flag(args,'sandbox'),flag(args,'measurement'),flag(args,'output'),optionalFlag(args,'base-ref'),optionalFlag(args,'head-ref'));
         emit(args,io,result.status,result.reasonCode,result.artifactPath?`cirujano optimize status --operation ${shellQuote(dirname(result.artifactPath))}`:statusCommand);return ['ready-to-publish','no-improvement'].includes(result.status)?0:1;
       }
       if(args.action==='publish'){
@@ -75,11 +77,11 @@ export function createOptimizationService(options: OptimizationServiceOptions = 
           const result=await reconcilePublication(directory,options);emit(args,io,result.status,result.reasonCode,statusCommand,undefined,result);return result.status==='published'?0:1;
         }
         if(intent&&typeof intent==='object'&&(intent as {kind?:unknown}).kind==='measurement-intent'){
-          const path=join(directory,'measurement.json'),context=await retainedFamily(path)===PUSH_FAMILY?await readPushMeasurementContext(path):await readMeasurementContext(path);emit(args,io,context.measurement.status,context.measurement.status,statusCommand);return context.measurement.status==='rejected'?1:0;
+          const path=join(directory,'measurement.json'),context=await isPush(path)?await readPushMeasurementContext(path):await readMeasurementContext(path);emit(args,io,context.measurement.status,context.measurement.status,statusCommand);return context.measurement.status==='rejected'?1:0;
         }
         const operation=await optionalJson(join(directory,'operation.json'));
         if(operation&&typeof operation==='object'&&(operation as {action?:unknown}).action==='report'){
-          const path=join(directory,'report.json'),context=await retainedFamily(path)===PUSH_FAMILY?await readPushReportContext(path):await readReportContext(path);emit(args,io,context.report.status,context.report.status,statusCommand);return context.report.status==='rejected'?1:0;
+          const path=join(directory,'report.json'),context=await isPush(path)?await readPushReportContext(path):await readReportContext(path);emit(args,io,context.report.status,context.report.status,statusCommand);return context.report.status==='rejected'?1:0;
         }
       }
 
@@ -90,7 +92,7 @@ export function createOptimizationService(options: OptimizationServiceOptions = 
           if(!iamToken)throw new ServiceError('sandbox-credential-required');
           const sandboxOptions={iamToken,...(options.fetch?{fetch:options.fetch}:{}),...(options.permitLedger?{permitLedger:options.permitLedger}:{})};
           // A push proposal (by its input's family) and a push journal (by its kind) take the push-guard verifier.
-          const push=args.action==='verify'?await retainedFamily(join(dirname(flag(args,'proposal')),'input.json'))===PUSH_FAMILY:kind==='push-guard-run';
+          const push=args.action==='verify'?await isPush(join(dirname(flag(args,'proposal')),'input.json')):kind==='push-guard-run';
           const [verify,cancel,reconcile]=push?[verifyPushGuard,cancelPushGuard,reconcilePushGuard]:[verifyPair,cancelSandbox,reconcileSandbox];
           const result=args.action==='verify'?await verify(flag(args,'proposal'),await readPrivateJson(flag(args,'profile')),await readPrivateJson(flag(args,'permit')),flag(args,'output'),sandboxOptions):args.action==='cancel'?await cancel(directory!,await readPrivateJson(flag(args,'permit')),sandboxOptions):await reconcile(directory!,sandboxOptions);
           emit(args,io,result.status,result.reasonCode,result.artifactPath?`cirujano optimize status --operation ${shellQuote(directory??flag(args,'output'))}`:statusCommand,result.recovery);return result.status==='sandbox-verified'?0:1;

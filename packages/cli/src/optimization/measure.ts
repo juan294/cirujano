@@ -16,7 +16,7 @@ interface MeasurementIntent {schemaVersion:1;kind:'measurement-intent';cohortDig
 interface MeasurementEvidence{schemaVersion:1;kind:'measurement-evidence';visibility:'public'|'private';pricing:GitHubPricing|null;samples:MeasurementSample[]}
 export interface MeasurementContext{context:ProposalContext;pair:Awaited<ReturnType<typeof readSandboxContext>>;cohort:CohortManifest;comparison:ComparisonInputs;measurement:MeasurementArtifact;intent:MeasurementIntent;evidence:MeasurementEvidence}
 const execute=promisify(execFile);
-function exact(value:unknown,keys:string[]){canonicalJson(value);if(!value||typeof value!=='object'||Array.isArray(value)||Object.keys(value).sort().join(',')!==[...keys].sort().join(','))throw new Error('measurement-companion-invalid');return value as Record<string,unknown>;}
+export function exact(value:unknown,keys:string[]){canonicalJson(value);if(!value||typeof value!=='object'||Array.isArray(value)||Object.keys(value).sort().join(',')!==[...keys].sort().join(','))throw new Error('measurement-companion-invalid');return value as Record<string,unknown>;}
 export async function binary(endpoint:string,maximum:number,options:MeasurementOptions):Promise<Buffer>{
  if(!/^repos\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/(?:actions\/artifacts\/\d+\/zip|actions\/jobs\/\d+\/logs)$/.test(endpoint))throw new Error('measurement-binary-endpoint');
  // gh 2.102 refuses colored job logs without this flag; bytes are captured and parsed as data, never printed.
