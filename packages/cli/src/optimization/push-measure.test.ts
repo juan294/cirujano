@@ -11,7 +11,8 @@ const directories: string[] = [];
 afterEach(async () => { for (const path of directories.splice(0)) await rm(path, { recursive: true, force: true }); });
 async function fixture() { const f = await pushMeasurementFixture(); directories.push(f.directory); return f; }
 
-describe('skip-validated-push measure, report and publish', () => {
+// Each test runs the whole collect, diagnose, propose and verify chain before measuring; 5 s is too tight under load.
+describe('skip-validated-push measure, report and publish', { timeout: 60_000 }, () => {
   it('measures the fixed cohort, renders the bound report and opens one unmerged PR', async () => {
     const f = await fixture();
     expect(await f.measure()).toBe(0); expect(f.last()).toMatchObject({ status: 'measured-improvement' });

@@ -816,6 +816,10 @@ Plan: [2026-10-08-skip-validated-push.md](2026-10-08-skip-validated-push.md).
     on node:22-bookworm `sha256:0e5f9065…`.
   - Test counts: core 564, runner 393, action 6, CLI 763.
   - Existing cache measurement, report and publish test files are unmodified.
+- **Push attempt:** the pre-push `ci:fast` failed (nothing was pushed). Two new CLI end-to-end
+  tests exceeded Vitest's 5 s default at load average about 58. Each runs collect through
+  verify before measuring, so their describe block now has a 60 s budget, the repo's per-test
+  timeout convention. The tests are otherwise unchanged.
 - **Review:**
   - First pass, CHANGES REQUESTED:
     - B1: publication refs could not be met in the Phase 7 sequence.
