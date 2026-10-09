@@ -1,5 +1,5 @@
-import { canonicalJson, OptimizationInputError } from './canonical.js';
-import { array, bool, candidate, checkInference, checkPublication, checkReport, decodeArtifact, digest, fail, id, imageValidator, inferenceFields, integer, literal, nullable, number, object, path, publicationFields, record, repo, reportFields, sandboxOperation, sha, structuralFacts, text, timestamp, uniqueStrings, usageValidator, validateTiming } from './contracts.js';
+import { canonicalJson, gitBlobSha, OptimizationInputError, sha256 } from './canonical.js';
+import { array, bool, candidate, checkInference, checkPublication, checkReport, decodeArtifact, digest, fail, id, imageValidator, inferenceFields, integer, literal, nullable, number, object, path, publicationFields, record, repo, reportFields, sandboxOperation, sha, sourceBytes, structuralFacts, text, timestamp, uniqueStrings, usageValidator, validateTiming } from './contracts.js';
 import type { ArtifactKind, ArtifactMap, Validator, InferenceArtifact, PublicationArtifact, ReportArtifact, SandboxOperation } from './contracts.js';
 import { CLASSIFIER_JOB_ID, isGuardedJobSet } from './push-guard.js';
 
@@ -47,7 +47,8 @@ export interface PushArtifactMap { input: PushInputArtifact; diagnosis: PushDiag
 const jobId: Validator = (v, p) => { if (!isGuardedJobSet([v])) fail(p); };
 const jobIdSet: Validator = (v, p) => { array(jobId)(v, p); if (!isGuardedJobSet(v as string[])) fail(p); };
 /** One literal branch name: no glob, negation, empty segment, `..` or `@{`, as `git check-ref-format` requires. */
-const branch: Validator = (v, p) => { if (typeof v !== 'string' || v.length > 255 || !/^[A-Za-z0-9._/-]+$/.test(v) || /^[-/.]|[/.]$|\/\/|\.\.|\/\.|\.lock(?:\/|$)/.test(v)) fail(p); };
+export function isLiteralBranch(value: unknown): value is string { return typeof value === 'string' && value.length <= 255 && /^[A-Za-z0-9._/-]+$/.test(value) && !/^[-/.]|[/.]$|\/\/|\.\.|\/\.|\.lock(?:\/|$)/.test(value); }
+const branch: Validator = (v, p) => { if (!isLiteralBranch(v)) fail(p); };
 const reasonCode: Validator = (v, p) => { if (typeof v !== 'string' || !/^[a-z0-9][a-z0-9-]{0,63}$/.test(v)) fail(p); };
 const guardedJobIds: Validator = (v, p) => { jobIdSet(v, p); if (!(v as string[]).length) fail(p); };
 const provenanceValidator = object({ repositoryId: id, repository: repo, baseSha: sha, workflowBlobSha: sha, workflowPath: path, workflowHash: digest, integrationBranch: branch, guardedJobIds: jobIdSet, classifierDigest: digest, verificationProfileHash: digest, toolSourceSha: sha, bundleDigest: digest });
@@ -138,4 +139,28 @@ export function validatePushDiagnosisEvidence(diagnosis: PushDiagnosisArtifact, 
   assertSamePushProvenance(diagnosis.provenance, input.provenance);
   if (diagnosis.evidenceIds.some(evidenceId => !Object.hasOwn(input.evidence, evidenceId))) fail('diagnosis.evidenceIds.unknown');
   if (diagnosis.operation && !input.operations.some(operation => canonicalJson(operation) === canonicalJson(diagnosis.operation))) fail('diagnosis.operation.unsupported');
+}
+
+/** The retained bytes a push input was derived from: every top-level workflow file and the verification profile. */
+export interface PushSourceManifest { schemaVersion: 1; kind: 'push-source'; family: typeof PUSH_FAMILY; provenance: PushProvenance; profilePath: string; files: { path: string; mode: '100644' | '100755'; hash: string; bytesBase64: string }[] }
+/** A workflow GitHub would run: a `.yml` or `.yaml` file directly under `.github/workflows/`. */
+export function isTopLevelWorkflowPath(path: string): boolean { return /^\.github\/workflows\/[^/]+\.ya?ml$/.test(path); }
+/** A workflow path an operator may name: top level, with a plain file name. */
+export function isLiteralWorkflowPath(path: string): boolean { return /^\.github\/workflows\/[A-Za-z0-9_.-]+\.ya?ml$/.test(path); }
+/** The retained file's text, decoded strictly as UTF-8. */
+export function pushSourceText(file: PushSourceManifest['files'][number]): string { return new TextDecoder('utf-8', { fatal: true }).decode(Buffer.from(file.bytesBase64, 'base64')); }
+export function decodePushSourceManifest(value: unknown): PushSourceManifest {
+  canonicalJson(value);
+  object({ schemaVersion: literal(1), kind: literal('push-source'), family: literal(PUSH_FAMILY), provenance: provenanceValidator, profilePath: path, files: array(object({ path, mode: literal('100644', '100755'), hash: digest, bytesBase64: sourceBytes }), 'path') })(value, 'pushSource');
+  const manifest = value as PushSourceManifest;
+  if (manifest.files.length > 500 || manifest.files.some((file, index) => index > 0 && manifest.files[index - 1]!.path >= file.path)) fail('pushSource.files.order');
+  let totalBytes = 0;
+  for (const file of manifest.files) {
+    const bytes = Buffer.from(file.bytesBase64, 'base64'); totalBytes += bytes.length;
+    if (file.path !== manifest.profilePath && !isTopLevelWorkflowPath(file.path)) fail('pushSource.file.scope');
+    if (bytes.length > 4 * 1024 * 1024 || totalBytes > 16 * 1024 * 1024 || bytes.toString('base64') !== file.bytesBase64 || sha256(bytes) !== file.hash) fail('pushSource.file.hash');
+  }
+  const workflow = manifest.files.find(file => file.path === manifest.provenance.workflowPath), profile = manifest.files.find(file => file.path === manifest.profilePath);
+  if (!workflow || workflow.hash !== manifest.provenance.workflowHash || gitBlobSha(Buffer.from(workflow.bytesBase64, 'base64')) !== manifest.provenance.workflowBlobSha || !profile || profile.hash !== manifest.provenance.verificationProfileHash) fail('pushSource.provenance');
+  return manifest;
 }

@@ -3,7 +3,7 @@ import { constants } from 'node:fs';
 import { chmod, lstat, mkdir, open, readlink, rename, unlink } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join, parse, resolve } from 'node:path';
-import { canonicalJson, decodeArtifact, parseStrictJson, type ArtifactKind, type ArtifactMap } from '@cirujano/core';
+import { canonicalJson, decodeArtifact, decodeFamilyArtifact, decodePushArtifact, parseStrictJson, type ArtifactKind, type ArtifactMap, type PushArtifactMap } from '@cirujano/core';
 import { acquireControllerLock, assertControllerLock, redactCredentialShapes, redactSecrets, writeJournalAtomic, type ControllerLock } from '@cirujano/runner';
 
 export const defaultOptimizationRoot = () => join(homedir(), '.local/share/cirujano/optimization');
@@ -77,6 +77,9 @@ export async function readPrivateJson(path: string, maximumBytes = 1024 * 1024):
 export async function readOptimizationArtifact<K extends ArtifactKind>(kind: K, path: string): Promise<ArtifactMap[K]> {
   return decodeArtifact(kind, await readPrivateJson(path));
 }
+export async function readPushArtifact<K extends ArtifactKind>(kind: K, path: string): Promise<PushArtifactMap[K]> {
+  return decodePushArtifact(kind, await readPrivateJson(path));
+}
 
 export class OperationStore {
   constructor(readonly directory: string, private readonly lock: ControllerLock) {}
@@ -100,8 +103,9 @@ export class OperationStore {
     await writeJournalAtomic(path, scrubOptimizationValue(value, options.secrets));
   }
 
-  async writeArtifact<K extends ArtifactKind>(kind: K, value: ArtifactMap[K], secrets: readonly string[] = []): Promise<void> {
-    const sanitized = decodeArtifact(kind, scrubOptimizationValue(decodeArtifact(kind, value), secrets));
+  /** Decodes by family: an artifact without `family` is a cache artifact, exactly as before families existed. */
+  async writeArtifact<K extends ArtifactKind>(kind: K, value: ArtifactMap[K] | PushArtifactMap[K], secrets: readonly string[] = []): Promise<void> {
+    const sanitized = decodeFamilyArtifact(kind, scrubOptimizationValue(decodeFamilyArtifact(kind, value), secrets));
     await this.writeJson(`${kind}.json`, sanitized);
   }
 

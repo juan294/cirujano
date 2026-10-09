@@ -31,7 +31,7 @@ export type Validator = (value: unknown, path: string) => void;
 export function fail(path: string): never { throw new OptimizationInputError(`Invalid optimization field: ${path}`); }
 export const text: Validator = (v, p) => { if (typeof v !== 'string' || !v || Buffer.byteLength(v) > 8192 || /[\u0000-\u0008\u000b\u000c\u000e-\u001f]/.test(v)) fail(p); };
 export const number: Validator = (v, p) => { if (typeof v !== 'number' || !Number.isFinite(v) || v < 0) fail(p); };
-const sourceBytes: Validator = (v,p) => { if (typeof v !== 'string' || Buffer.byteLength(v)>Math.ceil(4*1024*1024/3)*4 || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(v)) fail(p); };
+export const sourceBytes: Validator = (v,p) => { if (typeof v !== 'string' || Buffer.byteLength(v)>Math.ceil(4*1024*1024/3)*4 || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(v)) fail(p); };
 export const integer: Validator = (v, p) => { number(v,p); if (!Number.isSafeInteger(v)) fail(p); };
 export const id: Validator = (v,p) => { integer(v,p); if (v === 0) fail(p); };
 export const bool: Validator = (v,p) => { if (typeof v !== 'boolean') fail(p); };

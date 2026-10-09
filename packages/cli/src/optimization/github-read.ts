@@ -1,5 +1,5 @@
-import { canonicalJson, decodeActionReceipt, decodeArtifact, decodeSourceManifest, decodeVerificationProfile, gitBlobSha, inspectWorkflow, jsonDigest, OptimizationInputError, parseStrictJson, parseWorkflowSource, safeRelativePath, sha256 } from '@cirujano/core';
-import type { ActionReceipt, BaselineJob, InputArtifact, SourceManifest } from '@cirujano/core';
+import { billableMinutesForJob, canonicalJson, classifyPush, CLASSIFIER_DIGEST, createPushInput, decodeActionReceipt, decodeArtifact, decodePushSourceManifest, decodeSourceManifest, decodeVerificationProfile, gitBlobSha, inspectPushWorkflow, inspectWorkflow, isLiteralBranch, isLiteralWorkflowPath, isTopLevelWorkflowPath, jsonDigest, MAX_PUSH_HISTORY, OptimizationInputError, parseStrictJson, parseWorkflowSource, PUSH_FAMILY, pushSourceText, safeRelativePath, sha256 } from '@cirujano/core';
+import type { ActionReceipt, BaselineJob, ClassifierGet, InputArtifact, PushHistoryEntry, PushInputArtifact, PushSourceManifest, SourceManifest } from '@cirujano/core';
 import { defaultGitHubPageRunner, record, positiveInteger, text, timestamp, array } from '../github-api.js';
 import type { GitHubPageRunner } from '../github-api.js';
 import { createHash } from 'node:crypto';
@@ -32,7 +32,8 @@ function validateTree(tree:Record<string,unknown>[],rootSha:string):void {
 }
 
 /** Fixed GitHub origin, explicit GET, one bounded response, no retries or raw logs. */
-export async function githubReadJson(endpoint:string, options:GitHubReadOptions={}):Promise<unknown> {
+export async function githubReadJson(endpoint:string, options:GitHubReadOptions={}):Promise<unknown> { return parseStrictJson(await githubReadText(endpoint,options),8*1024*1024); }
+async function githubReadText(endpoint:string, options:GitHubReadOptions):Promise<string> {
  const comparison=/^repos\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/compare\/[a-f0-9]{40}\.\.\.[a-f0-9]{40}$/.exec(endpoint);
  const immutableComparison=comparison!==null&&!comparison[1]!.includes('..')&&comparison[1]!.split('/').every(part=>part!=='.');
  if(!/^repos\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\//.test(`${endpoint}/`)||(endpoint.includes('..')&&!immutableComparison)||endpoint.includes('/logs')||/[\s#\\]/.test(endpoint)) refuse('github-unsafe-endpoint');
@@ -41,7 +42,7 @@ export async function githubReadJson(endpoint:string, options:GitHubReadOptions=
  try { ({stdout}=await runner(options.ghPath??process.env['CIRUJANO_GH_PATH']??'gh',['api','--method','GET','--hostname','github.com',endpoint,'-H','Accept: application/vnd.github+json','-H','X-GitHub-Api-Version: 2022-11-28'],{encoding:'utf8',maxBuffer:8*1024*1024,timeout:60_000})); }
  catch { return refuse('github-read-failed'); }
  if(Buffer.byteLength(stdout)>8*1024*1024) refuse('github-response-too-large');
- return parseStrictJson(stdout,8*1024*1024);
+ return stdout;
 }
 export async function githubGet(endpoint:string, options:GitHubReadOptions={}):Promise<Record<string,unknown>> {return record(await githubReadJson(endpoint,options),'GitHub response');}
 export async function githubPaged(endpoint:string,key:string,options:GitHubReadOptions):Promise<Record<string,unknown>[]> {
@@ -61,9 +62,8 @@ function blobBytes(blob:Record<string,unknown>,expectedSha:string,expectedSize?:
  const encoded=blob.content.replace(/\n/g,'');if(!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(encoded)) refuse('github-blob-encoding');
  const bytes=Buffer.from(encoded,'base64');if(bytes.toString('base64')!==encoded||bytes.length!==blob.size||(expectedSize!==undefined&&bytes.length!==expectedSize)||gitBlobSha(bytes)!==expectedSha) refuse('github-blob-hash');return bytes;
 }
-/** Retains every regular file of the exact immutable Git tree; never checks out source. */
-export async function readGitHubSource(repository:string,commitSha:string,options:GitHubReadOptions={}):Promise<{repositoryId:number;files:SourceManifest['files'];treeSha:string}> {
- validateRepository(repository);exactSha(commitSha);
+/** The repository identity and the complete, hash-checked tree of one exact commit. */
+async function readGitHubTree(repository:string,commitSha:string,options:GitHubReadOptions):Promise<{repositoryId:number;treeSha:string;tree:Record<string,unknown>[]}> {
  const repo=await githubGet(`repos/${repository}`,options);
  if(repo.full_name!==repository||repo.fork!==false) refuse('github-repository-identity');const repositoryId=positiveInteger(repo.id,'repository.id');
  const commit=await githubGet(`repos/${repository}/git/commits/${commitSha}`,options);if(commit.sha!==commitSha) refuse('github-source-sha');
@@ -71,21 +71,32 @@ export async function readGitHubSource(repository:string,commitSha:string,option
  const response=await githubGet(`repos/${repository}/git/trees/${treeSha}?recursive=1`,options);if(response.sha!==treeSha||response.truncated!==false) refuse('github-tree-truncated-or-drift');
  const tree=array(response.tree,'tree').map(value=>record(value,'tree entry'));if(tree.length>10000) refuse('github-tree-limit');
  validateTree(tree,treeSha);
+ return {repositoryId,treeSha,tree};
+}
+/** Retains every regular file of the exact immutable Git tree; never checks out source. */
+export async function readGitHubSource(repository:string,commitSha:string,options:GitHubReadOptions={}):Promise<{repositoryId:number;files:SourceManifest['files'];treeSha:string}> {
+ validateRepository(repository);exactSha(commitSha);
+ const {repositoryId,treeSha,tree}=await readGitHubTree(repository,commitSha,options);
+ const files=await retainTreeFiles(repository,tree,options,()=>true,5000);
+ const regularPaths=new Set(files.map(file=>file.path));
+ if(files.some(file=>file.path.split('/').slice(0,-1).some((_,index)=>regularPaths.has(file.path.split('/').slice(0,index+1).join('/'))))) refuse('github-file-path-collision');
+ return {repositoryId,files,treeSha};
+}
+/** The kept regular files of a validated tree, each blob hash-checked, sorted by path; at most 4 MiB each and 16 MiB in all. */
+async function retainTreeFiles(repository:string,tree:Record<string,unknown>[],options:GitHubReadOptions,keep:(path:string)=>boolean,maxFiles:number):Promise<SourceManifest['files']> {
  const files:SourceManifest['files']=[];const seen=new Set<string>();let totalBytes=0;
  for(const entry of tree) {
   const path=safeRelativePath(text(entry.path,'tree.path'));if(seen.has(path)) refuse('github-tree-duplicate');seen.add(path);
   exactSha(entry.sha);
   if(entry.type==='tree'&&entry.mode==='040000') continue;
+  if(!keep(path)) continue;
   if(entry.type!=='blob'||(entry.mode!=='100644'&&entry.mode!=='100755')) refuse('github-unsafe-file-mode');
   if(typeof entry.size!=='number'||!Number.isSafeInteger(entry.size)||entry.size<0||entry.size>4*1024*1024) refuse('github-file-size');totalBytes+=entry.size;
-  if(totalBytes>16*1024*1024||files.length>=5000) refuse('github-source-size');
+  if(totalBytes>16*1024*1024||files.length>=maxFiles) refuse('github-source-size');
   const bytes=blobBytes(await githubGet(`repos/${repository}/git/blobs/${entry.sha}`,options),entry.sha as string,entry.size);
   files.push({path,mode:entry.mode,hash:sha256(bytes),bytesBase64:bytes.toString('base64')});
  }
- const regularPaths=new Set(files.map(file=>file.path));
- if(files.some(file=>file.path.split('/').slice(0,-1).some((_,index)=>regularPaths.has(file.path.split('/').slice(0,index+1).join('/'))))) refuse('github-file-path-collision');
- files.sort((a,b)=>a.path<b.path?-1:a.path>b.path?1:0);
- return {repositoryId,files,treeSha};
+ return files.sort((a,b)=>a.path<b.path?-1:a.path>b.path?1:0);
 }
 async function officialReceipt(options:GitHubReadOptions):Promise<ActionReceipt> {
  const release=await githubGet('repos/actions/setup-node/releases/tags/v7.0.0',options);
@@ -151,4 +162,47 @@ export async function collectGitHubInput(request:CollectionRequest,options:Colle
  if(eligibility.status==='eligible'&&(verifiedProfile.nodeVersion!==eligibility.structuralFacts.nodeVersion||verifiedProfile.pnpmVersion!==eligibility.structuralFacts.pnpmVersion)) refuse('github-profile-runtime-drift');
  const input=decodeArtifact('input',{schemaVersion:1,kind:'input',provenance,status:eligibility.status==='eligible'?'collected':eligibility.status,baselines,structuralFacts:{...eligibility.structuralFacts,reasonCode:eligibility.reason,treeSha:retained.treeSha,actionReceiptDigest:jsonDigest(receipt)},evidence:{...inventories,'setup-node-receipt':canonicalJson(receipt),'workflow-eligibility':eligibility.reason,'install-timing':canonicalJson(baselines.map(sample=>({runId:sample.runId,attempt:sample.attempt,installElapsedMs:sample.installElapsedMs})))},operations:eligibility.operations,requiredChecks});
  return {input,source,receipt,reasonCode:eligibility.status==='eligible'?'collected':eligibility.reason};
+}
+
+export interface PushCollectionRequest { repository: string; ref: string; workflow: string; branch: string }
+/** GitHub reads for the classifier: the same bounded `gh api` GET as every other read. A failed read becomes `api-error`. */
+function classifierReader(options:GitHubReadOptions):ClassifierGet { return async path=>({status:200,body:await githubReadText(path,options)}); }
+/** The last completed pushes of the workflow on the branch, each with its billed minutes and the classifier's verdict. */
+async function readPushHistory(request:PushCollectionRequest,repositoryId:number,options:GitHubReadOptions):Promise<PushHistoryEntry[]> {
+ const listing=await githubGet(`repos/${request.repository}/actions/workflows/${request.workflow.slice('.github/workflows/'.length)}/runs?branch=${encodeURIComponent(request.branch)}&event=push&status=completed&per_page=${MAX_PUSH_HISTORY}`,options);
+ const runs=array(listing.workflow_runs,'workflow_runs').map(value=>record(value,'workflow run'));
+ if(typeof listing.total_count!=='number'||!Number.isSafeInteger(listing.total_count)||runs.length!==Math.min(listing.total_count,MAX_PUSH_HISTORY)) refuse('github-push-history-incomplete');
+ const get=classifierReader(options),history:PushHistoryEntry[]=[];
+ for(const run of runs) {
+  const pushRunId=positiveInteger(run.id,'run.id'),attempt=positiveInteger(run.run_attempt,'run.attempt'),headSha=exactSha(run.head_sha),repo=record(run.repository,'run.repository'),head=record(run.head_repository,'run.head_repository');
+  if(run.path!==request.workflow||run.event!=='push'||run.head_branch!==request.branch||run.status!=='completed'||repo.id!==repositoryId||repo.full_name!==request.repository||head.id!==repositoryId||head.full_name!==request.repository||head.fork!==false) refuse('github-run-identity');
+  let billedMinutes=0,jobsBilled=0;
+  for(const job of await githubPaged(`repos/${request.repository}/actions/runs/${pushRunId}/attempts/${attempt}/jobs`,'jobs',options)) {
+   if(job.run_id!==pushRunId||job.run_attempt!==attempt||job.head_sha!==headSha||job.status!=='completed') refuse('github-job-inventory');
+   const minutes=billableMinutesForJob({name:text(job.name,'job.name'),startedAt:typeof job.started_at==='string'?job.started_at:null,completedAt:typeof job.completed_at==='string'?job.completed_at:null});
+   if(minutes===null&&job.conclusion!=='skipped'&&job.conclusion!=='cancelled') refuse('github-job-timing');
+   billedMinutes+=minutes??0;if(minutes) jobsBilled++;
+  }
+  // The runs API does not report forced pushes, so history models every push as not forced; the workflow step reads the real flag.
+  const verdict=await classifyPush({eventName:'push',ref:`refs/heads/${request.branch}`,sha:headSha,forced:false,repository:request.repository,repositoryId,workflowPath:request.workflow},get);
+  history.push({pushRunId,attempt,headSha,billedMinutes,jobsBilled,prNumber:verdict.prNumber,validated:verdict.validated,reasonCode:verdict.reasonCode});
+ }
+ return history;
+}
+/** `optimize collect --family skip-validated-push`: read-only; retains the workflow inventory and profile, never other source. */
+export async function collectPushInput(request:PushCollectionRequest,options:CollectionOptions):Promise<{input:PushInputArtifact;source:PushSourceManifest;reasonCode:string}> {
+ validateRepository(request.repository);exactSha(request.ref);
+ if(!isLiteralWorkflowPath(request.workflow)||!isLiteralBranch(request.branch)) refuse('github-invalid-collection-request');
+ if(!shaPattern.test(options.toolSourceSha)||!/^[a-f0-9]{64}$/.test(options.bundleDigest)) refuse('github-invalid-tool-identity');
+ const {repositoryId,treeSha,tree}=await readGitHubTree(request.repository,request.ref,options);
+ const files=await retainTreeFiles(request.repository,tree,options,path=>path===profilePath||isTopLevelWorkflowPath(path),500);
+ const workflow=files.find(file=>file.path===request.workflow),profile=files.find(file=>file.path===profilePath);
+ if(!workflow) refuse('github-missing-workflow');if(!profile) refuse('github-missing-verification-profile');
+ parseStrictJson(pushSourceText(profile));
+ const inventory=files.filter(file=>file!==profile).map(file=>({path:file.path,source:pushSourceText(file)}));
+ const eligibility=inspectPushWorkflow(pushSourceText(workflow),{workflowHash:workflow.hash,workflowPath:request.workflow,integrationBranch:request.branch,inventory});
+ const history=eligibility.status==='eligible'?await readPushHistory(request,repositoryId,options):[];
+ const input=createPushInput({provenance:{repositoryId,repository:request.repository,baseSha:request.ref,workflowBlobSha:gitBlobSha(Buffer.from(workflow.bytesBase64,'base64')),workflowPath:request.workflow,workflowHash:workflow.hash,integrationBranch:request.branch,classifierDigest:CLASSIFIER_DIGEST,verificationProfileHash:profile.hash,toolSourceSha:options.toolSourceSha,bundleDigest:options.bundleDigest},eligibility,history,treeSha});
+ const source=decodePushSourceManifest({schemaVersion:1,kind:'push-source',family:PUSH_FAMILY,provenance:input.provenance,profilePath,files});
+ return {input,source,reasonCode:input.status==='collected'?'collected':String(input.structuralFacts.reasonCode)};
 }

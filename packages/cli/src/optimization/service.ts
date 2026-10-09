@@ -3,14 +3,15 @@ import { readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import { canonicalJson, jsonDigest, sha256 } from '@cirujano/core';
+import { canonicalJson, jsonDigest, PUSH_FAMILY, sha256 } from '@cirujano/core';
 import type { CliIo } from '../cli.js';
 import type { GitHubPageRunner } from '../github-api.js';
 import type { OptimizeArguments } from './arguments.js';
 export type { OptimizeArguments } from './arguments.js';
-import { readRetainedOptimizationContext, RetainedInputError } from './input-context.js';
+import { RetainedInputError } from './input-context.js';
+import { pushCollectionReceipt, readPushDiagnosisContext, readRetainedFamilyContext } from './push-context.js';
 export { readRetainedOptimizationInput } from './input-context.js';
-import { collectGitHubInput } from './github-read.js';
+import { collectGitHubInput, collectPushInput } from './github-read.js';
 import { runPropose, readProposalStatus, readDiagnosisContext } from './propose.js';
 import { diagnoseOptimization, decodeInferencePreview } from './diagnose.js';
 import { decodeInferenceConfig, type InferenceIntent } from './nebius.js';
@@ -85,29 +86,35 @@ export function createOptimizationService(options: OptimizationServiceOptions = 
         }
       }
       if (args.action === 'collect') {
-        const output = flag(args, 'output'); const rawRuns = args.flags.run;
-        if (!Array.isArray(rawRuns) || rawRuns.some(run => !/^[1-9]\d*$/.test(run))) throw new ServiceError('optimization-invalid-arguments', 2);
+        const output = flag(args, 'output'), pushFamily = args.flags.family === PUSH_FAMILY; const rawRuns = args.flags.run;
+        if (!pushFamily && (!Array.isArray(rawRuns) || rawRuns.some(run => !/^[1-9]\d*$/.test(run)))) throw new ServiceError('optimization-invalid-arguments', 2);
         const identity = options.toolSourceSha && options.bundleDigest ? { toolSourceSha: options.toolSourceSha, bundleDigest: options.bundleDigest } : await (options.sourceIdentity ?? moduleSourceIdentity)();
-        const result = await collectGitHubInput({ repository: flag(args, 'repository'), ref: flag(args, 'ref'), workflow: flag(args, 'workflow'), job: flag(args, 'job'), runs: rawRuns.map(Number) }, { ...options, ...identity });
+        const result = pushFamily
+          ? await collectPushInput({ repository: flag(args, 'repository'), ref: flag(args, 'ref'), workflow: flag(args, 'workflow'), branch: flag(args, 'branch') }, { ...options, ...identity })
+          : await collectGitHubInput({ repository: flag(args, 'repository'), ref: flag(args, 'ref'), workflow: flag(args, 'workflow'), job: flag(args, 'job'), runs: (rawRuns as string[]).map(Number) }, { ...options, ...identity });
         if (canonicalJson(scrubOptimizationValue(result.input, secrets)) !== canonicalJson(result.input)) throw new ServiceError('collected-input-scrubbed');
         await withOperationStore(output, async store => {
           await store.writeText('source.json', canonicalJson(result.source));
-          await store.writeJson('action-receipt.json', result.receipt);
+          let collectionReceipt: unknown;
+          if ('receipt' in result) {
+            await store.writeJson('action-receipt.json', result.receipt);
+            collectionReceipt = { schemaVersion: 1, kind: 'collection-receipt', inputDigest: jsonDigest(result.input), sourceManifestDigest: jsonDigest(result.source), actionReceiptDigest: jsonDigest(result.receipt) };
+          } else collectionReceipt = pushCollectionReceipt(result.input, result.source);
           await store.writeArtifact('input', result.input);
-          await store.writeJson('collection-receipt.json', { schemaVersion: 1, kind: 'collection-receipt', inputDigest: jsonDigest(result.input), sourceManifestDigest: jsonDigest(result.source), actionReceiptDigest: jsonDigest(result.receipt) });
+          await store.writeJson('collection-receipt.json', collectionReceipt);
           const state: OperationState = { schemaVersion: 1, kind: 'optimization-operation', action: 'collect', status: result.input.status, reasonCode: result.reasonCode, nextCommand: `cirujano optimize diagnose --input ${shellQuote(join(output, 'input.json'))} --config <config.json> --output <diagnosis-operation>`, inputDigest: jsonDigest(result.input) };
           await store.writeJson('operation.json', state); emit(args, io, state.status, state.reasonCode, state.nextCommand);
         }); return 0;
       }
       if (args.action === 'diagnose') {
-        const { input, source, receipt, collectionReceipt } = await readRetainedOptimizationContext(flag(args, 'input')), output = flag(args, 'output');
+        const retained = await readRetainedFamilyContext(flag(args, 'input')), { input, source, collectionReceipt } = retained, output = flag(args, 'output');
         let config: unknown;
         try { config = decodeInferenceConfig(await readPrivateJson(flag(args, 'config'))); } catch { throw new ServiceError('invalid-inference-config', 2); }
         const permitPath = optionalFlag(args, 'permit'); const permit = permitPath ? await readPrivateJson(permitPath) : undefined;
         return await withOperationStore(output, async store => {
           if (await optionalJson(join(output, 'intent.json')) !== null) { emit(args, io, 'outcome-unknown', 'existing-inference-intent', statusCommand); return 1; }
           if (await optionalJson(join(output, 'operation.json')) !== null) throw new ServiceError('operation-already-exists');
-          await store.writeText('source.json', canonicalJson(source)); await store.writeJson('action-receipt.json', receipt); await store.writeArtifact('input', input); await store.writeJson('collection-receipt.json', collectionReceipt); await store.writeJson('config.json', config);
+          await store.writeText('source.json', canonicalJson(source)); if (retained.family !== PUSH_FAMILY) await store.writeJson('action-receipt.json', retained.receipt); await store.writeArtifact('input', input); await store.writeJson('collection-receipt.json', collectionReceipt); await store.writeJson('config.json', config);
           let recordedIntent: InferenceIntent | undefined;
           const result = await diagnoseOptimization(input, config, permit, { ...(options.fetch ? { fetch: options.fetch } : {}), ...(apiKey ? { apiKey } : {}), beforePost: async intent => {
             await store.writeJson('intent.json', { ...intent, status: 'intent' }, { secrets });
@@ -143,7 +150,7 @@ export function createOptimizationService(options: OptimizationServiceOptions = 
         if ((raw as {action?:unknown}).action === 'propose') { const state = await readProposalStatus(directory); emit(args,io,state.status,state.reasonCode,state.nextCommand); return 0; }
         const state = raw as OperationState;
         if (state.schemaVersion !== 1 || state.kind !== 'optimization-operation' || Object.keys(state).sort().join(',') !== ['action', 'inputDigest', 'kind', 'nextCommand', 'reasonCode', 'schemaVersion', 'status'].sort().join(',') || !['collect', 'diagnose'].includes(state.action) || !['collected', 'not-run', 'proposal', 'abstain', 'failed', 'outcome-unknown', 'no-change', 'unsupported'].includes(state.status) || typeof state.reasonCode !== 'string' || !/^[a-z][a-z0-9-]{0,100}$/.test(state.reasonCode) || typeof state.nextCommand !== 'string' || (state.nextCommand !== 'cirujano --help' && !state.nextCommand.startsWith('cirujano optimize ')) || state.nextCommand.length > 4096 || /[\u0000-\u001f\u007f]/.test(state.nextCommand) || (state.inputDigest !== null && !/^[a-f0-9]{64}$/.test(state.inputDigest))) throw new ServiceError('operation-state-invalid');
-        const { input } = await readRetainedOptimizationContext(join(directory, 'input.json'));
+        const { input, family } = await readRetainedFamilyContext(join(directory, 'input.json'));
         if (jsonDigest(input) !== state.inputDigest || (state.action === 'collect' && state.status !== input.status)) throw new ServiceError('operation-state-invalid');
         if ((state.status === 'no-change' && input.status !== 'no-change') || (state.status === 'unsupported' && input.status !== 'unsupported')) throw new ServiceError('operation-state-invalid');
         if (state.status === 'not-run') {
@@ -152,7 +159,7 @@ export function createOptimizationService(options: OptimizationServiceOptions = 
           if (preview.inputDigest !== state.inputDigest || !expected.preview || canonicalJson(preview) !== canonicalJson(expected.preview)) throw new ServiceError('operation-state-invalid');
         }
         if (state.status === 'proposal' || state.status === 'abstain') {
-          const diagnosisContext=await readDiagnosisContext(join(directory,'input.json'),join(directory,'diagnosis.json'));
+          const diagnosisContext=family===PUSH_FAMILY?await readPushDiagnosisContext(join(directory,'input.json'),join(directory,'diagnosis.json')):await readDiagnosisContext(join(directory,'input.json'),join(directory,'diagnosis.json'));
           if(diagnosisContext.diagnosis.status!==state.status) throw new ServiceError('operation-state-invalid');
         }
         emit(args, io, state.status, state.reasonCode, state.nextCommand); return ['failed', 'outcome-unknown', 'unsupported'].includes(state.status) ? 1 : 0;

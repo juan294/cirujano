@@ -7,6 +7,7 @@ export const VERSION = '0.0.1';
 export const USAGE = [
   'Usage:',
   '  cirujano optimize collect --repository <owner/name> --ref <sha> --workflow <path> --job <key> --run <id>... --output <directory>',
+  '  cirujano optimize collect --family skip-validated-push --repository <owner/name> --ref <sha> --workflow <path> --branch <name> --output <directory>',
   '  cirujano optimize diagnose --input <input.json> --config <config.json> --output <directory> [--permit <permit.json>]',
   '  cirujano optimize propose --input <input.json> --diagnosis <diagnosis.json> --output <directory>',
   '  cirujano optimize verify --proposal <proposal.json> --profile <profile.json> --permit <permit.json> --output <directory>',

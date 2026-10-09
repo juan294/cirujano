@@ -1,5 +1,8 @@
+import { isLiteralBranch, isLiteralWorkflowPath } from '@cirujano/core';
 import { ArgumentError } from '../args.js';
 
+/** `collect --family skip-validated-push` replaces `--job`/`--run` with `--branch`; without `--family` it is the cache family. */
+const pushCollect = ['family','repository','ref','workflow','branch','output'] as const;
 const required = {
   collect: ['repository','ref','workflow','job','run','output'],
   diagnose: ['input','config','output'], propose: ['input','diagnosis','output'],
@@ -15,7 +18,9 @@ export function parseOptimizeArguments(argv: readonly string[]): OptimizeArgumen
   const [action,...rest] = argv;
   if (!action || !Object.hasOwn(required, action)) throw new ArgumentError('optimize requires collect, diagnose, propose, verify, measure, report, publish, status or cancel.');
   const selected = action as Action;
-  const allowed: readonly string[] = [...required[selected], ...(selected==='diagnose'?['permit']:[]), 'format'];
+  const pushFamily = selected==='collect' && rest.includes('--family');
+  const requiredFlags: readonly string[] = pushFamily ? pushCollect : required[selected];
+  const allowed: readonly string[] = [...requiredFlags, ...(selected==='diagnose'?['permit']:[]), 'format'];
   const flags: Record<string,string|string[]> = {};
   let format: 'json'|'text' = 'json';
   for(let index=0;index<rest.length;index+=2) {
@@ -30,14 +35,20 @@ export function parseOptimizeArguments(argv: readonly string[]): OptimizeArgumen
     if(key==='run') flags[key]=[...(flags[key] as string[]|undefined??[]),value];
     else flags[key]=value;
   }
-  for(const key of required[selected]) if(!Object.hasOwn(flags,key)) throw new ArgumentError(`optimize ${selected} requires --${key}.`);
+  for(const key of requiredFlags) if(!Object.hasOwn(flags,key)) throw new ArgumentError(`optimize ${selected} requires --${key}.`);
+  if(pushFamily) {
+    if(flags.family!=='skip-validated-push') throw new ArgumentError('--family must be skip-validated-push.');
+    if(!isLiteralBranch(flags.branch)) throw new ArgumentError('--branch must be one literal branch name.');
+  }
   if(selected==='collect') {
     if(!/^[A-Za-z0-9_-][A-Za-z0-9_.-]*\/[A-Za-z0-9_-][A-Za-z0-9_.-]*$/u.test(String(flags.repository))) throw new ArgumentError('--repository must be owner/name.');
     if(!/^[a-f0-9]{40}$/u.test(String(flags.ref))) throw new ArgumentError('--ref must be a full lowercase commit SHA.');
-    if(!/^\.github\/workflows\/[A-Za-z0-9_.-]+\.ya?ml$/u.test(String(flags.workflow))) throw new ArgumentError('--workflow must be a literal GitHub workflow path.');
-    if(!/^[A-Za-z_][A-Za-z0-9_-]*$/u.test(String(flags.job))) throw new ArgumentError('--job must be a literal job key.');
-    const runs=flags.run as string[];
-    if(runs.length>10 || new Set(runs).size!==runs.length || runs.some(run=>!/^\d+$/u.test(run)||!Number.isSafeInteger(Number(run))||Number(run)<1)) throw new ArgumentError('--run requires up to ten distinct positive run IDs.');
+    if(!isLiteralWorkflowPath(String(flags.workflow))) throw new ArgumentError('--workflow must be a literal GitHub workflow path.');
+    if(!pushFamily) {
+      if(!/^[A-Za-z_][A-Za-z0-9_-]*$/u.test(String(flags.job))) throw new ArgumentError('--job must be a literal job key.');
+      const runs=flags.run as string[];
+      if(runs.length>10 || new Set(runs).size!==runs.length || runs.some(run=>!/^\d+$/u.test(run)||!Number.isSafeInteger(Number(run))||Number(run)<1)) throw new ArgumentError('--run requires up to ten distinct positive run IDs.');
+    }
   }
   delete flags.format;
   return {command:'optimize',action:selected,flags,format};

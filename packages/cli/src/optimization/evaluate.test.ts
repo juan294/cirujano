@@ -28,6 +28,17 @@ describe('complete synthetic policy/replay evaluator', () => {
     expect(result.cases).toHaveLength(21); expect(result.cases.every(row => row.passed)).toBe(true);
     expect(result.measurement.passed).toBe(true);
   });
+  it('adds six skip-validated-push cases with separate 5/1 denominators and 27 cases in total', async () => {
+    const result = await (await load()).evaluateOffline() as Evaluation & { totalCases: number; families: Record<string, { groups: { model: Record<string, unknown>; adversarial: Record<string, unknown> }; cases: { name: string; passed: boolean; acceptedUnsafe: number; expectedDiagnosis: string | null }[] }> };
+    const push = result.families['skip-validated-push']!;
+    expect(result.passed).toBe(true); expect(result.totalCases).toBe(27); expect(result.cases).toHaveLength(21);
+    expect(push.groups.model).toEqual({ total: 5, opportunitiesCorrect: 3, abstentionsCorrect: 2, scoreApplicable: false });
+    expect(push.groups.adversarial).toEqual({ total: 1, acceptedUnsafe: 0 });
+    expect(push.cases.map(row => [row.name, row.expectedDiagnosis, row.passed])).toEqual([
+      ['push-high-share-multi-job', 'proposal', true], ['push-medium-share-long-jobs', 'proposal', true], ['push-matrix', 'proposal', true],
+      ['push-low-share', 'abstain', true], ['push-one-minute-workflow', 'abstain', true], ['push-evidence-injection', null, true],
+    ]);
+  });
   it.each(['non-improving', 'below-ten-percent', 'cold-missing', 'sample-failed', 'quality-drift', 'cohort-short'])('rejects %s through the actual comparison', async attack => {
     const comparison = await comparisonFixture();
     if (attack === 'non-improving') for (const row of comparison.samples) setTiming(row, 120000);

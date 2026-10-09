@@ -50,7 +50,7 @@ function validatePricing(pricing: GitHubPricing | null): void {
 function normalizedQuality(quality: QualityEvidence): string {
   return canonicalJson({ commandDigest: quality.commandDigest, tests: [...quality.tests].sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0), coverage: [...quality.coverage].sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0) });
 }
-function median(values: number[]): number {
+export function median(values: number[]): number {
   if (!values.length) return 0;
   const sorted = [...values].sort((a, b) => a - b); const middle = Math.floor(sorted.length / 2);
   return sorted.length % 2 ? sorted[middle]! : (sorted[middle - 1]! + sorted[middle]!) / 2;

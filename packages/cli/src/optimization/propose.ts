@@ -1,38 +1,27 @@
 import { realpath } from 'node:fs/promises';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join } from 'node:path';
 import { assertSameProvenance, canonicalJson, createPnpmCachePatch, decodeArtifact, jsonDigest, sha256, validateCacheOnlyChange, validateDiagnosisEvidence, type ProposalArtifact, type DiagnosisArtifact, type InferenceArtifact, type PnpmCachePatch } from '@cirujano/core';
 import type { CliIo } from '../cli.js';
 import type { OptimizeArguments } from './arguments.js';
-import { diagnoseOptimization } from './diagnose.js';
+import { exactKeys, readBoundDiagnosis, record, type DiagnosisFamily } from './diagnosis-journal.js';
 import { readRetainedOptimizationContext } from './input-context.js';
-import { decodeInferenceConfig } from './nebius.js';
 import { readOptimizationArtifact, readPrivateJson, readPrivateText, withOperationStore, type OperationStore } from './store.js';
 
 type InputContext = Awaited<ReturnType<typeof readRetainedOptimizationContext>>;
 interface DiagnosisContext extends InputContext { diagnosis: DiagnosisArtifact; inference: InferenceArtifact; config: unknown; intent: unknown; diagnosisState: unknown }
 export interface ProposalContext extends DiagnosisContext { proposal: ProposalArtifact; candidate: string; patch: string }
 const preconditions = ['exact-retained-source', 'verified-setup-node-v7', 'timed-frozen-pnpm-install', 'no-step-output-consumers', 'unchanged-command-and-quality-profile'];
-function record(value: unknown): Record<string,unknown> { if (!value || typeof value!=='object' || Array.isArray(value)) throw new Error('invalid-proposal-evidence'); return value as Record<string,unknown>; }
-function exactKeys(value:Record<string,unknown>,keys:string[]):void { if(Object.keys(value).sort().join(',')!==keys.sort().join(',')) throw new Error('invalid-proposal-evidence'); }
 function workflow(context:InputContext):string { return Buffer.from(context.source.files.find(file=>file.path===context.input.provenance.workflowPath)!.bytesBase64,'base64').toString('utf8'); }
 function editor(context:InputContext):PnpmCachePatch { return createPnpmCachePatch(workflow(context),{provenance:context.input.provenance,receipt:context.receipt,rootLockfile:true,timedBaseline:context.input.baselines.length>0,requiredChecks:context.input.requiredChecks,verificationProfilePresent:true}); }
 
-export async function readDiagnosisContext(inputPath:string,diagnosisPath:string,stateFile='operation.json',intentFile='intent.json'):Promise<DiagnosisContext> {
-  const context=await readRetainedOptimizationContext(inputPath),directory=dirname(diagnosisPath);
-  const retained=resolve(inputPath)===resolve(join(directory,'input.json'))?context:await readRetainedOptimizationContext(join(directory,'input.json'));
-  if(jsonDigest(retained.input)!==jsonDigest(context.input)||jsonDigest(retained.source)!==jsonDigest(context.source)) throw new Error('diagnosis-source-drift');
-  const diagnosis=await readOptimizationArtifact('diagnosis',diagnosisPath),inference=await readOptimizationArtifact('inference',join(directory,'inference.json'));
-  assertSameProvenance(context.input.provenance,inference.provenance);validateDiagnosisEvidence(diagnosis,context.input);
-  if(inference.status!=='completed'||diagnosis.inferenceReceiptDigest!==jsonDigest(inference)) throw new Error('invalid-inference-receipt');
-  const config=decodeInferenceConfig(await readPrivateJson(join(directory,'config.json'))),preview=(await diagnoseOptimization(context.input,config,undefined)).preview;
-  if(!preview||inference.requestHash!==preview.requestHash||inference.requestedModel!==config.model) throw new Error('inference-request-drift');
-  const intent=record(await readPrivateJson(join(directory,intentFile)));
-  exactKeys(intent,['schemaVersion','kind','attemptId','permitId','permitDigest','inputDigest','requestHash','requestBytes','model','endpoint','startedAt','status','reasonCode','inferenceReceiptDigest','diagnosisDigest']);
-  if(intent.schemaVersion!==1||intent.kind!=='inference-intent'||intent.status!==diagnosis.status||intent.reasonCode!==(diagnosis.status==='proposal'?'model-proposal-validated':'model-abstained')||intent.inputDigest!==preview.inputDigest||intent.requestHash!==preview.requestHash||intent.requestBytes!==preview.requestBytes||intent.model!==preview.model||intent.endpoint!==preview.endpoint||intent.startedAt!==inference.startedAt||intent.inferenceReceiptDigest!==jsonDigest(inference)||intent.diagnosisDigest!==jsonDigest(diagnosis)||typeof intent.permitDigest!=='string'||!/^[a-f0-9]{64}$/.test(intent.permitDigest)||typeof intent.permitId!=='string'||!/^[A-Za-z0-9_-]{1,128}$/.test(intent.permitId)||intent.attemptId!==jsonDigest({permitDigest:intent.permitDigest,inputDigest:preview.inputDigest,requestHash:preview.requestHash})) throw new Error('inference-journal-drift');
-  const diagnosisState=record(await readPrivateJson(join(directory,stateFile)));
-  exactKeys(diagnosisState,['schemaVersion','kind','action','status','reasonCode','nextCommand','inputDigest']);
-  if(diagnosisState.schemaVersion!==1||diagnosisState.kind!=='optimization-operation'||diagnosisState.action!=='diagnose'||diagnosisState.status!==diagnosis.status||diagnosisState.inputDigest!==jsonDigest(context.input)) throw new Error('diagnosis-journal-drift');
-  return {...context,diagnosis,inference,config,intent,diagnosisState};
+const cacheDiagnosis:DiagnosisFamily<InputContext,DiagnosisArtifact,InferenceArtifact>={
+  readContext:readRetainedOptimizationContext,
+  readDiagnosis:path=>readOptimizationArtifact('diagnosis',path),
+  readInference:path=>readOptimizationArtifact('inference',path),
+  bind:(context,diagnosis,inference)=>{assertSameProvenance(context.input.provenance,inference.provenance);validateDiagnosisEvidence(diagnosis,context.input);},
+};
+export function readDiagnosisContext(inputPath:string,diagnosisPath:string,stateFile='operation.json',intentFile='intent.json'):Promise<DiagnosisContext> {
+  return readBoundDiagnosis(cacheDiagnosis,inputPath,diagnosisPath,stateFile,intentFile);
 }
 function proposalFor(context:DiagnosisContext,patch:PnpmCachePatch,candidateSha:string|null=null):ProposalArtifact {
   if(context.diagnosis.status!=='proposal'||patch.status!=='proposed') throw new Error('model-proposal-required');
