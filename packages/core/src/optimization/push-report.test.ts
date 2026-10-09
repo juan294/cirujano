@@ -47,6 +47,8 @@ describe('skip-validated-push report', () => {
   it('prints a known inference cost in short decimal form', () => {
     const f = fixture(); f.inference.costStatus = 'known'; f.inference.cost = { amount: 0.00012251999999999999, currency: 'USD' }; refresh(f);
     expect(renderPushReport(f).markdown).toContain('Inference cost: known; 0.00012252 USD.');
+    f.inference.cost = { amount: 0.0000001, currency: 'USD' }; refresh(f);
+    expect(renderPushReport(f).markdown).toContain('Inference cost: known; 0.0000001 USD.');
   });
   it('reports a rejected gate without a ready claim', () => {
     const f = fixture(); f.runs[6]!.classifier = { validated: true, reasonCode: 'validated' }; refresh(f);

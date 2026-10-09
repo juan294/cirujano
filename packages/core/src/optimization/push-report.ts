@@ -6,6 +6,8 @@ import { assertPushMeasuredEvidence, type PushComparisonInputs } from './push-me
 import { currency, fail, finish, ref, safeModel } from './report.js';
 
 export interface PushReportRenderInputs extends PushComparisonInputs { diagnosis: PushDiagnosisArtifact; inference: PushInferenceArtifact; measurement: PushMeasurementArtifact; patch: string; baseRef: string; headRef: string }
+/** Fixed decimals, trimmed: provider float noise (0.00012251999999999999) and exponents stay out of the public text. */
+function costText(amount: number): string { return amount.toFixed(10).replace(/\.?0+$/, '') || '0'; }
 const knownEvidenceIds = new Set(['classifier-reasons', 'push-history', 'workflow-eligibility']);
 
 /** The skip-validated-push report: fixed text and typed identities only, rendered from recomputed, bound evidence. */
@@ -48,8 +50,7 @@ export function renderPushReport(inputs: PushReportRenderInputs): PushReportArti
     '',
     `Model requested: ${safeModel(inference.requestedModel)}; returned: ${safeModel(inference.returnedModel)}; status: ${inference.status}; finish: ${finish(inference.finishReason)}.`,
     `Tokens (prompt / completion / total): ${inference.usage ? `${inference.usage.promptTokens} / ${inference.usage.completionTokens} / ${inference.usage.totalTokens}` : 'unavailable'}.`,
-    // Six significant digits keep provider float noise (0.00012251999999999999) out of the public text.
-    `Inference cost: ${inference.costStatus}${inference.cost ? `; ${Number(inference.cost.amount.toPrecision(6))} ${currency(inference.cost.currency)}` : ''}.`,
+    `Inference cost: ${inference.costStatus}${inference.cost ? `; ${costText(inference.cost.amount)} ${currency(inference.cost.currency)}` : ''}.`,
     `Sandbox: ${sandbox.status}; network disabled; cleanup: ${sandbox.cleanupState}.`,
     `Sandbox guard matrix: ${sandbox.matrixCells} cells, ${sandbox.mismatches} mismatches; classifier cases: ${sandbox.classifierCases}.`,
     `Sandbox usage: ${sandbox.usage ? `${sandbox.usage.value}; ${sandbox.usage.unit === 'undocumented-provider-unit' ? 'undocumented-provider-unit' : 'provider unit retained in private evidence'}; ${sandbox.usage.currency === null ? 'currency unavailable' : currency(sandbox.usage.currency)}` : 'unavailable'}.`,

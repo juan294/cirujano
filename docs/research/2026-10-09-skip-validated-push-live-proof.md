@@ -39,11 +39,15 @@ so the GitHub list-price saving is zero.
    `sandbox-verified`, confirmed by provider readback. It checked 69 guard-matrix cells and
    60 classifier cases, with 0 mismatches, in 6.7 s.
 5. **Integrate.** PR #4 landed the candidate on `develop`.
-   - Its PR run skipped the classifier and still ran all three jobs.
-   - Its merge push validated and skipped them.
+   - Its PR run ([37919861692](https://github.com/juan294/cirujano-push-proof/actions/runs/37919861692))
+     skipped the classifier and still ran all three jobs.
+   - Its merge push ([37919936201](https://github.com/juan294/cirujano-push-proof/actions/runs/37919936201))
+     validated and skipped them.
 6. **Measure.** The per-push gate returned `measured-improvement`.
 7. **Report and publish.** The bound report was opened as PR #8 between the locked branches,
-   and `optimize status` read it back as open and unmerged.
+   and `optimize status` read it back as open and unmerged. PR #8's body was rendered by
+   `49c934d`, so it prints the raw cost float and "1 minutes". The later formatting fix applies
+   only to future reports.
 
 ## Measured runs
 
@@ -88,7 +92,7 @@ These were modeled or inferred before this run:
 
 - **Small sample:** three samples per role on one small benchmark. Larger workflows save
   more minutes per push; one-minute workflows save nothing, and the model abstains on them.
-- **Fixed overhead:** the classifier adds 1 billed minute to every push it cannot validate.
+- **Fixed overhead:** the classifier bills 1 minute on every push. On a push it cannot validate, that minute is added to the full suite.
 - **Not netted:** provider inference and Sandbox costs are not netted against the saving.
-  They were 0.0001 USD for the diagnosis, and the Sandbox usage was reported in an
-  undocumented provider unit.
+  They were about 0.00012 USD for the diagnosis and about 0.0011 USD for the six evaluation
+  calls. The Sandbox usage was reported in an undocumented provider unit.

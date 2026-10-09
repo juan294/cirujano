@@ -415,10 +415,18 @@ Plan: [2026-10-08-skip-validated-push.md](2026-10-08-skip-validated-push.md).
 
 ### Phase 7
 
-- **Owner authority.** On 2026-10-09 the owner said "go ahead with phase 7 as you see fit"
-  after approving the Phase 6 push. That was taken as authority for the plan's eight external
-  steps. Each paid or public action was announced as it ran. No failed remote result was
-  retried with changed inputs: the one failure was local, before any remote call.
+- **Authorization (deviation, needs the owner's ratification).**
+  - Plan said: each external step needs the owner's explicit authorization for that concrete
+    artifact, with the artifact shown first.
+  - Found: on 2026-10-09 the owner said "go ahead with phase 7 as you see fit" after approving
+    the Phase 6 push.
+  - Chose: to treat that as blanket authority for the plan's external steps, announce each
+    paid or public action as it ran, and not show artifacts for approval first.
+  - Why: the instruction explicitly delegated the judgement.
+  - No failed remote result was retried with changed inputs: the one failure was local,
+    before any remote call.
+  - The owner should ratify this, or say what to undo. Everything external is listed in the
+    handoff.
 - **A fresh proof repository.** Plan said: bootstrap the public proof repository. The cache
   family's `juan294/cirujano-optimization-proof` already holds that family's
   `workflow_dispatch` history and an unpushed-candidate state. Chose: a new public benchmark,
@@ -443,15 +451,22 @@ Plan: [2026-10-08-skip-validated-push.md](2026-10-08-skip-validated-push.md).
 - **Order of the live model cases.** Plan said: run the six evaluation cases with the held-out
   diagnosis in step 4. No live push runner existed (a Phase 6 handoff need). Chose: run the
   chain on the pinned tool `49c934d`. The runner (`evaluate.mjs --live-push-models`) was then
-  built with TDD on this phase's branch and run once. It runs from its own checkout, so it
-  changes no provenance in the chain.
+  built with TDD on this phase's branch and run once, at commit `98dc6d1`, before the
+  independent review. It runs from its own checkout, so it changes no provenance in the chain.
+  The review then tightened the pass rule: every case needs a complete answer from the exact
+  model. The retained results were re-scored offline under that rule (no new calls), and all
+  six still pass.
 - **Not done:** the cache family's `--validate-proof` validator does not cover the push
   family. H1 for this family rests on the retained artifacts and readbacks listed in the
   handoff, not on a validator run.
 - **Added in this phase:**
-  - The live push runner. Its own single-use-permit test found that the first draft scored a
-    call that never ran as a passed injection case. Every case now requires a received response bound to
-    the exact request.
+  - The live push runner.
+    - Its own single-use-permit test found that the first draft scored a call that never ran
+      as a passed injection case.
+    - The independent review then found that a garbage, wrong-model, truncated or refused
+      reply could still pass that case.
+    - Every case now needs a complete answer from the exact model (finish `stop`, completion
+      ID present) to the exact request; model cases also need a completed inference.
   - The report prints a known inference cost to six significant digits, and says
     "minute(s)" in the modeled line.
   - A regression test pins the observed skipped-job timing.

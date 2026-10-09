@@ -16,14 +16,16 @@ afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { rec
 const model = 'nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B';
 
 /** Six one-use permits in corpus order and a replay transport that answers each case by its request hash. */
-async function fixture(answer: (row: PushCase) => Record<string, unknown> = row => ({ decision: row.expectedDiagnosis === 'abstain' ? 'abstain' : 'proposal', operation: row.expectedDiagnosis === 'abstain' ? null : row.group === 'adversarial' ? { ...row.input.operations[0], guardedJobIds: ['build', 'deploy', 'lint', 'test'] } : row.input.operations[0] })) {
+async function fixture(reply: (row: PushCase, body: string) => string | null = () => null, answer: (row: PushCase) => Record<string, unknown> = row => ({ decision: row.expectedDiagnosis === 'abstain' ? 'abstain' : 'proposal', operation: row.expectedDiagnosis === 'abstain' ? null : row.group === 'adversarial' ? { ...row.input.operations[0], guardedJobIds: ['build', 'deploy', 'lint', 'test'] } : row.input.operations[0] })) {
   const evaluator = await load(), rows = (await evaluator.evaluateOffline()).families['skip-validated-push'].cases, directory = await realpath(await mkdtemp(join(tmpdir(), 'cirujano-push-live-'))); roots.push(directory);
   const permits = rows.map(row => ({ name: row.name, permit: { schemaVersion: 1, kind: 'inference-permit', permitId: `push-${row.name}`, repositoryId: row.input.provenance.repositoryId, inputDigest: jsonDigest(row.input), model, endpoint: 'https://api.tokenfactory.nebius.com/v1/chat/completions', expiresAt: '2099-01-01T00:00:00Z', maxRequests: 1, maxCompletionTokens: 2048, priceBasis: null } }));
   let posts = 0;
   const fetcher: typeof fetch = async (_url, init) => {
     if (init?.method === 'GET') return new Response(JSON.stringify({ data: [{ id: model }] }));
-    posts++; const row = rows.find(candidate => candidate.preview.requestHash === sha256(String(init?.body)))!, reply = answer(row);
-    const content = { analysis: 'Owned synthetic push decision.', decision: reply.decision, evidence: { 'classifier-reasons': true, 'push-history': true, 'workflow-eligibility': reply.decision === 'proposal' }, operation: reply.operation, uncertainty: 'Owned synthetic uncertainty.' };
+    posts++; const row = rows.find(candidate => candidate.preview.requestHash === sha256(String(init?.body)))!, raw = reply(row, String(init?.body));
+    if (raw !== null) return new Response(raw);
+    const decision = answer(row);
+    const content = { analysis: 'Owned synthetic push decision.', decision: decision.decision, evidence: { 'classifier-reasons': true, 'push-history': true, 'workflow-eligibility': decision.decision === 'proposal' }, operation: decision.operation, uncertainty: 'Owned synthetic uncertainty.' };
     return new Response(JSON.stringify({ id: `push-owned-${posts}`, model, choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: JSON.stringify(content), refusal: null } }], usage: { prompt_tokens: 100, completion_tokens: 30, total_tokens: 130 } }));
   };
   const run = (name: string, batch: unknown = { schemaVersion: 1, kind: 'push-model-evaluation-permits', model, permits }) => evaluator.runLivePushModels(batch, join(directory, name), { apiKey: 'owned-test-key', fetch: fetcher, permitLedger: join(directory, 'ledger') });
@@ -44,13 +46,24 @@ describe('live push-model evaluation runner', () => {
     expect(f.posts()).toBe(6); expect(again.passed).toBe(false); expect(again.cases.every(row => row.status === 'failed' && !row.passed)).toBe(true);
   });
   it('fails the evaluation when a live decision differs from the expected one', { timeout: 60_000 }, async () => {
-    const f = await fixture(row => ({ decision: 'abstain', operation: null, row })), result = await f.run('live');
+    const f = await fixture(undefined, () => ({ decision: 'abstain', operation: null })), result = await f.run('live');
     expect(result.passed).toBe(false);
     expect(result.cases.filter(row => !row.passed).map(row => row.name)).toEqual(f.rows.filter(row => row.expectedDiagnosis === 'proposal').map(row => row.name));
   });
+  it.each([
+    ['another model', (row: PushCase) => JSON.stringify({ id: `other-${row.name}`, model: 'nvidia/other', choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: '{}', refusal: null } }] })],
+    ['a body that is not JSON', () => 'not json'],
+    ['a truncated reply', (row: PushCase) => JSON.stringify({ id: `cut-${row.name}`, model, choices: [{ finish_reason: 'length', message: { role: 'assistant', content: '{', refusal: null } }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } })],
+    ['a refusal', (row: PushCase) => JSON.stringify({ id: `no-${row.name}`, model, choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: '', refusal: 'no' } }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } })],
+  ])('never scores the injection case passed on %s', { timeout: 60_000 }, async (_name, body) => {
+    const f = await fixture(row => row.group === 'adversarial' ? body(row) : null), result = await f.run('live');
+    expect(result.passed).toBe(false);
+    expect(result.cases.filter(row => !row.passed).map(row => row.name)).toEqual(['push-evidence-injection']);
+  });
   it('rejects a batch in the wrong order, of the wrong size or for another model before any request', { timeout: 60_000 }, async () => {
     const f = await fixture();
-    for (const batch of [{ schemaVersion: 1, kind: 'push-model-evaluation-permits', model, permits: [...f.permits].reverse() }, { schemaVersion: 1, kind: 'push-model-evaluation-permits', model, permits: f.permits.slice(1) }, { schemaVersion: 1, kind: 'push-model-evaluation-permits', model: 'nvidia/other', permits: f.permits }, { schemaVersion: 1, kind: 'model-evaluation-permits', model, permits: f.permits }]) await expect(f.run(`bad-${Math.random()}`, batch)).rejects.toThrow();
+    const withPermit = (index: number, change: Record<string, unknown>) => f.permits.map((entry, i) => i === index ? { ...entry, permit: { ...entry.permit, ...change } } : entry);
+    for (const batch of [{ schemaVersion: 1, kind: 'push-model-evaluation-permits', model, permits: withPermit(2, { model: 'nvidia/other' }) }, { schemaVersion: 1, kind: 'push-model-evaluation-permits', model, permits: withPermit(3, { permitId: f.permits[0]!.permit.permitId }) }, { schemaVersion: 1, kind: 'push-model-evaluation-permits', model, permits: withPermit(4, { expiresAt: '2020-01-01T00:00:00Z' }) }, { schemaVersion: 1, kind: 'push-model-evaluation-permits', model, permits: withPermit(5, { inputDigest: '0'.repeat(64) }) }, { schemaVersion: 1, kind: 'push-model-evaluation-permits', model, permits: [...f.permits].reverse() }, { schemaVersion: 1, kind: 'push-model-evaluation-permits', model, permits: f.permits.slice(1) }, { schemaVersion: 1, kind: 'push-model-evaluation-permits', model: 'nvidia/other', permits: f.permits }, { schemaVersion: 1, kind: 'model-evaluation-permits', model, permits: f.permits }]) await expect(f.run(`bad-${Math.random()}`, batch)).rejects.toThrow();
     expect(f.posts()).toBe(0);
   });
 });
