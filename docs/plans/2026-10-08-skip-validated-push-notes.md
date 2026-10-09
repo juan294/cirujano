@@ -297,3 +297,90 @@ Plan: [2026-10-08-skip-validated-push.md](2026-10-08-skip-validated-push.md).
   artifact has been written yet. The claim that the jobs API lists skipped jobs is
   INFERRED; confirm it in Phase 6.
 - **Next phase entry:** Phase 3 needs an explicit owner go; revalidate `develop` HEAD.
+
+## Phase 3 handoff (2026-10-09)
+
+- **Objective and scope:** the classifier rule, push-history collection and Nemotron diagnosis
+  for the family, as in [phase-3](2026-10-08-skip-validated-push-phases/phase-3.md). No
+  workflow patch, Sandbox, measurement, remote write or model call.
+- **Identity:** base `develop` `b2801e6` (pushed; CI and CodeQL green); branch
+  `feat/skip-validated-push-p3` in `../cirujano-worktrees/svp-p3`.
+- **Delivered:**
+  - Core `src/optimization/`:
+    - `push-classifier.template.mjs`: rules 1-5, side-effect free, and the step's `main`.
+      Its `.d.mts` gives the types.
+    - `push-classifier-source.ts`: the generated step script, which is the template plus
+      `await main();`. `CLASSIFIER_DIGEST` is its sha256.
+    - `push-classifier.ts`: `classifyPush`, `runClassifierStep`.
+    - `push-input.ts`: `summarizePushHistory`, `createPushInput`.
+    - `push-contracts.ts`: `PushSourceManifest` and its decoder, plus `isLiteralBranch`,
+      `isTopLevelWorkflowPath`, `isLiteralWorkflowPath`, `pushSourceText`.
+    - `measurement.ts` exports `median`.
+    - Core gets a `./billing` subpath export, and the Action imports it.
+  - CLI `src/optimization/`:
+    - `optimize collect --family skip-validated-push --branch`, implemented in
+      `collectPushInput` and `readPushHistory`.
+    - Family policies in `diagnose.ts`, using prompt `skip-validated-push-v1` and schema
+      `skip-validated-push-decision-v1`.
+    - `push-context.ts`: the retained push context and the diagnosis context.
+    - `diagnosis-journal.ts`: one bound diagnosis reader for both families.
+    - Family dispatch in `store.ts` and `service.ts`.
+    - A shared `retainTreeFiles` in `github-read.ts`.
+  - Evaluator: 6 push cases (`packages/core/fixtures/optimization/push/evaluation.json`),
+    27 cases in total.
+- **TDD:**
+  - Every new suite failed first because its module or export was missing. Each review
+    finding got a failing test before its fix.
+  - The cache request was pinned from the unmodified `b2801e6` code before `diagnose.ts`
+    changed: `requestHash 3e91a66f…37ed4`, 2131 bytes.
+  - Mutation check on the template (scratch script, not committed): removing any of 61
+    clauses fails at least one behavior test.
+- **Gate:** first full run, on the final tree (load average 17 at start, peaking near 130):
+  `build`, `typecheck`, `lint`, `test` (core 481, runner 393, action 6, CLI 706),
+  `evaluate.mjs --offline` (27 cases, passed) and `git diff --check` all exited 0.
+  `test:coverage` exited 1: two CLI tests timed out (`publish-lifecycle` "emits exactly one
+  POST…" at 30 s, and `harness` "reports command timeout…" hitting the total timeout
+  first). Phase 3 does not touch either area; both passed in the plain `test` lane of the
+  same run. Cause INFERRED: coverage instrumentation under machine load. After commit
+  `1b54e5a` (the same tree), `verify-bundle` passed and a `test:coverage` rerun at load
+  average 34 exited 0 (all 706 CLI tests; core 481, runner 393, action 6).
+- **Review:** an independent reviewer first requested changes (no blocker):
+  - should-fix: F1, the PR run was not tied to the merged PR; F2, forced pushes; F4, a test
+    passing for the wrong reason, plus unpinned reason codes; F5, deviations not recorded.
+  - nits: F3, the classifier-named job; F6, a vacuous evaluator check; F7, response
+    shapes; F8, latest attempt only; F9, no `outcome-unknown` test.
+
+  All were fixed or recorded (see the Phase 3 deviations). The re-review was APPROVED with
+  one nit, the run's `pull_requests` binding, which is now fixed and tested.
+- **Simplify (4 angles):**
+  - Adopted:
+    - The template has no side effects; the entry call is appended in the generated script,
+      so the `[evalN]` URL guard and `import.meta` are gone.
+    - Shared bound diagnosis reader for both families.
+    - Shared `retainTreeFiles` (push collection now also has the 16 MiB running cap).
+    - The redundant push collection-receipt decoder is gone; exact equality is the check.
+    - `record`/`exactKeys` exported once; `pushSourceText` and `isLiteralWorkflowPath` in
+      core; `median` reused; classifier types aliased from the `.d.mts`.
+    - An `unvalidated()` helper in the template.
+    - One receipt branch in the service collect; an evaluator `modelGroup` helper; cast-free
+      test rows; a stale test name fixed.
+  - Skipped:
+    - Generic typing of `nebius.ts`: the plan pins the transport unchanged.
+    - A CLI family registry for `service.ts`: do it with the Phase 4 propose branch.
+    - Concurrent GitHub reads in collection: rate budget, deterministic refusal order and
+      the machine constraint.
+    - `assertRun` identity dedupe and the `validateTree` O(k²) insert: cache code outside
+      this diff.
+    - Argv-based family detection: a flag value can never start with `-`, so `--family`
+      cannot be a value.
+    - Cross-package test-helper consolidation.
+    - Collection uses `gh api` while the step uses `fetch`: the Phase 6 measurement should
+      compare the step's real `reason` with the history verdict for the same pushes.
+- **Risks carried forward:** the residuals in the Phase 3 deviations: unassociated PRs; a
+  force-push between the PR run and the merge; assumed response shapes (Phase 7 preflight);
+  the latest-attempt undercount. Plus the Phase 2 third-party event-file risk.
+  `CLASSIFIER_DIGEST` is fixed only once Phase 4 embeds it; any template change invalidates
+  every retained push input (by design).
+- **Next phase entry:** Phase 4 needs an explicit owner go; revalidate `develop` HEAD. Phase 4
+  must give the classifier job no `name:` (the rule matches the job id) and pin
+  `refs/heads/<branch>` in its `if`.
