@@ -1,0 +1,58 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+jobs:
+  cirujano_validated_push:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: read
+    outputs:
+      validated: ${{ steps.classify.outputs.validated }}
+    steps:
+      - name: Check whether this push was already validated by its PR (Cirujano)
+        id: classify
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          node --input-type=module <<'CIRUJANO_CLASSIFIER'
+          __CLASSIFIER_SCRIPT__
+          CIRUJANO_CLASSIFIER
+  lint:
+    needs: [cirujano_validated_push]
+    if: "${{ !cancelled() && (needs.cirujano_validated_push.result != 'success' || needs.cirujano_validated_push.outputs.validated != 'true') }}"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
+      - run: pnpm lint
+  test:
+    # Tests run after lint.
+    needs: [lint, cirujano_validated_push]
+    if: "${{ !cancelled() && needs.lint.result == 'success' && (needs.cirujano_validated_push.result != 'success' || needs.cirujano_validated_push.outputs.validated != 'true') && (github.repository == 'public-example/benchmark') }}"
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
+      - run: pnpm test
+  build:
+    if: "${{ !cancelled() && needs.lint.result == 'success' && needs.test.result == 'success' && (needs.cirujano_validated_push.result != 'success' || needs.cirujano_validated_push.outputs.validated != 'true') }}"
+    needs: [lint, test, cirujano_validated_push]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
+      - run: gh api repos/${{ github.repository }} --jq .name
+        env:
+          GH_TOKEN: ${{ github.token }}

@@ -184,6 +184,61 @@ Plan: [2026-10-08-skip-validated-push.md](2026-10-08-skip-validated-push.md).
 - **`compare` size.** Comparison responses include file patches; a very large PR can exceed
   the 8 MB bound and fail open as `api-error`.
 
+### Phase 4
+
+- **Inverse proof direction.** Plan said: drop the classifier, unwrap the guards and compare
+  with the base. Chose: `validateGuardOnlyChange` rebuilds the guarded tree from the base
+  (classifier job, guard and appended need per job) and requires the candidate to parse to
+  exactly it, and its bytes to equal the deterministic edit. Equivalent and stricter; the
+  unwrap direction is also asserted in `push-patch-inverse`.
+- **Scalar forms.** Each guard is written as a JSON double-quoted `${{ … }}` scalar (JSON is
+  valid YAML 1.2), so any original condition text stays safe. `needs` is written as a flow
+  list. A replaced block `needs` list loses its inline comments (it is a touched node); all
+  untouched bytes are kept.
+- **Placement.** The classifier is the first job, above comment lines that introduce the
+  first job, nested two spaces below the jobs' own indentation. It has no `name:`, so the
+  API job name is its id, and its `if` pins `refs/heads/<branch>` (Phase 3 entry
+  conditions). Jobs without `needs` now wait for the classifier: its runtime is capped at
+  2 minutes, but runner queue time is not, so latency can be longer. Guarded jobs bill
+  nothing extra.
+- **Added after independent review:**
+  - Eligibility (shared with the Phase 5 matrix): a `${{ }}` condition with any character
+    outside the braces, which GitHub evaluates as always true, is refused as
+    `unparseable-condition` (before, the guard would have turned it into the real
+    condition). Duplicate `needs` are refused. Workflow-level `defaults.run`
+    (`workflow-run-defaults`) and workflow `env` that changes how bash or node start
+    (`NODE_*`, `NPM_CONFIG_*`, `BASH_ENV`, `ENV`, `*_PROXY`; `workflow-runtime-env`) are
+    refused, because the classifier job inherits them.
+  - Patch: replaced values are written from the key's end, so a block list indented at the
+    key's own column still yields valid YAML. The comment walk-back above the first job
+    stops at a comment deeper than the job indentation. `validateGuardOnlyChange` checks
+    the operation's branch against the workflow's literal push branch.
+  - The actionlint gate fails when shellcheck is missing and passes `-shellcheck=` explicitly.
+  - From the simplify pass: "eligible" now also means "renderable". Collection, the
+    retained-input check and the evaluator use `inspectRenderablePushWorkflow`, which dry-runs
+    the patch and refuses a workflow it cannot render (a flow-style job map, mixed newlines,
+    tabs) as `unrenderable-workflow`, before any history read or inference. This changes a
+    Phase 3 path; inputs collected before it re-derive the same way for every renderable
+    workflow.
+  - Re-review nit: explicit-key YAML (`? if` / `: …`) is refused in eligibility
+    (`unsupported-workflow-shape`, read from the YAML tokens, not line text), because the
+    key-end rewrite cannot express it; before, it failed only after inference.
+  - `proposalFor`'s classifier-digest check cannot fail through the CLI, because
+    `readRetainedPushContext` already refuses a digest that differs from the running tool's;
+    it stays as an invariant assertion.
+- **Patch shape.** The diff reuses `patch.ts`'s single-hunk helper, as the plan asked; with
+  edits in several jobs, the hunk shows the region between the first and last edit as
+  removed and re-added. It applies with `git apply` (tested); a multi-hunk diff for the
+  Phase 6 report is optional.
+- **File names.** Retained proposal files are `candidate.yml` and `workflow.patch`, as in the
+  cache family (the phase text says `candidate.patch`).
+- **Profile.** The push proposal carries no verification profile (the Phase 2 contract has
+  none); Phase 5 defines the `push-guard` profile and binds it at verify time.
+- **Extra tests.** A shapes fixture (`push/patch/shapes.yml`) covers `needs` absent, string,
+  flow and block, and `if` absent, plain, quoted and folded. Goldens store the embedded
+  script as one token line. One test runs the generated step under `bash -eo pipefail`.
+  actionlint 1.7.12 (with shellcheck) checks the 3 guarded fixtures.
+
 ## Phase 1 handoff (2026-10-08)
 
 - **Objective and scope:** H2 telemetry report repair and H5 truth fixes, as in

@@ -51,7 +51,7 @@ async function pushCorpus() {
   return Promise.all(manifest.cases.map(async entry => {
     const source = await readFile(join(directory, entry.file), 'utf8'), workflowPath = manifest.provenance.workflowPath;
     const inventory = [{ path: workflowPath, source }, ...await Promise.all((entry.inventory ?? []).map(async path => ({ path: `.github/workflows/${path.split('/').pop()}`, source: await readFile(join(directory, path), 'utf8') })))];
-    const eligibility = p.inspectPushWorkflow(source, { workflowHash: p.sha256(source), workflowPath, integrationBranch: entry.branch, inventory });
+    const eligibility = p.inspectRenderablePushWorkflow(source, { workflowHash: p.sha256(source), workflowPath, integrationBranch: entry.branch, inventory });
     const history = Array.from({ length: entry.pushes }, (_, index) => ({ pushRunId: 1000 + index, attempt: 1, headSha: (1000 + index).toString(16).padStart(40, '0'), billedMinutes: entry.minutes, jobsBilled: eligibility.structuralFacts.guardedJobCount, prNumber: index < entry.validated ? 100 + index : null, validated: index < entry.validated, reasonCode: index < entry.validated ? 'validated' : 'no-merged-pr' }));
     let input = p.createPushInput({ provenance: { ...manifest.provenance, workflowBlobSha: p.gitBlobSha(source), workflowHash: p.sha256(source), integrationBranch: entry.branch, classifierDigest: p.CLASSIFIER_DIGEST }, eligibility, history, treeSha: manifest.treeSha });
     // Collection never retains free text, so the attack adds one: evidence that tries to dictate an operation.

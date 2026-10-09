@@ -94,6 +94,8 @@ export { CLASSIFIER_JOB_ID } from './optimization/push-guard.js';
 export { MAX_PUSH_HISTORY } from './optimization/push-contracts.js';
 export { CLASSIFIER_DIGEST, CLASSIFIER_SOURCE, classifyPush, runClassifierStep } from './optimization/push-classifier.js';
 export type { ClassifierGet, ClassifierResponse, PushClassification, PushClassifierContext } from './optimization/push-classifier.js';
+export { classifierJob, createSkipValidatedPushPatch, extractClassifierScript, inspectRenderablePushWorkflow, validateGuardOnlyChange } from './optimization/push-patch.js';
+export type { SkipValidatedPushPatch } from './optimization/push-patch.js';
 export { inspectPushWorkflow } from './optimization/push-workflow.js';
 export type { PushWorkflowEligibility, PushWorkflowEvidence } from './optimization/push-workflow.js';
 export { inspectWorkflow, parseWorkflowSource, protectedWorkflowDigest } from './optimization/workflow.js';

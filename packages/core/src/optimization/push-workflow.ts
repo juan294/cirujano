@@ -1,3 +1,4 @@
+import { parseDocument, visit } from 'yaml';
 import { jsonDigest, OptimizationInputError, sha256 } from './canonical.js';
 import { conditionExpression, usesStatusFunction } from './guard-expression.js';
 import type { PushOperation } from './push-contracts.js';
@@ -12,7 +13,7 @@ export interface PushWorkflowEvidence {
 export interface PushWorkflowEligibility { status: 'eligible' | 'no-change' | 'unsupported'; reason: string; operations: PushOperation[]; protectedDigest: string | null; structuralFacts: Record<string, string | number | boolean> }
 
 function isMap(value: unknown): value is Record<string, unknown> { return !!value && typeof value === 'object' && !Array.isArray(value); }
-function list(value: unknown): unknown[] { return Array.isArray(value) ? value : value === undefined ? [] : [value]; }
+export function list(value: unknown): unknown[] { return Array.isArray(value) ? value : value === undefined ? [] : [value]; }
 /** Explicit read-only token permissions: `read-all`, or a map whose every scope is read or none. */
 function readOnly(value: unknown): boolean {
   if (value === 'read-all') return true;
@@ -29,9 +30,11 @@ function conditions(jobs: Record<string, unknown>): string[] {
   return Object.values(jobs).flatMap(job => { const record = mapping(job); return [record.if, ...list(record.steps).map(step => mapping(step).if)].filter((value): value is string => typeof value === 'string'); });
 }
 const DEFAULT_PULL_REQUEST_TYPES = ['opened', 'reopened', 'synchronize'];
+/** Environment that changes how bash or node start, or where they connect. */
+const RUNTIME_ENV = /^(?:NODE_\w*|NPM_CONFIG_\w*|BASH_ENV|ENV|\w*_PROXY)$/i;
 
 /** The one literal branch an event filters on, or the reason it has none. */
-function triggerBranch(filter: unknown): { branch: string } | { reason: string } {
+export function triggerBranch(filter: unknown): { branch: string } | { reason: string } {
   if (isMap(filter) && 'branches-ignore' in filter) return { reason: 'branch-ignore' };
   if (!isMap(filter) || !('branches' in filter)) return { reason: 'branch-filter-missing' };
   const branches = list(filter.branches);
@@ -40,6 +43,12 @@ function triggerBranch(filter: unknown): { branch: string } | { reason: string }
   return { branch: branches[0] as string };
 }
 
+/** The guard patch edits keys in place; an explicit `? key` cannot be rewritten that way. */
+function explicitKeys(source: string): boolean {
+  let found = false;
+  visit(parseDocument(source, { keepSourceTokens: true }), { Pair(_, pair) { if (pair.srcToken?.start.some(token => token.type === 'explicit-key-ind')) found = true; } });
+  return found;
+}
 function consumesWorkflow(source: string, names: string[]): boolean {
   const on = parseWorkflowSource(source).on, run = isMap(on) ? on.workflow_run : undefined;
   return isMap(run) && list(run.workflows).some(name => typeof name === 'string' && names.includes(name.toLowerCase()));
@@ -54,6 +63,7 @@ export function inspectPushWorkflow(source: string, evidence: PushWorkflowEviden
   const refuse = (reason: string, status: 'unsupported' | 'no-change' = 'unsupported'): PushWorkflowEligibility => ({ status, reason, operations: [], protectedDigest: null, structuralFacts: {} });
   let workflow: Record<string, unknown>;
   try { workflow = parseWorkflowSource(source); } catch (error) { if (error instanceof OptimizationInputError) return refuse(error.message); throw error; }
+  if (explicitKeys(source)) return refuse('unsupported-workflow-shape');
   try {
     const jobs = mapping(workflow.jobs ?? {});
     if (Object.hasOwn(jobs, CLASSIFIER_JOB_ID)) return refuse('already-guarded', 'no-change');
@@ -78,6 +88,9 @@ export function inspectPushWorkflow(source: string, evidence: PushWorkflowEviden
     }
     const ids = Object.keys(jobs).sort();
     if (!ids.length) return refuse('no-guarded-jobs');
+    // The added classifier job inherits workflow-level run defaults and env; any that can break its node step is refused.
+    if (isMap(workflow.defaults) && 'run' in workflow.defaults) return refuse('workflow-run-defaults');
+    if (isMap(workflow.env) && Object.keys(workflow.env).some(key => RUNTIME_ENV.test(key))) return refuse('workflow-runtime-env');
     let matrixJobs = 0;
     for (const id of ids) {
       const job = mapping(jobs[id]);
@@ -87,7 +100,8 @@ export function inspectPushWorkflow(source: string, evidence: PushWorkflowEviden
       if (!JOB_ID.test(id)) return refuse('unsupported-workflow-shape');
       if (list(job.steps).some(step => { const uses = mapping(step).uses; return typeof uses === 'string' && uses.startsWith('./'); })) return refuse('local-action');
       if (!readOnly(job.permissions ?? workflow.permissions)) return refuse('permissions-not-read-only');
-      if (list(job.needs).some(need => typeof need !== 'string' || need === id || !Object.hasOwn(jobs, need))) return refuse('unsupported-workflow-shape');
+      const needs = list(job.needs);
+      if (needs.some(need => typeof need !== 'string' || need === id || !Object.hasOwn(jobs, need)) || new Set(needs).size !== needs.length) return refuse('unsupported-workflow-shape');
       if ('if' in job) {
         let condition;
         try { condition = conditionExpression(job.if); } catch (error) { if (error instanceof OptimizationInputError) return refuse('unparseable-condition'); throw error; }

@@ -202,6 +202,20 @@
       "status": "unsupported",
       "reason": "pull-request-types",
       "branch": "main"
+    },
+    {
+      "name": "workflow-run-defaults",
+      "file": "workflow-run-defaults.yml",
+      "status": "unsupported",
+      "reason": "workflow-run-defaults",
+      "branch": "main"
+    },
+    {
+      "name": "workflow-runtime-env",
+      "file": "workflow-runtime-env.yml",
+      "status": "unsupported",
+      "reason": "workflow-runtime-env",
+      "branch": "main"
     }
   ]
 }

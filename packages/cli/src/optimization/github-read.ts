@@ -1,4 +1,4 @@
-import { billableMinutesForJob, canonicalJson, classifyPush, CLASSIFIER_DIGEST, createPushInput, decodeActionReceipt, decodeArtifact, decodePushSourceManifest, decodeSourceManifest, decodeVerificationProfile, gitBlobSha, inspectPushWorkflow, inspectWorkflow, isLiteralBranch, isLiteralWorkflowPath, isTopLevelWorkflowPath, jsonDigest, MAX_PUSH_HISTORY, OptimizationInputError, parseStrictJson, parseWorkflowSource, PUSH_FAMILY, pushSourceText, safeRelativePath, sha256 } from '@cirujano/core';
+import { billableMinutesForJob, canonicalJson, classifyPush, CLASSIFIER_DIGEST, createPushInput, decodeActionReceipt, decodeArtifact, decodePushSourceManifest, decodeSourceManifest, decodeVerificationProfile, gitBlobSha, inspectRenderablePushWorkflow, inspectWorkflow, isLiteralBranch, isLiteralWorkflowPath, isTopLevelWorkflowPath, jsonDigest, MAX_PUSH_HISTORY, OptimizationInputError, parseStrictJson, parseWorkflowSource, PUSH_FAMILY, pushSourceText, safeRelativePath, sha256 } from '@cirujano/core';
 import type { ActionReceipt, BaselineJob, ClassifierGet, InputArtifact, PushHistoryEntry, PushInputArtifact, PushSourceManifest, SourceManifest } from '@cirujano/core';
 import { defaultGitHubPageRunner, record, positiveInteger, text, timestamp, array } from '../github-api.js';
 import type { GitHubPageRunner } from '../github-api.js';
@@ -200,7 +200,7 @@ export async function collectPushInput(request:PushCollectionRequest,options:Col
  if(!workflow) refuse('github-missing-workflow');if(!profile) refuse('github-missing-verification-profile');
  parseStrictJson(pushSourceText(profile));
  const inventory=files.filter(file=>file!==profile).map(file=>({path:file.path,source:pushSourceText(file)}));
- const eligibility=inspectPushWorkflow(pushSourceText(workflow),{workflowHash:workflow.hash,workflowPath:request.workflow,integrationBranch:request.branch,inventory});
+ const eligibility=inspectRenderablePushWorkflow(pushSourceText(workflow),{workflowHash:workflow.hash,workflowPath:request.workflow,integrationBranch:request.branch,inventory});
  const history=eligibility.status==='eligible'?await readPushHistory(request,repositoryId,options):[];
  const input=createPushInput({provenance:{repositoryId,repository:request.repository,baseSha:request.ref,workflowBlobSha:gitBlobSha(Buffer.from(workflow.bytesBase64,'base64')),workflowPath:request.workflow,workflowHash:workflow.hash,integrationBranch:request.branch,classifierDigest:CLASSIFIER_DIGEST,verificationProfileHash:profile.hash,toolSourceSha:options.toolSourceSha,bundleDigest:options.bundleDigest},eligibility,history,treeSha});
  const source=decodePushSourceManifest({schemaVersion:1,kind:'push-source',family:PUSH_FAMILY,provenance:input.provenance,profilePath,files});

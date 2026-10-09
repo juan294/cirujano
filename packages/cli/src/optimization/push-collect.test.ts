@@ -37,6 +37,11 @@ describe('skip-validated-push collection', () => {
     expect(result).toMatchObject({ reasonCode: 'permissions-not-read-only', input: { status: 'unsupported', history: [], operations: [] } });
     expect(endpoints(fixture).some(endpoint => endpoint.includes('/actions/'))).toBe(false);
   });
+  it('refuses a workflow the guard patch cannot render before reading any run history', async () => {
+    const fixture = pushGithubFixture(eligibleWorkflow.replace('jobs:\n  test:', 'jobs:\n  lint: {runs-on: ubuntu-latest, steps: [{run: pnpm lint}]}\n  test:'));
+    expect(await collectPushInput(request, { ...identity, pageRunner: fixture.pageRunner })).toMatchObject({ reasonCode: 'unrenderable-workflow', input: { status: 'unsupported', history: [] } });
+    expect(endpoints(fixture).some(endpoint => endpoint.includes('/actions/'))).toBe(false);
+  });
   it('returns unsupported no-push-history when the branch has no completed pushes', async () => {
     const fixture = pushGithubFixture();
     fixture.responses[listing] = { total_count: 0, workflow_runs: [] };

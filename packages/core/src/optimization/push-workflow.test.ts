@@ -15,7 +15,7 @@ function inspect(source: string, integrationBranch = 'main', inventory: { path: 
 describe('push-ineligible-reason-codes', () => {
   it('names every case once and covers every refusal rule', () => {
     expect(new Set(manifest.cases.map(entry => entry.name)).size).toBe(manifest.cases.length);
-    expect(new Set(manifest.cases.filter(entry => entry.status === 'unsupported').map(entry => entry.reason))).toEqual(new Set(['yaml-alias', 'branch-filter-missing', 'branch-ignore', 'branch-glob', 'multiple-branches', 'branch-mismatch', 'pull-request-target', 'workflow-run-consumer', 'no-guarded-jobs', 'reusable-job', 'job-environment', 'permissions-not-read-only', 'secret-reference', 'status-function-condition', 'unparseable-condition', 'event-context-reference', 'job-continue-on-error', 'workflow-call', 'local-action', 'pull-request-types']));
+    expect(new Set(manifest.cases.filter(entry => entry.status === 'unsupported').map(entry => entry.reason))).toEqual(new Set(['workflow-run-defaults', 'workflow-runtime-env', 'yaml-alias', 'branch-filter-missing', 'branch-ignore', 'branch-glob', 'multiple-branches', 'branch-mismatch', 'pull-request-target', 'workflow-run-consumer', 'no-guarded-jobs', 'reusable-job', 'job-environment', 'permissions-not-read-only', 'secret-reference', 'status-function-condition', 'unparseable-condition', 'event-context-reference', 'job-continue-on-error', 'workflow-call', 'local-action', 'pull-request-types']));
   });
   for (const entry of manifest.cases) it(entry.name, () => {
     const source = read(entry.file);
@@ -64,6 +64,22 @@ describe('push workflow eligibility boundaries', () => {
   it('refuses write permissions granted at job level or through write-all', () => {
     expect(inspect(source.replace('permissions:\n  contents: read', 'permissions: write-all')).reason).toBe('permissions-not-read-only');
     expect(inspect(source.replace('    needs: lint\n', '    needs: lint\n    permissions:\n      issues: write\n')).reason).toBe('permissions-not-read-only');
+  });
+  it('refuses a condition with characters around ${{ }}, which GitHub evaluates as always true', () => {
+    const base = read('eligible-multi-job.yml');
+    for (const condition of ['" ${{ false }}"', '"${{ false }} "', "|\n      ${{ github.actor != 'x' }}"]) expect(inspect(base.replace("if: github.repository == 'public-example/benchmark'", `if: ${condition}`)), condition).toMatchObject({ status: 'unsupported', reason: 'unparseable-condition' });
+    expect(inspect(base.replace("if: github.repository == 'public-example/benchmark'", 'if: "${{ false }}"')).status).toBe('eligible');
+  });
+  it('refuses explicit-key YAML, which the byte-level patch cannot rewrite', () => {
+    const base = read('eligible-multi-job.yml');
+    expect(inspect(base.replace("    if: github.repository == 'public-example/benchmark'\n", "    ? if\n    : github.repository == 'public-example/benchmark'\n"))).toMatchObject({ status: 'unsupported', reason: 'unsupported-workflow-shape' });
+  });
+  it('refuses duplicate needs and shell or runtime settings the classifier job would inherit', () => {
+    const base = read('eligible-multi-job.yml');
+    expect(inspect(base.replace('needs: [lint, test]', 'needs: [lint, lint, test]'))).toMatchObject({ status: 'unsupported', reason: 'unsupported-workflow-shape' });
+    for (const env of ['BASH_ENV: ./env.sh', 'ENV: ./env.sh', 'NODE_EXTRA_CA_CERTS: ./ca.pem', 'https_proxy: http://proxy', 'NPM_CONFIG_REGISTRY: https://registry']) expect(inspect(base.replace('permissions:\n  contents: read\n', `permissions:\n  contents: read\nenv:\n  ${env}\n`)), env).toMatchObject({ status: 'unsupported', reason: 'workflow-runtime-env' });
+    expect(inspect(base.replace('permissions:\n  contents: read\n', 'permissions:\n  contents: read\nenv:\n  CI_LABEL: benchmark\n')).status).toBe('eligible');
+    expect(inspect(base.replace('permissions:\n  contents: read\n', 'permissions:\n  contents: read\ndefaults:\n  run:\n    shell: pwsh\n'))).toMatchObject({ status: 'unsupported', reason: 'workflow-run-defaults' });
   });
   it('refuses a needs reference to a job that does not exist, and a job id outside the GitHub grammar', () => {
     expect(inspect(source.replace('needs: lint', 'needs: missing')).reason).toBe('unsupported-workflow-shape');

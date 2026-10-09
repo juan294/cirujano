@@ -95,14 +95,22 @@ export function parseExpression(text: string): ExpressionNode {
   return node;
 }
 
+/**
+ * The expression text of a job `if:` string: a bare expression, or exactly one `${{ }}` wrapper with
+ * nothing outside it. GitHub treats a wrapper with any character around it (even a space or the
+ * newline a literal block leaves) as a non-empty string, always true, so that form is refused.
+ */
+export function conditionText(value: string): string {
+  const wrapped = /^\$\{\{([\s\S]*)\}\}$/.exec(value);
+  const text = wrapped ? wrapped[1]! : value;
+  if (text.includes('${{') || text.includes('}}')) syntax();
+  return text;
+}
 /** Parse a job `if:` value: a bare expression, exactly one `${{ }}` wrapper, or a YAML boolean/number. */
 export function conditionExpression(value: unknown): ExpressionNode {
   if (typeof value === 'boolean' || typeof value === 'number') return { type: 'literal', value };
   if (typeof value !== 'string') syntax();
-  const wrapped = /^\s*\$\{\{([\s\S]*)\}\}\s*$/.exec(value);
-  const text = wrapped ? wrapped[1]! : value;
-  if (text.includes('${{') || text.includes('}}')) syntax();
-  return parseExpression(text);
+  return parseExpression(conditionText(value));
 }
 
 export function usesStatusFunction(node: ExpressionNode): boolean {

@@ -50,7 +50,7 @@ export function validateCacheOnlyChange(base:string,candidate:string,jobId:strin
 interface Lines {lines:string[];finalNewline:boolean}
 function lines(source:string):Lines {const result=source.split('\n'),finalNewline=source.endsWith('\n');if(finalNewline) result.pop();return {lines:result,finalNewline};}
 /** One insertion/replacement hunk with three context lines, including exact CRLF bytes. */
-function unifiedPatch(base:string,candidate:string,path:string):string {
+export function unifiedPatch(base:string,candidate:string,path:string):string {
  const before=lines(base),after=lines(candidate);let prefix=0,suffix=0;
  while(prefix<before.lines.length&&prefix<after.lines.length&&before.lines[prefix]===after.lines[prefix]) prefix++;
  while(suffix<before.lines.length-prefix&&suffix<after.lines.length-prefix&&before.lines[before.lines.length-1-suffix]===after.lines[after.lines.length-1-suffix]) suffix++;

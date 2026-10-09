@@ -9,6 +9,7 @@ import type { GitHubPageRunner } from '../github-api.js';
 import type { OptimizeArguments } from './arguments.js';
 export type { OptimizeArguments } from './arguments.js';
 import { RetainedInputError } from './input-context.js';
+import { shellQuote } from './stage-output.js';
 import { pushCollectionReceipt, readPushDiagnosisContext, readRetainedFamilyContext } from './push-context.js';
 export { readRetainedOptimizationInput } from './input-context.js';
 import { collectGitHubInput, collectPushInput } from './github-read.js';
@@ -33,7 +34,6 @@ function emit(args: OptimizeArguments, io: CliIo, status: string, reasonCode: st
   io.stdout(args.format === 'json' ? `${JSON.stringify(result)}\n` : `${status}: ${reasonCode}\nNext: ${nextCommand}\n${recovery?`Recovery: ${recovery}\n`:''}${details?.artifactPath?`Artifact: ${details.artifactPath}\n`:''}${details?.url?`Pull request: ${details.url}\n`:''}`);
 }
 function missing(error: unknown): boolean { return (error as NodeJS.ErrnoException).code === 'ENOENT'; }
-function shellQuote(value: string): string { return `'${value.replace(/'/g, "'\\''")}'`; }
 async function optionalJson(path: string): Promise<unknown | null> { try { return await readPrivateJson(path); } catch (error) { if (missing(error)) return null; throw error; } }
 async function moduleSourceIdentity(): Promise<{ toolSourceSha: string; bundleDigest: string }> {
   const path = fileURLToPath(import.meta.url);

@@ -1,10 +1,13 @@
 import { realpath } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import { assertSameProvenance, canonicalJson, createPnpmCachePatch, decodeArtifact, jsonDigest, sha256, validateCacheOnlyChange, validateDiagnosisEvidence, type ProposalArtifact, type DiagnosisArtifact, type InferenceArtifact, type PnpmCachePatch } from '@cirujano/core';
+import { assertSameProvenance, canonicalJson, PUSH_FAMILY, createPnpmCachePatch, decodeArtifact, jsonDigest, sha256, validateCacheOnlyChange, validateDiagnosisEvidence, type ProposalArtifact, type DiagnosisArtifact, type InferenceArtifact, type PnpmCachePatch } from '@cirujano/core';
 import type { CliIo } from '../cli.js';
 import type { OptimizeArguments } from './arguments.js';
 import { exactKeys, readBoundDiagnosis, record, type DiagnosisFamily } from './diagnosis-journal.js';
 import { readRetainedOptimizationContext } from './input-context.js';
+import { retainedFamily } from './push-context.js';
+import { readPushProposalStatus, runPushPropose } from './push-propose.js';
+import { emitStage, shellQuote } from './stage-output.js';
 import { readOptimizationArtifact, readPrivateJson, readPrivateText, withOperationStore, type OperationStore } from './store.js';
 
 type InputContext = Awaited<ReturnType<typeof readRetainedOptimizationContext>>;
@@ -49,9 +52,8 @@ export async function readProposalContext(proposalPath:string):Promise<ProposalC
   if(candidate!==expected.candidate||patch!==expected.patch||canonicalJson(proposal)!==canonicalJson(proposalFor(context,expected,proposal.candidateSha))||canonicalJson(await readPrivateJson(join(directory,'patch-receipt.json')))!==canonicalJson(patchReceipt(context,proposal,expected))) throw new Error('proposal-artifact-drift');
   return {...context,proposal,candidate,patch};
 }
-const quote=(value:string)=>`'${value.replace(/'/g,"'\\''")}'`;
-function emit(args:OptimizeArguments,io:CliIo,status:string,reasonCode:string,nextCommand='cirujano --help'):void { io.stdout(args.format==='json'?`${JSON.stringify({status,reasonCode,nextCommand})}\n`:`${status}: ${reasonCode}\nNext: ${nextCommand}\n`); }
 export async function runPropose(args:OptimizeArguments,io:CliIo):Promise<0|1> {
+  if(typeof args.flags.input==='string'&&await retainedFamily(args.flags.input)===PUSH_FAMILY) return runPushPropose(args,io);
   try {
     const inputPath=args.flags.input,diagnosisPath=args.flags.diagnosis,output=args.flags.output;
     if(typeof inputPath!=='string'||typeof diagnosisPath!=='string'||typeof output!=='string') throw new Error('proposal-arguments-invalid');
@@ -62,19 +64,20 @@ export async function runPropose(args:OptimizeArguments,io:CliIo):Promise<0|1> {
     let nextCommand='cirujano --help';
     await withOperationStore(output,async store=>{
       await store.writeJson('local-stage.json',{schemaVersion:1,kind:'proposal-stage',status:'local-only',inputDigest:jsonDigest(context.input)});
-      if(disposition==='proposed') nextCommand=`cirujano optimize status --operation ${quote(await realpath(store.directory))}`;
+      if(disposition==='proposed') nextCommand=`cirujano optimize status --operation ${shellQuote(await realpath(store.directory))}`;
       if(diagnosisContext) await copyDiagnosisContext(store,diagnosisContext);else await copyInputContext(store,context);
       if(disposition==='proposed'&&diagnosisContext){const generated=editor(diagnosisContext),proposal=proposalFor(diagnosisContext,generated);await store.writeText('workflow.patch',generated.patch);await store.writeText('candidate.yml',generated.candidate);await store.writeJson('patch-receipt.json',patchReceipt(diagnosisContext,proposal,generated));await store.writeArtifact('proposal',proposal);}
       await store.writeJson('operation.json',{schemaVersion:1,kind:'optimization-operation',action:'propose',status:disposition,reasonCode:disposition==='proposed'?'cache-only-proposal':disposition==='abstain'?'model-abstained':'already-cached-no-change',nextCommand,inputDigest:jsonDigest(context.input)});
     });
-    emit(args,io,disposition,disposition==='proposed'?'cache-only-proposal':disposition==='abstain'?'model-abstained':'already-cached-no-change',nextCommand);return 0;
-  } catch {emit(args,io,'rejected','proposal-evidence-rejected');return 1;}
+    emitStage(args,io,disposition,disposition==='proposed'?'cache-only-proposal':disposition==='abstain'?'model-abstained':'already-cached-no-change',nextCommand);return 0;
+  } catch {emitStage(args,io,'rejected','proposal-evidence-rejected');return 1;}
 }
 export async function readProposalStatus(directory:string):Promise<{status:string;reasonCode:string;nextCommand:string}> {
+  if(await retainedFamily(join(directory,'input.json'))===PUSH_FAMILY) return readPushProposalStatus(directory);
   const state=record(await readPrivateJson(join(directory,'operation.json')));exactKeys(state,['schemaVersion','kind','action','status','reasonCode','nextCommand','inputDigest']);
   const context=await readRetainedOptimizationContext(join(directory,'input.json'));
   if(state.schemaVersion!==1||state.kind!=='optimization-operation'||state.action!=='propose'||state.inputDigest!==jsonDigest(context.input)) throw new Error('proposal-state-invalid');
-  if(state.status==='proposed') {await readProposalContext(join(directory,'proposal.json'));if(state.reasonCode!=='cache-only-proposal'||state.nextCommand!==`cirujano optimize status --operation ${quote(await realpath(directory))}`) throw new Error('proposal-state-invalid');}
+  if(state.status==='proposed') {await readProposalContext(join(directory,'proposal.json'));if(state.reasonCode!=='cache-only-proposal'||state.nextCommand!==`cirujano optimize status --operation ${shellQuote(await realpath(directory))}`) throw new Error('proposal-state-invalid');}
   else if(state.status==='abstain'){if((await readCopiedDiagnosisContext(directory)).diagnosis.status!=='abstain'||state.reasonCode!=='model-abstained'||state.nextCommand!=='cirujano --help')throw new Error('proposal-state-invalid');}
   else if(state.status==='no-change'){if(context.input.status!=='no-change'||state.reasonCode!=='already-cached-no-change'||state.nextCommand!=='cirujano --help')throw new Error('proposal-state-invalid');}
   else throw new Error('proposal-state-invalid');
