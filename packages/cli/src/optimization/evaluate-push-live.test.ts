@@ -8,16 +8,22 @@ interface PushCase { name: string; group: 'model' | 'adversarial'; expectedDiagn
 interface LiveCase { name: string; group: string; expected: string | null; status: string; passed: boolean; acceptedUnsafe: number }
 type Evaluator = {
   evaluateOffline: () => Promise<{ families: { 'skip-validated-push': { cases: PushCase[] } } }>;
-  runLivePushModels: (batch: unknown, output: string, options?: { apiKey?: string; fetch?: typeof fetch; permitLedger?: string }) => Promise<{ kind: string; live: boolean; transport: string; passed: boolean; cases: LiveCase[] }>;
+  runLivePushModels: (batch: unknown, output: string, options?: { apiKey?: string; fetch?: typeof fetch; permitLedger?: string }) => Promise<{ kind: string; live: boolean; transport: string; passed: boolean; inferenceCalls: number; cases: LiveCase[] }>;
 };
 const load = async () => await import(new URL('../../../../scripts/optimization/evaluate.mjs', import.meta.url).href) as Evaluator;
 const roots: string[] = [];
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
 const model = 'nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B';
+// The offline evaluation is the slow part; every test reads the same six push rows.
+let pushRows: Promise<PushCase[]> | undefined;
+const corpusRows = async () => (pushRows ??= load().then(async evaluator => (await evaluator.evaluateOffline()).families['skip-validated-push'].cases));
+const batchOf = (permits: unknown, overrides: Record<string, unknown> = {}) => ({ schemaVersion: 1, kind: 'push-model-evaluation-permits', model, permits, ...overrides });
+/** The expected live decision per case; the injection reply carries the wider, injected operation. */
+const expectedAnswer = (row: PushCase): Record<string, unknown> => ({ decision: row.expectedDiagnosis === 'abstain' ? 'abstain' : 'proposal', operation: row.expectedDiagnosis === 'abstain' ? null : row.group === 'adversarial' ? { ...row.input.operations[0], guardedJobIds: ['build', 'deploy', 'lint', 'test'] } : row.input.operations[0] });
 
 /** Six one-use permits in corpus order and a replay transport that answers each case by its request hash. */
-async function fixture(reply: (row: PushCase, body: string) => string | null = () => null, answer: (row: PushCase) => Record<string, unknown> = row => ({ decision: row.expectedDiagnosis === 'abstain' ? 'abstain' : 'proposal', operation: row.expectedDiagnosis === 'abstain' ? null : row.group === 'adversarial' ? { ...row.input.operations[0], guardedJobIds: ['build', 'deploy', 'lint', 'test'] } : row.input.operations[0] })) {
-  const evaluator = await load(), rows = (await evaluator.evaluateOffline()).families['skip-validated-push'].cases, directory = await realpath(await mkdtemp(join(tmpdir(), 'cirujano-push-live-'))); roots.push(directory);
+async function fixture(reply: (row: PushCase, body: string) => string | null = () => null, answer: (row: PushCase) => Record<string, unknown> = expectedAnswer) {
+  const evaluator = await load(), rows = await corpusRows(), directory = await realpath(await mkdtemp(join(tmpdir(), 'cirujano-push-live-'))); roots.push(directory);
   const permits = rows.map(row => ({ name: row.name, permit: { schemaVersion: 1, kind: 'inference-permit', permitId: `push-${row.name}`, repositoryId: row.input.provenance.repositoryId, inputDigest: jsonDigest(row.input), model, endpoint: 'https://api.tokenfactory.nebius.com/v1/chat/completions', expiresAt: '2099-01-01T00:00:00Z', maxRequests: 1, maxCompletionTokens: 2048, priceBasis: null } }));
   let posts = 0;
   const fetcher: typeof fetch = async (_url, init) => {
@@ -28,7 +34,7 @@ async function fixture(reply: (row: PushCase, body: string) => string | null = (
     const content = { analysis: 'Owned synthetic push decision.', decision: decision.decision, evidence: { 'classifier-reasons': true, 'push-history': true, 'workflow-eligibility': decision.decision === 'proposal' }, operation: decision.operation, uncertainty: 'Owned synthetic uncertainty.' };
     return new Response(JSON.stringify({ id: `push-owned-${posts}`, model, choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: JSON.stringify(content), refusal: null } }], usage: { prompt_tokens: 100, completion_tokens: 30, total_tokens: 130 } }));
   };
-  const run = (name: string, batch: unknown = { schemaVersion: 1, kind: 'push-model-evaluation-permits', model, permits }) => evaluator.runLivePushModels(batch, join(directory, name), { apiKey: 'owned-test-key', fetch: fetcher, permitLedger: join(directory, 'ledger') });
+  const run = (name: string, batch: unknown = batchOf(permits)) => evaluator.runLivePushModels(batch, join(directory, name), { apiKey: 'owned-test-key', fetch: fetcher, permitLedger: join(directory, 'ledger') });
   return { rows, permits, run, directory, posts: () => posts };
 }
 
@@ -43,7 +49,7 @@ describe('live push-model evaluation runner', () => {
     expect(retained.cases.map(row => row.name)).toEqual(f.rows.map(row => row.name));
     // Each permit is single use: the same batch fails every case without calling the provider again.
     const again = await f.run('again');
-    expect(f.posts()).toBe(6); expect(again.passed).toBe(false); expect(again.cases.every(row => row.status === 'failed' && !row.passed)).toBe(true);
+    expect(f.posts()).toBe(6); expect(result.inferenceCalls).toBe(6); expect(again.inferenceCalls).toBe(0); expect(again.passed).toBe(false); expect(again.cases.every(row => row.status === 'failed' && !row.passed)).toBe(true);
   });
   it('fails the evaluation when a live decision differs from the expected one', { timeout: 60_000 }, async () => {
     const f = await fixture(undefined, () => ({ decision: 'abstain', operation: null })), result = await f.run('live');
@@ -63,7 +69,8 @@ describe('live push-model evaluation runner', () => {
   it('rejects a batch in the wrong order, of the wrong size or for another model before any request', { timeout: 60_000 }, async () => {
     const f = await fixture();
     const withPermit = (index: number, change: Record<string, unknown>) => f.permits.map((entry, i) => i === index ? { ...entry, permit: { ...entry.permit, ...change } } : entry);
-    for (const batch of [{ schemaVersion: 1, kind: 'push-model-evaluation-permits', model, permits: withPermit(2, { model: 'nvidia/other' }) }, { schemaVersion: 1, kind: 'push-model-evaluation-permits', model, permits: withPermit(3, { permitId: f.permits[0]!.permit.permitId }) }, { schemaVersion: 1, kind: 'push-model-evaluation-permits', model, permits: withPermit(4, { expiresAt: '2020-01-01T00:00:00Z' }) }, { schemaVersion: 1, kind: 'push-model-evaluation-permits', model, permits: withPermit(5, { inputDigest: '0'.repeat(64) }) }, { schemaVersion: 1, kind: 'push-model-evaluation-permits', model, permits: [...f.permits].reverse() }, { schemaVersion: 1, kind: 'push-model-evaluation-permits', model, permits: f.permits.slice(1) }, { schemaVersion: 1, kind: 'push-model-evaluation-permits', model: 'nvidia/other', permits: f.permits }, { schemaVersion: 1, kind: 'model-evaluation-permits', model, permits: f.permits }]) await expect(f.run(`bad-${Math.random()}`, batch)).rejects.toThrow();
+    const batches = [batchOf(withPermit(2, { model: 'nvidia/other' })), batchOf(withPermit(3, { permitId: f.permits[0]!.permit.permitId })), batchOf(withPermit(4, { expiresAt: '2020-01-01T00:00:00Z' })), batchOf(withPermit(5, { inputDigest: '0'.repeat(64) })), batchOf([...f.permits].reverse()), batchOf(f.permits.slice(1)), batchOf(f.permits, { model: 'nvidia/other' }), batchOf(f.permits, { kind: 'model-evaluation-permits' })];
+    for (const [index, batch] of batches.entries()) await expect(f.run(`bad-${index}`, batch)).rejects.toThrow();
     expect(f.posts()).toBe(0);
   });
 });

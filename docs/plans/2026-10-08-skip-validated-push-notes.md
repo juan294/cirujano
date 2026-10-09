@@ -471,6 +471,17 @@ Plan: [2026-10-08-skip-validated-push.md](2026-10-08-skip-validated-push.md).
     "minute(s)" in the modeled line.
   - A regression test pins the observed skipped-job timing.
   - The family docs (demo section, README status) and the sanitized live proof.
+- **Simplify (one reviewer, all four angles, for a small diff).**
+  - Adopted:
+    - The push runner reports the permits it actually consumed as `inferenceCalls`. It had
+      reported the case count even when a used permit sent nothing.
+    - A dead completeness check and a dead `|| '0'` are gone.
+    - The tests read the offline corpus once and use a `batchOf` helper, which cut the file's
+      run time from about 10 s to about 1 s.
+  - Recorded for later, because each would change the cache family's live runner: sharing the
+    permit-batch checks and the per-case permit, ledger and retention steps between
+    `runLiveModels` and `runLivePushModels`, and moving `costText` to `report.ts` for both
+    families.
 
 ## Phase 1 handoff (2026-10-08)
 

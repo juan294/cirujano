@@ -261,7 +261,7 @@ export async function runLivePushModels(batch, output, options = {}) {
   const parent = await realpath(dirname(output)); if (parent !== dirname(output)) throw new Error('live-output-parent-symlink');
   await mkdir(output, { mode: 0o700 });
   const replay = options.fetch !== undefined;
-  const evaluation = { schemaVersion: 1, kind: replay ? 'optimization-replay-push-model-evaluation' : 'optimization-live-push-model-evaluation', provider: 'nebius-token-factory', live: !replay, transport: replay ? 'injected-replay' : 'native', model: MODEL, passed: false, cases: [] };
+  const evaluation = { schemaVersion: 1, kind: replay ? 'optimization-replay-push-model-evaluation' : 'optimization-live-push-model-evaluation', provider: 'nebius-token-factory', live: !replay, transport: replay ? 'injected-replay' : 'native', model: MODEL, passed: false, inferenceCalls: 0, cases: [] };
   const save = async () => writeFile(join(output, 'evaluation.json'), `${p.canonicalJson(evaluation)}\n`, { mode: 0o600 });
   for (let i = 0; i < rows.length; i++) {
     const row = rows[i], { permit, preview } = entries[i], directory = join(output, row.entry.name), injected = row.entry.attack === 'evidence-operation-injection';
@@ -270,6 +270,8 @@ export async function runLivePushModels(batch, output, options = {}) {
     const result = await p.diagnoseOptimization(row.input, CONFIG, permit, { apiKey: options.apiKey, fetch: options.fetch ?? nativeFetch, beforePost: async intent => {
       await writeFile(join(directory, 'intent.json'), p.canonicalJson(intent), { flag: 'wx', mode: 0o600 });
       await p.consumePermit({ kind: 'inference', digest: p.jsonDigest(permit), operation: intent.attemptId, maximum: 1, ...(options.permitLedger ? { ledger: options.permitLedger } : {}) });
+      // Counted only once the permit is consumed: an already used permit sends nothing.
+      evaluation.inferenceCalls++;
     } });
     await writeFile(join(directory, 'result.json'), p.canonicalJson(result), { flag: 'wx', mode: 0o600 });
     const accepted = result.status === 'proposal' ? result.diagnosis?.operation ?? null : null;
@@ -283,7 +285,7 @@ export async function runLivePushModels(batch, output, options = {}) {
     evaluation.cases.push({ name: row.entry.name, group: injected ? 'adversarial' : 'model', expected: injected ? null : row.entry.expectedDiagnosis, status: result.status, passed, acceptedUnsafe });
     await save();
   }
-  evaluation.passed = evaluation.cases.length === rows.length && evaluation.cases.every(row => row.passed);
+  evaluation.passed = evaluation.cases.every(row => row.passed);
   await save();
   return evaluation;
 }
@@ -355,7 +357,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     else if (args.length === 3 && args[0] === '--live-push-models') result = await runLivePushModels(await (await product()).readPrivateJson(resolve(args[1])), resolve(args[2]), { apiKey: process.env.NEBIUS_API_KEY });
     else throw new Error('usage: evaluate.mjs [--offline | --validate-proof manifest.json | --live-models permit-batch.json new-private-output-directory | --live-push-models permit-batch.json new-private-output-directory]');
     if (args[0] === '--live-models') result = { kind: result.kind, live: result.live, model: MODEL, passed: true, inferenceCalls: 7 };
-    if (args[0] === '--live-push-models') result = { kind: result.kind, live: result.live, model: MODEL, passed: result.passed, inferenceCalls: result.cases.length, cases: result.cases };
+    if (args[0] === '--live-push-models') result = { kind: result.kind, live: result.live, model: MODEL, passed: result.passed, inferenceCalls: result.inferenceCalls, cases: result.cases };
     process.stdout.write(`${JSON.stringify(result)}\n`); if (result.passed === false && result.structuralComplete !== true) process.exitCode = 1;
   } catch (error) { process.stderr.write(`${error instanceof Error && /^[a-z0-9-]+$/.test(error.message) ? error.message : 'evaluation-failed'}\n`); process.exitCode = 1; }
 }

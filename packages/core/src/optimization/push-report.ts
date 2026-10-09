@@ -7,7 +7,7 @@ import { currency, fail, finish, ref, safeModel } from './report.js';
 
 export interface PushReportRenderInputs extends PushComparisonInputs { diagnosis: PushDiagnosisArtifact; inference: PushInferenceArtifact; measurement: PushMeasurementArtifact; patch: string; baseRef: string; headRef: string }
 /** Fixed decimals, trimmed: provider float noise (0.00012251999999999999) and exponents stay out of the public text. */
-function costText(amount: number): string { return amount.toFixed(10).replace(/\.?0+$/, '') || '0'; }
+function costText(amount: number): string { return amount.toFixed(10).replace(/\.?0+$/, ''); }
 const knownEvidenceIds = new Set(['classifier-reasons', 'push-history', 'workflow-eligibility']);
 
 /** The skip-validated-push report: fixed text and typed identities only, rendered from recomputed, bound evidence. */
