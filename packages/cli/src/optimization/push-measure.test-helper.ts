@@ -10,11 +10,11 @@ import { createOptimizationService } from './service.js';
 import { readPrivateJson } from './store.js';
 
 const prefix = `repos/${repository}`, sha = (seed: number) => seed.toString(16).padStart(40, '0');
-interface Job { id: number; name: string; conclusion: string; minutes: number }
+interface Job { id: number; name: string; conclusion: string; minutes: number; completedAt?: string }
 /** A completed job that ran `minutes` billed minutes (ending 30 s into the last one), or a skipped one. */
 function job(runId: number, headSha: string, entry: Job) {
   const started = Date.parse('2026-10-10T10:00:00Z'), completed = entry.conclusion === 'skipped' ? started : started + (entry.minutes - 1) * 60_000 + 30_000;
-  return { id: entry.id, name: entry.name, run_id: runId, run_attempt: 1, head_sha: headSha, status: 'completed', conclusion: entry.conclusion, started_at: new Date(started).toISOString().replace('.000Z', 'Z'), completed_at: new Date(completed).toISOString().replace('.000Z', 'Z') };
+  return { id: entry.id, name: entry.name, run_id: runId, run_attempt: 1, head_sha: headSha, status: 'completed', conclusion: entry.conclusion, started_at: new Date(started).toISOString().replace('.000Z', 'Z'), completed_at: entry.completedAt ?? new Date(completed).toISOString().replace('.000Z', 'Z') };
 }
 
 /**
@@ -45,7 +45,10 @@ export async function pushMeasurementFixture() {
     pulls.set(entry.prNumber, { number: entry.prNumber, merged: true, merge_commit_sha: entry.headSha, base: { ref: branch }, head: { sha: sha(entry.prRunId), repo: { id: p.repositoryId } } });
     prJobs.set(entry.prRunId, [{ id: entry.prRunId * 10 + 1, name: 'test (20)', conclusion: 'success', minutes: 6 }, { id: entry.prRunId * 10 + 2, name: 'test (22)', conclusion: 'success', minutes: 6 }, ...(base ? [] : [{ id: entry.prRunId * 10, name: CLASSIFIER_JOB_ID, conclusion: 'skipped', minutes: 0 }])]);
   });
-  const refs = new Map<string, string>([['main', p.baseSha], ['develop', f.candidateSha]]), opened: Record<string, unknown>[] = [], posts: unknown[] = [];
+  // Phase 7 pins publication branches at the base and the candidate; the integration branch has moved on.
+  const trees = new Map<string, string>();
+  for (const entry of entries) if (entry.role === 'candidate') { trees.set(entry.headSha, sha(entry.pushRunId + 50_000)); trees.set(sha(entry.prRunId!), sha(entry.pushRunId + 50_000)); }
+  const refs = new Map<string, string>([['cirujano/base', p.baseSha], ['cirujano/skip-validated-push', f.candidateSha]]), opened: Record<string, unknown>[] = [], posts: unknown[] = [];
   const respond = (endpoint: string): unknown => {
     if (endpoint === prefix) return { id: p.repositoryId, full_name: repository, fork: false, private: false };
     const contents = new RegExp(`^${prefix}/contents/${workflow.replace(/[./]/g, '\\$&')}\\?ref=([a-f0-9]{40})$`).exec(endpoint);
@@ -53,13 +56,15 @@ export async function pushMeasurementFixture() {
     const pushRun = /\/actions\/runs\/(\d+)\/attempts\/1(\/jobs\?per_page=100&page=1)?$/.exec(endpoint), entry = pushRun ? entries.find(row => row.pushRunId === Number(pushRun[1])) : undefined;
     if (pushRun && entry) return pushRun[2] ? { total_count: pushJobs.get(entry.pushRunId)!.length, jobs: pushJobs.get(entry.pushRunId)!.map(row => job(entry.pushRunId, entry.headSha, row)) } : { id: entry.pushRunId, run_attempt: 1, head_sha: entry.headSha, path: workflow, event: 'push', head_branch: branch, status: 'completed', repository: { id: p.repositoryId, full_name: repository }, head_repository: { id: p.repositoryId, full_name: repository, fork: false } };
     const prRun = /\/actions\/runs\/(\d+)(\/attempts\/1\/jobs\?per_page=100&page=1)?$/.exec(endpoint), prRunId = Number(prRun?.[1]);
-    if (prRun && prJobs.has(prRunId)) return prRun[2] ? { total_count: prJobs.get(prRunId)!.length, jobs: prJobs.get(prRunId)!.map(row => job(prRunId, sha(prRunId), row)) } : { id: prRunId, run_attempt: 1, event: 'pull_request', path: workflow, head_sha: sha(prRunId), status: 'completed', repository: { id: p.repositoryId } };
+    if (prRun && prJobs.has(prRunId)) return prRun[2] ? { total_count: prJobs.get(prRunId)!.length, jobs: prJobs.get(prRunId)!.map(row => job(prRunId, sha(prRunId), row)) } : { id: prRunId, run_attempt: 1, event: 'pull_request', path: workflow, head_sha: sha(prRunId), status: 'completed', repository: { id: p.repositoryId }, head_repository: { id: p.repositoryId } };
     const pull = /\/pulls\/(\d+)$/.exec(endpoint);
     if (pull && pulls.has(Number(pull[1]))) return pulls.get(Number(pull[1]));
     if (pull) return opened.find(row => row.number === Number(pull[1]));
     const ref = new RegExp(`^${prefix}/git/ref/heads/(.+)$`).exec(endpoint);
     if (ref) return { ref: `refs/heads/${ref[1]}`, object: { type: 'commit', sha: refs.get(ref[1]!) } };
     if (endpoint === `${prefix}/git/commits/${p.baseSha}`) return { sha: p.baseSha, tree: { sha: input.structuralFacts.treeSha } };
+    const commit = new RegExp(`^${prefix}/git/commits/([a-f0-9]{40})$`).exec(endpoint);
+    if (commit && trees.has(commit[1]!)) return { sha: commit[1], tree: { sha: trees.get(commit[1]!) } };
     if (endpoint === `${prefix}/compare/${p.baseSha}...${f.candidateSha}`) return { status: 'ahead', base_commit: { sha: p.baseSha }, merge_base_commit: { sha: p.baseSha }, files: [{ filename: workflow, status: 'modified', sha: gitBlobSha(f.candidate) }] };
     if (endpoint === `${prefix}/pulls?state=all&per_page=100&page=1`) return opened;
     throw new Error(`unhandled owned GitHub read ${endpoint}`);
@@ -75,6 +80,6 @@ export async function pushMeasurementFixture() {
   const cohortPath = join(f.directory, 'cohort.json'), measured = join(f.directory, 'measured'), reported = join(f.directory, 'reported');
   const proposalPath = join(f.directory, 'proposed', 'proposal.json');
   const measure = async () => { await writeFile(cohortPath, canonicalJson(cohort)); return service.run(command('measure', { proposal: proposalPath, sandbox: sandboxPath, cohort: cohortPath, output: measured }), f.io); };
-  const report = () => service.run(command('report', { proposal: proposalPath, sandbox: sandboxPath, measurement: join(measured, 'measurement.json'), output: reported }), f.io);
-  return { ...f, p, input, sandbox, sandboxPath, cohort, entries, workflows, pushJobs, prJobs, logs, pulls, refs, opened, posts, service, measured, reported, proposalPath, measure, report };
+  const report = () => service.run(command('report', { proposal: proposalPath, sandbox: sandboxPath, measurement: join(measured, 'measurement.json'), output: reported, 'base-ref': 'cirujano/base', 'head-ref': 'cirujano/skip-validated-push' }), f.io);
+  return { ...f, p, input, sandbox, sandboxPath, cohort, entries, workflows, pushJobs, prJobs, logs, pulls, trees, refs, opened, posts, service, measured, reported, proposalPath, measure, report };
 }

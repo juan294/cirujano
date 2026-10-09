@@ -31,7 +31,7 @@ describe('skip-validated-push measure, report and publish', () => {
     expect(await f.service.run(command('publish', { report: join(f.reported, 'report.json'), permit: permitPath }), f.io)).toBe(0);
     expect(f.last()).toMatchObject({ status: 'published', url: 'https://github.com/public-example/benchmark/pull/7' });
     expect(f.posts).toHaveLength(1);
-    expect((f.posts[0] as { body: unknown }).body).toEqual({ title: 'Skip CI jobs on pushes their pull request already validated', head: 'develop', base: 'main', body: report.markdown, maintainer_can_modify: false, draft: false });
+    expect((f.posts[0] as { body: unknown }).body).toEqual({ title: 'Skip CI jobs on pushes their pull request already validated', head: 'cirujano/skip-validated-push', base: 'cirujano/base', body: report.markdown, maintainer_can_modify: false, draft: false });
     const publication = decodePushArtifact('publication', await readPrivateJson(join(f.reported, 'publication', 'publication.json')));
     expect(publication).toMatchObject({ family: 'skip-validated-push', status: 'published', number: 7 });
     // Reconciliation re-reads the same evidence and never creates again.
@@ -49,6 +49,9 @@ describe('skip-validated-push measure, report and publish', () => {
     ['an unmerged pull request', 'measurement-pull-identity', (f: Awaited<ReturnType<typeof fixture>>) => { f.pulls.get(101)!.merged = false; }],
     ['a PR run on another head', 'measurement-pr-run-identity', (f: Awaited<ReturnType<typeof fixture>>) => { (f.pulls.get(112)!.head as { sha: string }).sha = 'f'.repeat(40); }],
     ['a job no workflow job names', 'measurement-job-mapping', (f: Awaited<ReturnType<typeof fixture>>) => { f.pushJobs.get(1001)![0]!.name = 'deploy'; }],
+    ['a validated push whose tree differs from its PR head', 'measurement-tree-mismatch', (f: Awaited<ReturnType<typeof fixture>>) => { f.trees.set(f.entries[4]!.headSha, 'd'.repeat(40)); }],
+    ['a base job displayed as the classifier', 'measurement-job-name-collision', (f: Awaited<ReturnType<typeof fixture>>) => { f.workflows.set(f.entries[0]!.headSha, f.workflows.get(f.entries[0]!.headSha)!.replace('  test:\n', '  test:\n    name: cirujano_validated_push\n')); }],
+    ['a non-UTC job time', 'measurement-job-timing', (f: Awaited<ReturnType<typeof fixture>>) => { f.pushJobs.get(1002)![0]!.completedAt = '2026-10-10T12:05:30+02:00'; }],
   ])('fails closed on %s without a measurement', async (_name, reason, mutate) => {
     const f = await fixture(); mutate(f);
     expect(await f.measure()).toBe(1); expect(f.last()).toMatchObject({ status: 'failed', reasonCode: 'measurement-evidence-incomplete' });

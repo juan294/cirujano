@@ -27,7 +27,7 @@ Sandbox elapsed time is separate verification overhead; it is not a GitHub savin
 | candidate | [1100 / 1](https://github.com/public-example/benchmark/actions/runs/1100/attempts/1) | [2100](https://github.com/public-example/benchmark/actions/runs/2100) | true | skipped | 1 | 1 |
 | candidate | [1101 / 1](https://github.com/public-example/benchmark/actions/runs/1101/attempts/1) | [2101](https://github.com/public-example/benchmark/actions/runs/2101) | true | skipped | 1 | 1 |
 | candidate | [1102 / 1](https://github.com/public-example/benchmark/actions/runs/1102/attempts/1) | [2102](https://github.com/public-example/benchmark/actions/runs/2102) | true | skipped | 1 | 1 |
-| control | [1200 / 1](https://github.com/public-example/benchmark/actions/runs/1200/attempts/1) | none (direct push) | false | success | 13 | 1 |
+| control | [1200 / 1](https://github.com/public-example/benchmark/actions/runs/1200/attempts/1) | none | false | success | 13 | 1 |
 
 Baseline median billed minutes per push: 12; candidate pushes: 1, 1, 1.
 Classifier overhead: 1 billed minute(s) on every push to main, measured on the direct control push, which ran every guarded job.

@@ -20,7 +20,7 @@ export function parseOptimizeArguments(argv: readonly string[]): OptimizeArgumen
   const selected = action as Action;
   const pushFamily = selected==='collect' && rest.includes('--family');
   const requiredFlags: readonly string[] = pushFamily ? pushCollect : required[selected];
-  const allowed: readonly string[] = [...requiredFlags, ...(selected==='diagnose'?['permit']:[]), 'format'];
+  const allowed: readonly string[] = [...requiredFlags, ...(selected==='diagnose'?['permit']:[]), ...(selected==='report'?['base-ref','head-ref']:[]), 'format'];
   const flags: Record<string,string|string[]> = {};
   let format: 'json'|'text' = 'json';
   for(let index=0;index<rest.length;index+=2) {

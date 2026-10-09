@@ -32,6 +32,10 @@ describe('per-push measurement gate', () => {
     const validated = pushComparisonFixture(); validated.runs[6]!.classifier = { validated: true, reasonCode: 'validated' };
     expect(comparePushMeasurement(validated)).toMatchObject({ status: 'rejected', limits: expect.arrayContaining(['control-not-full']) });
   });
+  it('rejects a control push the classifier did not find PR-free, since only a direct push shows the full-run path', () => {
+    const inputs = pushComparisonFixture(); inputs.runs[6]!.classifier = { validated: false, reasonCode: 'pr-run-missing' };
+    expect(comparePushMeasurement(inputs)).toMatchObject({ status: 'rejected', limits: expect.arrayContaining(['control-not-direct']) });
+  });
   it('push-gate-pr-jobset-drift: candidate PRs must run the same jobs, all green, as the baseline PRs', () => {
     const missing = pushComparisonFixture(); missing.runs[5]!.prJobs = missing.runs[5]!.prJobs.filter(prJob => prJob.name !== 'test');
     expect(comparePushMeasurement(missing)).toMatchObject({ status: 'rejected', limits: expect.arrayContaining(['pr-coverage-drift']) });

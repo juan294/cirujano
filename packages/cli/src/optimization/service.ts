@@ -61,7 +61,8 @@ export function createOptimizationService(options: OptimizationServiceOptions = 
       }
       if(args.action==='report'){
         const report=await retainedFamily(join(dirname(flag(args,'proposal')),'input.json'))===PUSH_FAMILY?runPushReport:runReport;
-        const result=await report(flag(args,'proposal'),flag(args,'sandbox'),flag(args,'measurement'),flag(args,'output'));
+        // The PR refs default to the proof repository's main and develop; the push family's Phase 7 run pins its own.
+        const result=await report(flag(args,'proposal'),flag(args,'sandbox'),flag(args,'measurement'),flag(args,'output'),optionalFlag(args,'base-ref')??'main',optionalFlag(args,'head-ref')??'develop');
         emit(args,io,result.status,result.reasonCode,result.artifactPath?`cirujano optimize status --operation ${shellQuote(dirname(result.artifactPath))}`:statusCommand);return ['ready-to-publish','no-improvement'].includes(result.status)?0:1;
       }
       if(args.action==='publish'){

@@ -21,7 +21,10 @@ async function workflowAt(context: PushProposalContext, sha: string, options: Me
   check(file.type === 'file' && file.path === p.workflowPath && file.encoding === 'base64' && typeof file.content === 'string', 'measurement-workflow-identity');
   const bytes = Buffer.from(String(file.content).replace(/\n/g, ''), 'base64');
   check(gitBlobSha(bytes) === file.sha && bytes.length === file.size, 'measurement-workflow-hash');
-  return { hash: sha256(bytes), jobs: record(record(parseWorkflowSource(bytes.toString('utf8')), 'workflow').jobs, 'workflow jobs') };
+  const jobs = record(record(parseWorkflowSource(bytes.toString('utf8')), 'workflow').jobs, 'workflow jobs');
+  // GitHub lists jobs by display name; one displayed as the classifier would be read as the classifier.
+  check(Object.entries(jobs).every(([id, job]) => id === CLASSIFIER_JOB_ID || record(job, 'workflow job').name !== CLASSIFIER_JOB_ID), 'measurement-job-name-collision');
+  return { hash: sha256(bytes), jobs };
 }
 /** GitHub names a job by its `name` (or id), and a matrix leg `name (values)`; each GitHub job must map to exactly one workflow job. */
 function jobIdFor(name: string, jobs: Record<string, unknown>): string {
@@ -38,7 +41,16 @@ async function runJobs(endpoint: string, runId: number, attempt: number, headSha
   check(new Set(jobs.map(job => job.name)).size === jobs.length, 'measurement-job-inventory');
   return jobs;
 }
-const nullableTime = (value: unknown) => typeof value === 'string' ? value : null;
+/** A job time as the core comparison accepts it: absent, or an exact UTC timestamp. */
+function nullableTime(value: unknown): string | null {
+  if (value === null || value === undefined) return null;
+  check(typeof value === 'string' && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{3})?Z$/.test(value) && new Date(value).toISOString().replace('.000Z', 'Z') === value.replace('.000Z', 'Z'), 'measurement-job-timing');
+  return value as string;
+}
+async function treeOf(prefix: string, sha: string, options: MeasurementOptions): Promise<string> {
+  const commit = await githubGet(`${prefix}/git/commits/${sha}`, options); check(commit.sha === sha, 'measurement-commit-identity');
+  return text(record(commit.tree, 'commit tree').sha, 'tree sha');
+}
 
 /** Everything one cohort entry needs, read from GitHub; the core comparison judges it. */
 async function runEvidence(entry: PushCohortEntry, context: PushProposalContext, options: MeasurementOptions): Promise<PushRunEvidence> {
@@ -61,9 +73,11 @@ async function runEvidence(entry: PushCohortEntry, context: PushProposalContext,
   if (entry.prNumber !== null && entry.prRunId !== null) {
     const pull = await githubGet(`${prefix}/pulls/${entry.prNumber}`, options), base = record(pull.base, 'pull base'), prHead = record(pull.head, 'pull head'), prHeadRepo = record(prHead.repo, 'pull head repo');
     check(pull.number === entry.prNumber && pull.merged === true && pull.merge_commit_sha === entry.headSha && base.ref === p.integrationBranch && prHeadRepo.id === p.repositoryId, 'measurement-pull-identity');
-    const prSha = text(prHead.sha, 'pull head sha'), prRun = await githubGet(`${prefix}/actions/runs/${entry.prRunId}`, options), prRepo = record(prRun.repository, 'pr run repo');
+    const prSha = text(prHead.sha, 'pull head sha'), prRun = await githubGet(`${prefix}/actions/runs/${entry.prRunId}`, options), prRepo = record(prRun.repository, 'pr run repo'), prRunHead = record(prRun.head_repository, 'pr run head repo');
     const prAttempt = positiveInteger(prRun.run_attempt, 'pr run attempt');
-    check(prRun.id === entry.prRunId && prRun.event === 'pull_request' && prRun.path === p.workflowPath && prRun.head_sha === prSha && prRun.status === 'completed' && prRepo.id === p.repositoryId, 'measurement-pr-run-identity');
+    check(prRun.id === entry.prRunId && prRun.event === 'pull_request' && prRun.path === p.workflowPath && prRun.head_sha === prSha && prRun.status === 'completed' && prRepo.id === p.repositoryId && prRunHead.id === p.repositoryId, 'measurement-pr-run-identity');
+    // Independent of the classifier: a validated push must carry exactly the tree its PR run tested.
+    if (classifier?.validated) check(await treeOf(prefix, entry.headSha, options) === await treeOf(prefix, prSha, options), 'measurement-tree-mismatch');
     // A pull_request run reports the push-only classifier as skipped; it is not part of the PR's coverage.
     prJobs = (await runJobs(`${prefix}/actions/runs/${entry.prRunId}/attempts/${prAttempt}/jobs`, entry.prRunId, prAttempt, prSha, options)).filter(job => job.name !== CLASSIFIER_JOB_ID).map(job => ({ name: text(job.name, 'pr job name'), conclusion: text(job.conclusion, 'pr job conclusion') }));
   }

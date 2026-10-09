@@ -19,12 +19,12 @@ async function retainPushMeasurementEvidence(store: OperationStore, path: string
   });
 }
 
-/** `optimize report` for a push measurement: the same refs, retention and receipts as the cache report. */
-export async function runPushReport(proposalPath: string, sandboxPath: string, measurementPath: string, output: string): Promise<ReportDisposition> {
+/** `optimize report` for a push measurement: the same retention and receipts as the cache report; the PR refs are the owner's pinned branches. */
+export async function runPushReport(proposalPath: string, sandboxPath: string, measurementPath: string, output: string, baseRef = 'main', headRef = 'develop'): Promise<ReportDisposition> {
   try {
     const context = await readPushProposalContext(proposalPath), pair = await readPushSandboxContext(sandboxPath), measured = await readPushMeasurementContext(measurementPath);
     if (jsonDigest(context.proposal) !== jsonDigest(measured.context.proposal) || jsonDigest(pair.sandbox) !== jsonDigest(measured.pair.sandbox)) throw new Error('report-input-drift');
-    const render = renderInputs(measured, 'main', 'develop'), report = renderPushReport(render);
+    const render = renderInputs(measured, baseRef, headRef), report = renderPushReport(render);
     return await withOperationStore(output, async store => {
       await copyPushProposalContext(store, context); await retainPushMeasurementEvidence(store, measurementPath, measured);
       await store.writeArtifact('report', report); await store.writeText('report.md', report.markdown);

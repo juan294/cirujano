@@ -22,12 +22,14 @@ export function renderPushReport(inputs: PushReportRenderInputs): PushReportArti
   if (typeof inputs.patch !== 'string' || Buffer.byteLength(inputs.patch) > 4 * 1024 * 1024 || sha256(inputs.patch) !== proposal.patchHash) fail('patch bytes/hash');
   const workflow = input.provenance.workflowPath;
   if (!isLiteralWorkflowPath(workflow)) fail('unsupported workflow path');
-  const baseRef = ref(inputs.baseRef), headRef = ref(inputs.headRef), branch = input.provenance.integrationBranch;
+  const baseRef = ref(inputs.baseRef), headRef = ref(inputs.headRef);
   const proposalDigest = jsonDigest(proposal), sandboxDigest = jsonDigest(sandbox), measurementDigest = jsonDigest(measurement);
   const marker = `<!-- cirujano-optimization:${proposalDigest}:${measurementDigest} -->`;
   const ready = measurement.status === 'measured-improvement' && inference.status === 'completed' && sandbox.status === 'sandbox-verified' && diagnosis.status === 'proposal';
   const status: PushReportArtifact['status'] = ready ? 'ready-to-publish' : measurement.status === 'no-improvement' ? 'no-improvement' : 'rejected';
-  const publicRepository = inputs.visibility === 'public', repository = input.provenance.repository;
+  const publicRepository = inputs.visibility === 'public', repository = input.provenance.repository, branch = publicRepository ? input.provenance.integrationBranch : 'the integration branch';
+  // Control and coverage sentences are claims only the passed gate supports.
+  const passed = measurement.status === 'measured-improvement';
   const run = (id: number, attempt: number) => publicRepository ? `[${id} / ${attempt}](https://github.com/${repository}/actions/runs/${id}/attempts/${attempt})` : `${id} / ${attempt}`;
   const guarded = input.provenance.guardedJobIds;
   const candidates = measurement.pushes.filter(push => push.role === 'candidate');
@@ -35,7 +37,7 @@ export function renderPushReport(inputs: PushReportRenderInputs): PushReportArti
     `# Skip validated pushes: ${status}`,
     '',
     `Repository: ${publicRepository ? repository : 'private repository (identity withheld)'}`,
-    `Workflow: ${workflow}; integration branch: ${branch}.`,
+    `Workflow: ${workflow}${publicRepository ? `; integration branch: ${branch}` : ''}.`,
     `Diagnosis: ${diagnosis.status}; operation: skip-validated-push; guarded jobs: ${publicRepository ? guarded.join(', ') : `${guarded.length} (identities withheld)`}.`,
     `Evidence IDs: ${diagnosis.evidenceIds.filter(id => knownEvidenceIds.has(id)).join(', ') || 'identities withheld'}.`,
     '',
@@ -55,11 +57,11 @@ export function renderPushReport(inputs: PushReportRenderInputs): PushReportArti
     '',
     '| Role | Push run / attempt | PR run | Validated | Guarded jobs | Billed min | Classifier min |',
     '| --- | --- | --- | --- | --- | ---: | ---: |',
-    ...measurement.pushes.map(push => `| ${push.role} | ${run(push.pushRunId, push.attempt)} | ${push.prRunId === null ? 'none (direct push)' : publicRepository ? `[${push.prRunId}](https://github.com/${repository}/actions/runs/${push.prRunId})` : push.prRunId} | ${push.validated} | ${[...new Set(push.guardedJobs.map(job => job.conclusion))].join(' / ')} | ${push.billedMinutes} | ${push.classifierMinutes} |`),
+    ...measurement.pushes.map(push => `| ${push.role} | ${run(push.pushRunId, push.attempt)} | ${push.prRunId === null ? 'none' : publicRepository ? `[${push.prRunId}](https://github.com/${repository}/actions/runs/${push.prRunId})` : push.prRunId} | ${push.validated} | ${[...new Set(push.guardedJobs.map(job => job.conclusion))].join(' / ')} | ${push.billedMinutes} | ${push.classifierMinutes} |`),
     '',
     `Baseline median billed minutes per push: ${measurement.baselineMedianMinutes}; candidate pushes: ${candidates.map(push => push.billedMinutes).join(', ')}.`,
-    `Classifier overhead: ${measurement.classifierOverheadMinutes} billed minute(s) on every push to ${branch}, measured on the direct control push, which ran every guarded job.`,
-    `PR coverage: every sampled PR run passed the same ${measurement.pushes[0]?.prJobs.length ?? 0} jobs.`,
+    `Classifier overhead: ${measurement.classifierOverheadMinutes} billed minute(s) on every push to ${branch}, ${passed ? 'measured on the direct control push, which ran every guarded job' : 'read from the control push; the gate did not pass'}.`,
+    `PR coverage: ${passed ? `every sampled PR run passed the same ${measurement.pushes[0]?.prJobs.length ?? 0} jobs` : 'not established; see the comparison limitations'}.`,
     `Modeled, not measured: across the last ${measurement.modeled.pushes} collected pushes, ${measurement.modeled.validatedPushes} would have validated, projecting ${measurement.modeled.projectedSavedMinutes} minutes saved and ${measurement.modeled.projectedOverheadMinutes} minutes of classifier overhead on the rest.`,
     `GitHub list estimate: ${measurement.githubListSavingUsd} USD; ${publicRepository ? 'public repository list saving is zero' : inputs.pricing === null ? 'price unavailable' : inputs.pricing.allowanceKnown ? 'explicit owner-supplied price basis' : 'allowance unknown; no positive list estimate'}.`,
     'Measured claims apply only to these seven sampled pushes. List estimates are not invoice savings. Provider and inference costs are not netted; no fleet, annual or net saving is established.',

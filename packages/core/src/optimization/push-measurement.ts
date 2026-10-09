@@ -54,7 +54,7 @@ function guardedConclusion(jobs: PushRunJob[]): Conclusion {
 
 /**
  * The per-push gate. Each candidate must be validated by the classifier with every guarded job skipped
- * and bill at least one minute below the baseline median; the control must run every guarded job; every
+ * and bill at least one minute below the baseline median; the control, a push with no merged PR, must run every guarded job; every
  * PR run must be green with the baseline's job set. Unsafe evidence rejects; a missed saving is no improvement.
  */
 export function comparePushMeasurement(inputs: PushComparisonInputs): PushMeasurementArtifact {
@@ -87,6 +87,8 @@ export function comparePushMeasurement(inputs: PushComparisonInputs): PushMeasur
     const ran = guardedIds.every(jobId => legs(jobId).every(job => job.conclusion === 'success'));
     reject(run.role === 'baseline' && !ran, 'baseline-not-green');
     reject(run.role === 'control' && (run.classifier?.validated !== false || !ran), 'control-not-full');
+    // Only a push with no merged PR shows the full-run path; a merged-PR push that failed open is not a control.
+    reject(run.role === 'control' && run.classifier?.reasonCode !== 'no-merged-pr', 'control-not-direct');
     reject(run.role === 'candidate' && run.classifier?.validated === true && guardedIds.some(jobId => legs(jobId).some(job => job.conclusion !== 'skipped')), 'guard-not-honored');
     reject(run.role === 'candidate' && run.classifier?.validated === false && !ran, 'unvalidated-push-not-full');
     if (run.role === 'candidate' && unvalidated) shortfalls.add('candidate-not-validated');

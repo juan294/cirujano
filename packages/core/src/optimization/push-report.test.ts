@@ -48,6 +48,7 @@ describe('skip-validated-push report', () => {
     const f = fixture(); f.runs[6]!.classifier = { validated: true, reasonCode: 'validated' }; refresh(f);
     const report = renderPushReport(f);
     expect(report.status).toBe('rejected'); expect(report.markdown).toContain('control-not-full');
+    for (const claim of ['which ran every guarded job', 'every sampled PR run passed', 'direct push']) expect(report.markdown).not.toContain(claim);
   });
   it('does not mark an inference that was never run ready', () => {
     const f = fixture(); Object.assign(f.inference, { status: 'not-run', returnedModel: null, completionId: null, responseHash: null, finishReason: null, usage: null }); refresh(f);
@@ -57,6 +58,6 @@ describe('skip-validated-push report', () => {
     const f = fixture(); f.visibility = 'private'; f.diagnosis.reason = 'PRIVATE_CANARY <script> https://private.example token=SECRET'; f.diagnosis.uncertainty = 'RAW_SOURCE_CANARY'; f.inference.completionId = 'PRIVATE_COMPLETION_CANARY'; refresh(f);
     const report = renderPushReport(f);
     for (const canary of ['public-example', 'PRIVATE_CANARY', 'RAW_SOURCE_CANARY', 'PRIVATE_COMPLETION_CANARY', 'private.example', 'SECRET', '<script>', 'https://github.com/', 'lint, test']) expect(report.markdown).not.toContain(canary);
-    expect(report.markdown).toContain('3 (identities withheld)');
+    expect(report.markdown).toContain('3 (identities withheld)'); expect(report.markdown).not.toContain('integration branch: main'); expect(report.markdown).not.toContain('push to main');
   });
 });
