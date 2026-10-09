@@ -584,3 +584,91 @@ Plan: [2026-10-08-skip-validated-push.md](2026-10-08-skip-validated-push.md).
   must define the `push-guard` profile, bind it at verify time, and dispatch `verify` (and
   the later `measure`/`report`) by family; `extractClassifierScript` and
   `validateGuardOnlyChange` are its inputs.
+
+## Phase 5 handoff (2026-10-09)
+
+- **Objective and scope:** the Sandbox verifier for push guards, as in
+  [phase-5](2026-10-08-skip-validated-push-phases/phase-5.md). No image build or import, no
+  Sandbox or model call, no remote write. Phase 7 owns the live image.
+- **Identity:** branch
+  `feat/skip-validated-push-p5` in `../cirujano-worktrees/svp-p5`, built on `f92cb0d` and
+  rebased onto pushed `develop` `5733f59` (the telemetry retry fix) as `0d6f99c`.
+- **Delivered:**
+  - Core:
+    - `push-classifier-cases.ts`: the Phase 3 table as one source (60 cases).
+    - `push-guard-verifier.ts`: `guardMatrix`, `verifyPushGuards`, and the payload and
+      result contracts.
+    - Eligibility refuses undeclared `needs` reads (`needs-context-reference`).
+  - CLI:
+    - `push-guard-harness-entry.ts`, bundled to the committed
+      `scripts/optimization/push-guard-harness.mjs`.
+    - `push-verify.ts`: the profile, the single-operation journal, verify, reconcile,
+      cancel and `readPushSandboxContext`.
+    - Family dispatch in `service.ts`.
+    - `readLocalPushCandidate`.
+    - `decodeReceipt` exported; `decodeSandboxPermit` and the profile validators widened
+      (type-only changes).
+  - Scripts:
+    - `image-context.mjs --push-guard`.
+    - `check-harness-linux.mjs` push proof.
+    - `verify-bundle.mjs` covers both bundles.
+  - `CLAUDE.md` notes the committed harness bundle.
+- **TDD:**
+  - The verifier, harness, verify, image-context and eligibility tests each failed first
+    because the module or rule was missing.
+  - The four required mutations, plus a fifth after review, are each caught by a named
+    matrix cell.
+  - Every review finding got a failing test first.
+- **Gate:** two full runs, both green on the first try.
+  - Final tree before the rebase (`389f0e7`, load average about 16): `build`, `typecheck`,
+    `lint`, `test`, `test:coverage`, `verify:optimization-actionlint`,
+    `verify:optimization-harness-linux` (cache harness, plus push harness 509 cells and 60
+    cases with tamper detected, on node:22-bookworm `sha256:0e5f9065…`, Node 22.23.3),
+    `evaluate.mjs --offline` and `git diff --check` all exited 0. Test counts: core 537,
+    runner 393, action 6, CLI 739. `verify-bundle` passed for both bundles.
+  - After rebasing onto `5733f59` (commit `0d6f99c`; the telemetry fix is a new input, so
+    the gate ran again): the same lanes, all exit 0. CLI 752 (the telemetry tests are
+    included), and `verify-bundle` passed.
+- **Review:**
+  - First pass, CHANGES REQUESTED (no blocker; six should-fix):
+    - S1: classifier failure with `validated=true` was not modeled.
+    - S2: an original condition reading `needs` beyond declared needs was eligible.
+    - S3: the case script ran as root and even after a digest failure.
+    - S4: the mismatch count was truncated.
+    - S5: recovery was weaker than the cache path.
+    - S6: the recovery paths were untested.
+  - All fixed. Re-review APPROVED. Of its three nits, two are fixed and one is recorded as
+    matching the cache family.
+- **Simplify (3 reviewers):**
+  - Adopted:
+    - The dispatch picks the function tuple once.
+    - The dead test-helper shim and type re-export are gone.
+    - A derivable image parameter and a dead status write are gone.
+    - Shared `hash`/`uuid`/`bounded`.
+    - Tests: a `resultFor` helper; candidate-commit gets its own test; an in-process default
+      provider (one test keeps the real spawn path); the harness file test uses 2 cases.
+    - One `node22` bundle-options object (same output).
+    - One `NULL_BODY_STATUSES` list.
+    - The harness payload path is pinned to the request's by a test.
+    - An overall 500 s case budget inside the 600 s Sandbox timeout.
+    - The matrix formats only the first 20 mismatches but counts all.
+    - A shared `jobConditions`.
+    - A `CLAUDE.md` bundle note.
+  - Deferred to Phase 6 (it touches cache code): a shared `sandbox-journal.ts` (intent and
+    record decode, readback binding, write-once artifact, `writeJournal`) used by `verify.ts`
+    and `push-verify.ts`, and a per-family handler table in `service.ts` for verify, measure
+    and report.
+  - Skipped:
+    - A shared image-context writer and the test-fixture extraction from
+      `verify.test-helper.ts` (both cache code).
+    - Reusing `readPayloadFile` (it would change the error codes).
+    - Parallel cases (the pids limit and one CPU).
+    - Re-binding on every recovery stays, as the cache path does.
+- **Risks carried forward:**
+  - The Phase 3 and 4 residuals.
+  - The matrix models GitHub semantics; the Phase 7 control push observes them.
+  - The provider's isolation of the push-guard image is unproven until Phase 7.
+  - The 60 cases take about 3 s locally; Sandbox timing is INFERRED.
+- **Next phase entry:** Phase 6 needs an explicit owner go. Start it with the deferred journal
+  extraction and the family handler table, then the push-cohort measurement, using
+  `readPushSandboxContext`.
