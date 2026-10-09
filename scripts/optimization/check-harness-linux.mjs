@@ -38,4 +38,25 @@ fs.writeFileSync('tests.json',${JSON.stringify(JSON.stringify({tests}))});fs.wri
   process.stdout.write(canonicalJson({status:'passed',imageId,nodeVersion,childUid:65534,childGid:65534,parentFdWrite:'denied',trustedAssetWrite:'denied',writableStoreClone:'passed',providerIsolation:'unproven'})+'\n');
  } finally {await rm(root,{recursive:true,force:true});}
 }
-try {await check();}catch(error){process.stderr.write((error instanceof Error&&/^linux-[a-z-]+$/.test(error.message)?error.message:'linux-harness-check-failed')+'\n');process.exitCode=1;}
+/** The push-guard harness on an owned guarded fixture, offline in the same cached image; a tampered candidate must fail. */
+async function checkPushGuard(imageId) {
+ const core=await import('../../packages/core/dist/index.js');
+ const base=await readFile(new URL('../../packages/core/fixtures/optimization/push/eligible-multi-job.yml',import.meta.url),'utf8'),path='.github/workflows/ci.yml';
+ const patch=core.createSkipValidatedPushPatch(base,{workflowHash:core.sha256(base),workflowPath:path,integrationBranch:'main',inventory:[{path,source:base}]});
+ const identity={profileDigest:'d'.repeat(64),proposalDigest:'e'.repeat(64),toolSourceSha:'a'.repeat(40),bundleDigest:'b'.repeat(64),imageManifestHash:'c'.repeat(64),harnessHash:sha256(await readFile(new URL('./push-guard-harness.mjs',import.meta.url)))};
+ const run=async candidate=>{
+  const payload=core.buildPushGuardPayload({...identity,workflowPath:path,baseWorkflow:base,candidateWorkflow:candidate,operation:patch.operation,classifierDigest:core.CLASSIFIER_DIGEST,cases:core.classifierCases()}),bytes=canonicalJson(payload);
+  const root=await realpath(await mkdtemp(join(tmpdir(),'cirujano-linux-push-guard-')));
+  try {
+   await chmod(root,0o755);await writeFile(join(root,'payload.json'),bytes,{mode:0o444});await copyFile(new URL('./push-guard-harness.mjs',import.meta.url),join(root,'harness.mjs'));await chmod(join(root,'harness.mjs'),0o444);
+   const {stdout}=await execFile('docker',['run',...security,'--read-only','--tmpfs','/tmp:rw,size=64m,mode=1777','--mount',`type=bind,src=${join(root,'harness.mjs')},dst=/opt/cirujano/harness.mjs,readonly`,'--mount',`type=bind,src=${join(root,'payload.json')},dst=/tmp/cirujano-payload.json,readonly`,'-e',`CIRUJANO_PAYLOAD_SHA256=${sha256(bytes)}`,'--entrypoint','/usr/local/bin/node',imageId,'/opt/cirujano/harness.mjs','/tmp/cirujano-payload.json'],{timeout:300000,maxBuffer:1024*1024});
+   return parseStrictJson(stdout);
+  } finally {await rm(root,{recursive:true,force:true});}
+ };
+ const passed=await run(patch.candidate),tampered=await run(patch.candidate.replace("refuse('fork-pr')","refuse('fork')"));
+ if(passed.status!=='passed'||passed.matrixCells<100||passed.classifierCases!==core.classifierCases().length||passed.classifierDigest!==core.CLASSIFIER_DIGEST) throw Error('linux-push-guard-failed');
+ // A changed script fails on its digest and is never run; the passed run's cases ran as nobody under root.
+ if(tampered.status!=='failed'||tampered.failure!=='inverse-mismatch'||tampered.classifierDigest===core.CLASSIFIER_DIGEST||tampered.classifierMismatchCount!==0) throw Error('linux-push-guard-tamper-undetected');
+ process.stdout.write(canonicalJson({status:'passed',harness:'push-guard',imageId,matrixCells:passed.matrixCells,classifierCases:passed.classifierCases,tamperDetected:true,network:'none',providerIsolation:'unproven'})+'\n');
+}
+try {await check();await checkPushGuard((await execFile('docker',['image','inspect','node:22-bookworm','--format','{{.Id}}'],{timeout:10000})).stdout.trim());}catch(error){process.stderr.write((error instanceof Error&&/^linux-[a-z-]+$/.test(error.message)?error.message:'linux-harness-check-failed')+'\n');process.exitCode=1;}

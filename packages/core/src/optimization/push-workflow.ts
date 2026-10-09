@@ -26,9 +26,10 @@ const EVENT_CONTEXT = /\bgithub\s*(?:\.\s*|\[\s*')(?:event|ref|head_ref|base_ref
 const EXPRESSION = /\$\{\{([\s\S]*?)\}\}/g, WHOLE_GITHUB = /\bgithub\b(?!\s*[.[])/i;
 function exposesEvent(value: string): boolean { return EVENT_CONTEXT.test(value) || [...value.matchAll(EXPRESSION)].some(match => WHOLE_GITHUB.test(match[1]!)); }
 /** Every job and step `if:` is an expression even without `${{ }}`. */
-function conditions(jobs: Record<string, unknown>): string[] {
-  return Object.values(jobs).flatMap(job => { const record = mapping(job); return [record.if, ...list(record.steps).map(step => mapping(step).if)].filter((value): value is string => typeof value === 'string'); });
+function jobConditions(job: Record<string, unknown>): string[] {
+  return [job.if, ...list(job.steps).map(step => mapping(step).if)].filter((value): value is string => typeof value === 'string');
 }
+function conditions(jobs: Record<string, unknown>): string[] { return Object.values(jobs).flatMap(job => jobConditions(mapping(job))); }
 const DEFAULT_PULL_REQUEST_TYPES = ['opened', 'reopened', 'synchronize'];
 /** Environment that changes how bash or node start, or where they connect. */
 const RUNTIME_ENV = /^(?:NODE_\w*|NPM_CONFIG_\w*|BASH_ENV|ENV|\w*_PROXY)$/i;
@@ -48,6 +49,16 @@ function explicitKeys(source: string): boolean {
   let found = false;
   visit(parseDocument(source, { keepSourceTokens: true }), { Pair(_, pair) { if (pair.srcToken?.start.some(token => token.type === 'explicit-key-ind')) found = true; } });
   return found;
+}
+/**
+ * True when any expression in the job reads `needs` other than as `needs.<declared need>`. The patch
+ * adds the classifier to `needs`, so a wider read (`toJSON(needs)`, an index, the classifier itself)
+ * would change meaning.
+ */
+function readsUndeclaredNeeds(job: Record<string, unknown>, declared: readonly string[]): boolean {
+  // A string with any expression is scanned whole: a `}}` inside a string literal would end a lazy match early.
+  const expressions = [...jobConditions(job), ...strings(job).filter(value => value.includes('${{'))];
+  return expressions.some(text => [...text.matchAll(/\bneeds\b(?:\s*\.\s*([A-Za-z_][A-Za-z0-9_-]*))?/gi)].some(match => !declared.some(need => need.toLowerCase() === match[1]?.toLowerCase())));
 }
 function consumesWorkflow(source: string, names: string[]): boolean {
   const on = parseWorkflowSource(source).on, run = isMap(on) ? on.workflow_run : undefined;
@@ -107,6 +118,7 @@ export function inspectPushWorkflow(source: string, evidence: PushWorkflowEviden
         try { condition = conditionExpression(job.if); } catch (error) { if (error instanceof OptimizationInputError) return refuse('unparseable-condition'); throw error; }
         if (usesStatusFunction(condition)) return refuse('status-function-condition');
       }
+      if (readsUndeclaredNeeds(job, needs as string[])) return refuse('needs-context-reference');
       if ('strategy' in job) matrixJobs++;
     }
     if (strings(workflow).some(value => SECRET.test(value.replace(ALLOWED_SECRET, '')))) return refuse('secret-reference');

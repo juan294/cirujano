@@ -10,10 +10,10 @@ export interface HarnessEnvelope {schemaVersion:1;kind:'harness-result';role:'ba
 function invalid():never{throw new Error('unsupported-execution-profile');}
 function record(value:unknown):Record<string,unknown>{canonicalJson(value);if(!value||typeof value!=='object'||Array.isArray(value))invalid();return value as Record<string,unknown>;}
 function exact(value:unknown,keys:string[]):Record<string,unknown>{const r=record(value);if(Object.keys(r).sort().join(',')!==keys.sort().join(','))invalid();return r;}
-const hash=(value:unknown)=>typeof value==='string'&&/^[a-f0-9]{64}$/.test(value);
+export const hash=(value:unknown)=>typeof value==='string'&&/^[a-f0-9]{64}$/.test(value);
 const sha=(value:unknown)=>typeof value==='string'&&/^[a-f0-9]{40}$/.test(value);
-const uuid=(value:unknown)=>typeof value==='string'&&/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(value);
-const bounded=(value:unknown)=>typeof value==='string'&&value.length>0&&Buffer.byteLength(value)<=512&&!/[\u0000-\u001f\u007f]/.test(value);
+export const uuid=(value:unknown)=>typeof value==='string'&&/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(value);
+export const bounded=(value:unknown)=>typeof value==='string'&&value.length>0&&Buffer.byteLength(value)<=512&&!/[\u0000-\u001f\u007f]/.test(value);
 export function completeCommands(profile:VerificationProfile):string[][]{return[['pnpm','install','--frozen-lockfile'],...profile.commands.map(argv=>[...argv])];}
 export function decodeExecutionProfile(value:unknown):ExecutionProfile {
  const p=exact(value,['schemaVersion','kind','provenance','proposalDigest','candidateSha','candidateRepository','project','image','verificationProfile','expectedQuality','timeoutSeconds','maxLayerBytes','imageRetention']) as unknown as ExecutionProfile;
@@ -34,7 +34,9 @@ export function validateProfileCommands(source:string,profile:VerificationProfil
  }
  if(!installed||canonicalJson(checks)!==canonicalJson(profile.commands))invalid();
 }
-export function decodeSandboxPermit(value:unknown,profile:ExecutionProfile,now=Date.now()):SandboxPermit {
+/** The profile fields a permit binds; both the cache execution profile and the push-guard profile carry them. */
+export interface PermitBoundProfile {provenance:{repositoryId:number};proposalDigest:string;candidateSha:string;image:{uuid:string};project:string}
+export function decodeSandboxPermit(value:unknown,profile:PermitBoundProfile,now=Date.now()):SandboxPermit {
  const p=exact(value,['schemaVersion','kind','permitId','repositoryId','proposalDigest','profileDigest','candidateSha','imageUuid','project','expiresAt','maxOperations']) as unknown as SandboxPermit;
  if(p.schemaVersion!==1||p.kind!=='sandbox-permit'||typeof p.permitId!=='string'||!/^[A-Za-z0-9_-]{1,128}$/.test(p.permitId)||p.repositoryId!==profile.provenance.repositoryId||p.proposalDigest!==profile.proposalDigest||p.profileDigest!==jsonDigest(profile)||p.candidateSha!==profile.candidateSha||p.imageUuid!==profile.image.uuid||p.project!==profile.project||typeof p.expiresAt!=='string'||!/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/.test(p.expiresAt)||!Number.isFinite(Date.parse(p.expiresAt))||new Date(p.expiresAt).toISOString().replace('.000Z','Z')!==p.expiresAt||Date.parse(p.expiresAt)<=now||!Number.isSafeInteger(p.maxOperations)||p.maxOperations<2||p.maxOperations>8)throw new Error('sandbox-permit-invalid');return p;
 }

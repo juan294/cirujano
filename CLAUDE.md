@@ -70,6 +70,10 @@ pnpm run ci:fast     # pre-push mirror of ci.yml
   `feat|fix|test|refactor|chore|docs(scope): description`
 - `packages/action/dist/index.cjs` is committed. Rebuild and commit it in the
   same commit as any `packages/core` or `packages/action` source change
+- `scripts/optimization/push-guard-harness.mjs` (the push-guard image harness)
+  is a committed bundle too: rebuild and commit it with any `packages/core` or
+  `packages/cli/src/optimization/push-guard-harness-entry.ts` change.
+  `scripts/verify-bundle.mjs` checks both
 
 ```bash
 # Commit before pulling (hook enforced)

@@ -216,6 +216,13 @@
       "status": "unsupported",
       "reason": "workflow-runtime-env",
       "branch": "main"
+    },
+    {
+      "name": "needs-context",
+      "file": "needs-context.yml",
+      "status": "unsupported",
+      "reason": "needs-context-reference",
+      "branch": "main"
     }
   ]
 }

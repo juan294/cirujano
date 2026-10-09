@@ -15,7 +15,7 @@ function inspect(source: string, integrationBranch = 'main', inventory: { path: 
 describe('push-ineligible-reason-codes', () => {
   it('names every case once and covers every refusal rule', () => {
     expect(new Set(manifest.cases.map(entry => entry.name)).size).toBe(manifest.cases.length);
-    expect(new Set(manifest.cases.filter(entry => entry.status === 'unsupported').map(entry => entry.reason))).toEqual(new Set(['workflow-run-defaults', 'workflow-runtime-env', 'yaml-alias', 'branch-filter-missing', 'branch-ignore', 'branch-glob', 'multiple-branches', 'branch-mismatch', 'pull-request-target', 'workflow-run-consumer', 'no-guarded-jobs', 'reusable-job', 'job-environment', 'permissions-not-read-only', 'secret-reference', 'status-function-condition', 'unparseable-condition', 'event-context-reference', 'job-continue-on-error', 'workflow-call', 'local-action', 'pull-request-types']));
+    expect(new Set(manifest.cases.filter(entry => entry.status === 'unsupported').map(entry => entry.reason))).toEqual(new Set(['needs-context-reference', 'workflow-run-defaults', 'workflow-runtime-env', 'yaml-alias', 'branch-filter-missing', 'branch-ignore', 'branch-glob', 'multiple-branches', 'branch-mismatch', 'pull-request-target', 'workflow-run-consumer', 'no-guarded-jobs', 'reusable-job', 'job-environment', 'permissions-not-read-only', 'secret-reference', 'status-function-condition', 'unparseable-condition', 'event-context-reference', 'job-continue-on-error', 'workflow-call', 'local-action', 'pull-request-types']));
   });
   for (const entry of manifest.cases) it(entry.name, () => {
     const source = read(entry.file);
@@ -69,6 +69,14 @@ describe('push workflow eligibility boundaries', () => {
     const base = read('eligible-multi-job.yml');
     for (const condition of ['" ${{ false }}"', '"${{ false }} "', "|\n      ${{ github.actor != 'x' }}"]) expect(inspect(base.replace("if: github.repository == 'public-example/benchmark'", `if: ${condition}`)), condition).toMatchObject({ status: 'unsupported', reason: 'unparseable-condition' });
     expect(inspect(base.replace("if: github.repository == 'public-example/benchmark'", 'if: "${{ false }}"')).status).toBe('eligible');
+  });
+  it('allows needs only as needs.<declared need>, because the patch adds the classifier to needs', () => {
+    const base = read('eligible-multi-job.yml'), condition = "    if: github.repository == 'public-example/benchmark'\n";
+    for (const text of ["    if: needs['cirujano_validated_push'].result == ''\n", "    if: needs.cirujano_validated_push.result == ''\n", "    if: toJSON(needs) != ''\n"]) expect(inspect(base.replace(condition, text)), text).toMatchObject({ status: 'unsupported', reason: 'needs-context-reference' });
+    expect(inspect(base.replace('      - run: pnpm test\n', "      - run: pnpm test\n        env:\n          NEEDS: ${{ toJSON(needs) }}\n"))).toMatchObject({ status: 'unsupported', reason: 'needs-context-reference' });
+    expect(inspect(base.replace('      - run: pnpm test\n', "      - run: pnpm test\n        env:\n          NEEDS: ${{ format('}}', toJSON(needs)) }}\n"))).toMatchObject({ status: 'unsupported', reason: 'needs-context-reference' });
+    expect(inspect(base.replace('      - run: pnpm test\n', "      - run: pnpm test\n        if: needs.lint.outputs.ready == 'yes'\n")).status).toBe('eligible');
+    expect(inspect(base.replace(condition, "    if: needs.lint.result == 'success'\n")).status).toBe('eligible');
   });
   it('refuses explicit-key YAML, which the byte-level patch cannot rewrite', () => {
     const base = read('eligible-multi-job.yml');

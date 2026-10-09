@@ -98,7 +98,7 @@ describe('job conditions', () => {
 });
 
 type Result = 'success' | 'failure' | 'skipped' | 'cancelled';
-const classifierStates = [{ name: 'skipped', result: 'skipped', validated: '' }, { name: 'success+true', result: 'success', validated: 'true' }, { name: 'success+false', result: 'success', validated: 'false' }, { name: 'failure', result: 'failure', validated: '' }, { name: 'cancelled', result: 'cancelled', validated: '' }] as const;
+const classifierStates = [{ name: 'skipped', result: 'skipped', validated: '' }, { name: 'success+true', result: 'success', validated: 'true' }, { name: 'success+false', result: 'success', validated: 'false' }, { name: 'failure', result: 'failure', validated: '' }, { name: 'cancelled', result: 'cancelled', validated: '' }, { name: 'failure+true', result: 'failure', validated: 'true' }, { name: 'cancelled+true', result: 'cancelled', validated: 'true' }] as const;
 const needResults: Result[] = ['success', 'failure', 'skipped', 'cancelled'];
 function combinations(length: number): Result[][] { return length === 0 ? [[]] : combinations(length - 1).flatMap(rest => needResults.map(result => [...rest, result])); }
 /** Modeled default GitHub semantics for a job with needs and a status-free `if`: run when nothing was cancelled, every need succeeded and the condition holds. */
@@ -120,7 +120,7 @@ describe('generated guard wrapper', () => {
     expect(() => guardExpression(['a b'], null)).toThrow();
   });
   it('guard-classifier-failure-runs-full', () => {
-    for (const length of [0, 1, 2]) for (const original of [true, null]) for (const classifier of [classifierStates[3], classifierStates[4]]) {
+    for (const length of [0, 1, 2]) for (const original of [true, null]) for (const classifier of [classifierStates[3], classifierStates[4], classifierStates[5], classifierStates[6]]) {
       expect(candidateRuns(Array<Result>(length).fill('success'), original, classifier, false), `${classifier.name}/${length}/${original}`).toBe(true);
     }
   });
@@ -131,6 +131,6 @@ describe('generated guard wrapper', () => {
       expect(candidateRuns(needs, original, classifier, runCancelled), `${classifier.name}/${needs.join(',') || 'no-needs'}/${original}/run-cancelled=${runCancelled}`).toBe(expected);
       cells++;
     }
-    expect(cells).toBe(5 * (1 + 4 + 16) * 2 * 2);
+    expect(cells).toBe(7 * (1 + 4 + 16) * 2 * 2);
   });
 });

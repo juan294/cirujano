@@ -10,7 +10,8 @@ import type { OptimizeArguments } from './arguments.js';
 export type { OptimizeArguments } from './arguments.js';
 import { RetainedInputError } from './input-context.js';
 import { shellQuote } from './stage-output.js';
-import { pushCollectionReceipt, readPushDiagnosisContext, readRetainedFamilyContext } from './push-context.js';
+import { pushCollectionReceipt, readPushDiagnosisContext, readRetainedFamilyContext, retainedFamily } from './push-context.js';
+import { cancelPushGuard, reconcilePushGuard, verifyPushGuard } from './push-verify.js';
 export { readRetainedOptimizationInput } from './input-context.js';
 import { collectGitHubInput, collectPushInput } from './github-read.js';
 import { runPropose, readProposalStatus, readDiagnosisContext } from './propose.js';
@@ -78,10 +79,14 @@ export function createOptimizationService(options: OptimizationServiceOptions = 
 
       if(args.action==='verify'||args.action==='cancel'||args.action==='status'){
         const directory=args.action==='verify'?null:flag(args,'operation'),intent=directory?await optionalJson(join(directory,'intent.json')):null;
-        if(args.action!=='status'||(intent&&typeof intent==='object'&&(intent as {kind?:unknown}).kind==='sandbox-pair')){
+        const kind=intent&&typeof intent==='object'?(intent as {kind?:unknown}).kind:undefined;
+        if(args.action!=='status'||kind==='sandbox-pair'||kind==='push-guard-run'){
           if(!iamToken)throw new ServiceError('sandbox-credential-required');
           const sandboxOptions={iamToken,...(options.fetch?{fetch:options.fetch}:{}),...(options.permitLedger?{permitLedger:options.permitLedger}:{})};
-          const result=args.action==='verify'?await verifyPair(flag(args,'proposal'),await readPrivateJson(flag(args,'profile')),await readPrivateJson(flag(args,'permit')),flag(args,'output'),sandboxOptions):args.action==='cancel'?await cancelSandbox(directory!,await readPrivateJson(flag(args,'permit')),sandboxOptions):await reconcileSandbox(directory!,sandboxOptions);
+          // A push proposal (by its input's family) and a push journal (by its kind) take the push-guard verifier.
+          const push=args.action==='verify'?await retainedFamily(join(dirname(flag(args,'proposal')),'input.json'))===PUSH_FAMILY:kind==='push-guard-run';
+          const [verify,cancel,reconcile]=push?[verifyPushGuard,cancelPushGuard,reconcilePushGuard]:[verifyPair,cancelSandbox,reconcileSandbox];
+          const result=args.action==='verify'?await verify(flag(args,'proposal'),await readPrivateJson(flag(args,'profile')),await readPrivateJson(flag(args,'permit')),flag(args,'output'),sandboxOptions):args.action==='cancel'?await cancel(directory!,await readPrivateJson(flag(args,'permit')),sandboxOptions):await reconcile(directory!,sandboxOptions);
           emit(args,io,result.status,result.reasonCode,result.artifactPath?`cirujano optimize status --operation ${shellQuote(directory??flag(args,'output'))}`:statusCommand,result.recovery);return result.status==='sandbox-verified'?0:1;
         }
       }

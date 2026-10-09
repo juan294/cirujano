@@ -82,7 +82,36 @@ WORKDIR /workspace
  const inventory=[...files].map(([path,bytes])=>({path,hash:sha256(bytes)})).sort((a,b)=>a.path<b.path?-1:a.path>b.path?1:0);
  return {output,files:inventory.map(file=>file.path),recipeHash:jsonDigest(recipe),contextDigest:jsonDigest(inventory),harnessHash:sha256(harness),lockfileHash:source.provenance.lockfileHash};
 }
+/** The push-guard image: the base node image plus the bundled push-guard harness. No source, dependencies or store. */
+const pushBuildManifest=`import { createHash } from 'node:crypto';
+import { readFile, writeFile } from 'node:fs/promises';
+const canonical=value=>JSON.stringify(Object.fromEntries(Object.keys(value).sort().map(key=>[key,value[key]])));
+const sha256=bytes=>createHash('sha256').update(bytes).digest('hex');
+const recipeBytes=await readFile('/opt/cirujano/recipe.json'),recipe=JSON.parse(recipeBytes.toString('utf8'));
+const manifest={schemaVersion:1,kind:'push-guard-image',toolSourceSha:recipe.toolSourceSha,bundleDigest:recipe.bundleDigest,nodeVersion:recipe.nodeVersion,harnessHash:sha256(await readFile('/opt/cirujano/harness.mjs')),recipeHash:sha256(recipeBytes)};
+await writeFile('/opt/cirujano/image.json',canonical(manifest),{mode:0o600,flag:'wx'});
+`;
+export async function generatePushGuardImageContext(recipe,output) {
+ object(recipe,['schemaVersion','kind','from','nodeVersion','toolSourceSha','bundleDigest']);
+ if(recipe.schemaVersion!==1||recipe.kind!=='push-guard-image-recipe') throw Error('image-context-recipe');match(recipe.from,/^[a-z0-9][a-z0-9./:_-]*@sha256:[a-f0-9]{64}$/);match(recipe.nodeVersion,version);match(recipe.toolSourceSha,sha);match(recipe.bundleDigest,hash);
+ if(typeof output!=='string'||!isAbsolute(output)||await realpath(dirname(output))!==resolve(dirname(output))) throw Error('image-context-output-path');
+ try {await lstat(output);throw Error('image-context-output-exists');}catch(error){if(error.code!=='ENOENT') throw error;}
+ const harness=await readFile(new URL('./push-guard-harness.mjs',import.meta.url)),files=new Map([['harness.mjs',harness],['recipe.json',Buffer.from(canonicalJson(recipe))],['build-manifest.mjs',Buffer.from(pushBuildManifest)]]);
+ files.set('Dockerfile',Buffer.from(`FROM ${recipe.from}
+USER root
+RUN node -e 'if(process.versions.node!=="${recipe.nodeVersion}") process.exit(1)'
+COPY --chmod=600 harness.mjs recipe.json build-manifest.mjs /opt/cirujano/
+RUN node /opt/cirujano/build-manifest.mjs
+RUN chmod -R a+rX,a-w /opt/cirujano
+RUN mkdir -p /workspace && chmod 700 /workspace
+WORKDIR /workspace
+`));
+ await mkdir(output,{mode:0o700});await chmod(output,0o700);
+ for(const [path,bytes] of files) await writeFile(join(output,path),bytes,{mode:0o600,flag:'wx'});
+ const inventory=[...files].map(([path,bytes])=>({path,hash:sha256(bytes)})).sort((a,b)=>a.path<b.path?-1:a.path>b.path?1:0);
+ return {output,files:inventory.map(file=>file.path),recipeHash:jsonDigest(recipe),contextDigest:jsonDigest(inventory),harnessHash:sha256(harness)};
+}
 if(process.argv[1]&&resolve(process.argv[1])===fileURLToPath(import.meta.url)) {
- try {if(process.argv.length!==5) throw Error('image-context-usage');const source=parseStrictJson(await readFile(process.argv[2],'utf8'),32*1024*1024),recipe=parseStrictJson(await readFile(process.argv[3],'utf8'));const result=await generateImageContext(source,recipe,process.argv[4]);process.stdout.write(canonicalJson(result)+'\n');}
+ try {if(process.argv[2]==='--push-guard'){if(process.argv.length!==5) throw Error('image-context-usage');const recipe=parseStrictJson(await readFile(process.argv[3],'utf8'));process.stdout.write(canonicalJson(await generatePushGuardImageContext(recipe,process.argv[4]))+'\n');}else{if(process.argv.length!==5) throw Error('image-context-usage');const source=parseStrictJson(await readFile(process.argv[2],'utf8'),32*1024*1024),recipe=parseStrictJson(await readFile(process.argv[3],'utf8'));const result=await generateImageContext(source,recipe,process.argv[4]);process.stdout.write(canonicalJson(result)+'\n');}}
  catch(error){process.stderr.write((error instanceof Error&&/^image-context-[a-z-]+$/.test(error.message)?error.message:'image-context-failed')+'\n');process.exitCode=1;}
 }

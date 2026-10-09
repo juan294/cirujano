@@ -239,6 +239,78 @@ Plan: [2026-10-08-skip-validated-push.md](2026-10-08-skip-validated-push.md).
   script as one token line. One test runs the generated step under `bash -eo pipefail`.
   actionlint 1.7.12 (with shellcheck) checks the 3 guarded fixtures.
 
+### Phase 5
+
+- **A separate push-guard image.** Plan said: one image whose manifest lists both harnesses.
+  Chose: its own minimal image (`generatePushGuardImageContext`, `image-context.mjs
+  --push-guard`): the base node image plus the bundled harness at the same
+  `/opt/cirujano/harness.mjs` path, with an `image.json` of kind `push-guard-image`. Why:
+  the verifier needs no repository source, dependencies or store, so none enter the image;
+  the cache image and its harness bytes stay unchanged; and the Sandbox client (request
+  command, image readback paths) is reused unchanged.
+- **The harness is a committed bundle.** `scripts/optimization/push-guard-harness.mjs` is
+  built by `packages/cli/scripts/bundle.mjs` from `push-guard-harness-entry.ts` (yaml and
+  the core verifier inlined, 328 KB, under the 512 KiB image readback cap, byte-identical
+  across builds, repo-relative paths only). `verify-bundle` now checks it like the Action
+  bundle, and the CLI binds its hash at build time (`CIRUJANO_PUSH_HARNESS_HASH`).
+- **The Phase 3 table as data.** The classifier cases moved from the test into
+  `push-classifier-cases.ts` (`failOpenCases`, `classifierCases()`): the unit tests and the
+  Sandbox fixtures are one table (60 cases), and a test checks every data case gives the
+  same verdict through the workflow step.
+- **Matrix model.** A condition without a status function gets GitHub's implicit
+  `success()` (so dropping `!cancelled()` shows as guarded jobs skipped on pull requests).
+  The base condition is opaque and substituted only where it is exactly the guard's last
+  `&&` operand; otherwise the guard is evaluated as written. Needs combine fully up to five
+  needs; beyond that, all-success plus each need failing alone. The classifier job's `if` is
+  checked per event and ref, including a push to another branch.
+- **Verify journal.** A single-operation `push-guard-run` journal (`push-verify.ts`) reuses
+  the Sandbox client, permit decoding and ledger, polling, cancel and readback unchanged;
+  the cache pair journal in `verify.ts` is untouched. `decodeSandboxPermit` now takes the
+  fields both profiles share (type-only change).
+- **Profile binding.** The push-guard profile binds the proposal digest, the trusted harness
+  hash and a local candidate commit that descends from the base, changes only the workflow
+  file, and holds exactly `candidate.yml`.
+- **Disclosure.** The sandbox artifact's `mismatches` counts matrix and classifier-case
+  mismatches together; `firstMismatch` is the first of either; the operation's reason code
+  names the verifier's failure (`push-guard-matrix-mismatch`, `push-guard-inverse-mismatch`,
+  ...). An unreadable image gives `push-guard-image-unavailable` with the context command.
+- **Local Linux proof.** `check-harness-linux.mjs` also runs the bundled push harness in the
+  cached `node:22-bookworm` image with no network on an owned guarded fixture, and requires a
+  tampered candidate to fail. The image had been pruned locally; it was re-pulled (public,
+  read-only) before the gate.
+- **Other differences from the phase text.** `ExecutionProfile` did not gain a `push-guard`
+  kind; a separate `PushGuardProfile` exists. Family dispatch for `verify`, `status` and
+  `cancel` sits in `service.ts`; `verify.ts` stays the cache pair verifier. Phase 7 step 1
+  therefore builds the push-guard image context (`image-context.mjs --push-guard`), not one
+  context with both harnesses. `verify-bundle` fails on the new harness until it is committed.
+- **Added after independent review:**
+  - The matrix also models a classifier that wrote `validated=true` and then failed or was
+    cancelled (it must run the full suite), and a fifth mutation (dropping the classifier
+    result check) is detected. The Phase 2 `guard-classifier-failure-runs-full` test covers
+    the same two states.
+  - Eligibility refuses `needs` read other than as `needs.<declared need>` anywhere in a job's
+    expressions (`needs-context-reference`): the patch adds the classifier to `needs`, so
+    `toJSON(needs)`, an index or the classifier itself would change meaning.
+  - The harness runs a case only when the extracted script's digest matches the payload; under
+    root each case runs as uid/gid 65534; a hung case is killed with SIGKILL; the output read is
+    capped at 4 KiB.
+  - Results carry `classifierMismatchCount`; the artifact counts every mismatch. A `passed`
+    result must carry the payload's script digest, and the artifact records the result's digest.
+  - Recovery decodes the receipt with the cache path's `decodeReceipt` (exported, type
+    widened), checks the intent and record as the cache pair journal does, and binds
+    `image-readback.json` to the profile.
+  - The matrix also checks the candidate's `needs` are the original needs plus the classifier.
+  - Only a missing image (404) or mismatched image bytes give `push-guard-image-unavailable`;
+    other read-back failures report the client's reason code.
+  - Re-review nits: a non-`if` string containing `${{` is scanned whole for `needs` (a `'}}'`
+    inside a literal would end a lazy match); `classifierCases` counts the cases actually run
+    (0 when the digest gate refuses the script). Kept as is: `status` on a run whose image could
+    not be read back reports `sandbox-recovery-rejected` (no readback file), as the cache
+    family does.
+  - New tests: a six-need job, the classifier-mismatch count, an existing intent,
+    reconcile after a lost result, cancel on a verified run, drifted journal, readback and
+    artifact, and an unconfirmed create (`outcome-unknown`, inspection required).
+
 ## Phase 1 handoff (2026-10-08)
 
 - **Objective and scope:** H2 telemetry report repair and H5 truth fixes, as in

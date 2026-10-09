@@ -6,10 +6,9 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { sha256 } from './canonical.js';
 import { CLASSIFIER_DIGEST, CLASSIFIER_SOURCE, classifyPush, runClassifierStep } from './push-classifier.js';
 import { CLASSIFIER_JOB_ID } from './push-guard.js';
-import { baseSha, githubScenario, headSha, mergeSha, repository, repositoryId, treeSha, workflowPath } from './push-classifier.test-helper.js';
+import { classifierCases, failOpenCases, NULL_BODY_STATUSES, githubScenario, headSha, mergeSha, repository, repositoryId, workflowPath, type Scenario } from './push-classifier-cases.js';
 
 const templatePath = new URL('./push-classifier.template.mjs', import.meta.url);
-type Scenario = ReturnType<typeof githubScenario>;
 const directories: string[] = [];
 afterEach(() => { for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true }); });
 
@@ -38,67 +37,7 @@ describe('skip-validated-push classifier rule', () => {
     expect((await classifyPush(scenario.context, scenario.get)).validated).toBe(true);
   });
 
-  const failOpen: [string, string, (scenario: Scenario) => void][] = [
-    ['not-push-event', 'not-push-event', s => { s.context.eventName = 'pull_request'; }],
-    ['forced-push', 'forced-push', s => { s.context.forced = true; }],
-    ['push-event-unreadable', 'push-event-unreadable', s => { s.context.forced = undefined as unknown as boolean; }],
-    ['fast-forward-other-pr-at-head', 'other-pr-at-head', s => { s.context.sha = headSha; s.pull.merge_commit_sha = headSha; s.responses[`repos/${repository}/commits/${headSha}/pulls?per_page=100`] = [s.pull, { ...s.pull, number: 99, merged_at: null, merge_commit_sha: null, base: { ref: 'main' } }]; }],
-    ['other-pr-at-head', 'other-pr-at-head', s => { s.responses[s.paths.headPulls] = [s.pull, { ...s.pull, number: 99, merged_at: null, base: { ref: 'main' } }]; }],
-    ['paginated-head-pulls', 'pulls-paginated', s => { s.responses[s.paths.headPulls] = Array.from({ length: 100 }, () => s.pull); }],
-    ['classifier-named-job-ran', 'pr-job-not-successful', s => { s.responses[s.paths.jobs] = { total_count: 2, jobs: [s.job('lint'), s.job('cirujano_validated_push')] }; }],
-    ['two-classifier-named-jobs', 'pr-job-not-successful', s => { s.responses[s.paths.jobs] = { total_count: 3, jobs: [s.job('lint'), s.job('cirujano_validated_push', 'skipped'), s.job('cirujano_validated_push', 'skipped')] }; }],
-    ['tag-ref', 'not-branch-ref', s => { s.context.ref = 'refs/tags/v1'; }],
-    ['empty-branch', 'not-branch-ref', s => { s.context.ref = 'refs/heads/'; }],
-    ['branch-sha', 'invalid-context', s => { s.context.sha = 'develop'; }],
-    ['repository-id', 'invalid-context', s => { s.context.repositoryId = Number.NaN; }],
-    ['repository-name', 'invalid-context', s => { s.context.repository = 'no-owner'; }],
-    ['workflow-path', 'invalid-context', s => { s.context.workflowPath = 'ci.yml'; }],
-    ['unmerged', 'no-merged-pr', s => { s.pull.merged_at = null as unknown as string; }],
-    ['merge-sha-differs', 'no-merged-pr', s => { s.pull.merge_commit_sha = 'e'.repeat(40); }],
-    ['other-base', 'no-merged-pr', s => { s.pull.base.ref = 'main'; }],
-    ['two-prs', 'multiple-merged-prs', s => { s.responses[s.paths.pulls] = [s.pull, { ...s.pull, number: 8 }]; }],
-    ['paginated-pulls', 'pulls-paginated', s => { s.responses[s.paths.pulls] = Array.from({ length: 100 }, (_, number) => ({ ...s.pull, number: number + 1 })); }],
-    ['fork-pr', 'fork-pr', s => { s.pull.head.repo = { id: 456 }; }],
-    ['deleted-fork', 'fork-pr', s => { s.pull.head.repo = null as unknown as { id: number }; }],
-    ['pr-number', 'api-unexpected-shape', s => { s.pull.number = 0; }],
-    ['head-sha', 'api-unexpected-shape', s => { s.pull.head.sha = 'short'; }],
-    ['tree-mismatch', 'tree-mismatch', s => { s.responses[s.paths.headCommit] = { sha: headSha, tree: { sha: 'f'.repeat(40) }, parents: [{ sha: baseSha }] }; }],
-    ['squash-base-moved-tree', 'tree-mismatch', s => { s.responses[s.paths.pushCommit] = { sha: mergeSha, tree: { sha: 'f'.repeat(40) }, parents: [{ sha: '9'.repeat(40) }] }; }],
-    ['squash-base-moved', 'base-not-ancestor', s => { s.responses[s.paths.pushCommit] = { sha: mergeSha, tree: { sha: treeSha }, parents: [{ sha: '9'.repeat(40) }] }; s.responses[`repos/${repository}/compare/${'9'.repeat(40)}...${headSha}`] = { status: 'diverged' }; }],
-    ['behind-base', 'base-not-ancestor', s => { s.responses[s.paths.compare] = { status: 'behind' }; }],
-    ['no-parents', 'base-not-ancestor', s => { s.responses[s.paths.pushCommit] = { sha: mergeSha, tree: { sha: treeSha }, parents: [] }; }],
-    ['commit-drift', 'api-unexpected-shape', s => { s.responses[s.paths.pushCommit] = { sha: 'e'.repeat(40), tree: { sha: treeSha }, parents: [{ sha: baseSha }] }; }],
-    ['head-commit-drift', 'api-unexpected-shape', s => { s.responses[s.paths.headCommit] = { sha: 'e'.repeat(40), tree: { sha: treeSha }, parents: [{ sha: baseSha }] }; }],
-    ['pr-run-failed', 'pr-run-not-successful', s => { s.run.conclusion = 'failure'; }],
-    ['pr-run-in-progress', 'pr-run-not-successful', s => { s.run.status = 'in_progress'; }],
-    ['different-workflow-path', 'pr-run-missing', s => { s.run.path = '.github/workflows/other.yml'; }],
-    ['two-pr-runs', 'pr-run-ambiguous', s => { s.responses[s.paths.runs] = { total_count: 2, workflow_runs: [s.run, { ...s.run, id: 56 }] }; }],
-    ['paginated-pr-runs', 'pr-runs-paginated', s => { s.responses[s.paths.runs] = { total_count: 2, workflow_runs: [s.run] }; }],
-    ['full-page-pr-runs', 'pr-runs-paginated', s => { s.responses[s.paths.runs] = { total_count: 100, workflow_runs: Array.from({ length: 100 }, (_, index) => ({ ...s.run, id: 1000 + index, path: '.github/workflows/other.yml' })) }; }],
-    ['pr-run-event', 'pr-run-identity', s => { s.run.event = 'push'; }],
-    ['pr-run-head', 'pr-run-identity', s => { s.run.head_sha = mergeSha; }],
-    ['pr-run-fork-head', 'pr-run-identity', s => { s.run.head_repository = { id: 456 }; }],
-    ['pr-run-other-pr', 'pr-run-identity', s => { (s.run as Record<string, unknown>).pull_requests = [{ number: 99, base: { ref: 'develop' } }]; }],
-    ['pr-run-other-base', 'pr-run-identity', s => { (s.run as Record<string, unknown>).pull_requests = [{ number: 7, base: { ref: 'main' } }]; }],
-    ['pr-run-pull-requests-shape', 'pr-run-identity', s => { (s.run as Record<string, unknown>).pull_requests = [null]; }],
-    ['pr-run-id', 'api-unexpected-shape', s => { s.run.id = -1; }],
-    ['job-skipped', 'pr-job-not-successful', s => { s.responses[s.paths.jobs] = { total_count: 3, jobs: [s.job('lint'), s.job('test', 'skipped'), s.job('cirujano_validated_push', 'skipped')] }; }],
-    ['job-in-progress', 'pr-job-not-successful', s => { s.responses[s.paths.jobs] = { total_count: 2, jobs: [s.job('lint'), { name: 'test', status: 'in_progress', conclusion: null }] }; }],
-    ['job-status-inconsistent', 'pr-job-not-successful', s => { s.responses[s.paths.jobs] = { total_count: 2, jobs: [s.job('lint'), { name: 'test', status: 'queued', conclusion: 'success' }] }; }],
-    ['jobs-empty', 'pr-jobs-empty', s => { s.responses[s.paths.jobs] = { total_count: 1, jobs: [s.job('cirujano_validated_push', 'skipped')] }; }],
-    ['paginated-jobs', 'pr-jobs-paginated', s => { s.responses[s.paths.jobs] = { total_count: 4, jobs: [s.job('lint'), s.job('test')] }; }],
-    ['full-page-jobs', 'pr-jobs-paginated', s => { s.responses[s.paths.jobs] = { total_count: 100, jobs: Array.from({ length: 100 }, (_, index) => s.job(`job-${index}`)) }; }],
-    ['http-403', 'api-http-403', s => { s.overrides[s.paths.pulls] = { status: 403 }; }],
-    ['http-404', 'api-http-404', s => { s.overrides[s.paths.runs] = { status: 404 }; }],
-    ['head-pulls-http-500', 'api-http-500', s => { s.overrides[s.paths.headPulls] = { status: 500 }; }],
-    ['http-500', 'api-http-500', s => { s.overrides[s.paths.jobs] = { status: 500 }; }],
-    ['http-304', 'api-unexpected-status', s => { s.overrides[s.paths.pushCommit] = { status: 304 }; }],
-    ['timeout', 'api-timeout', s => { s.overrides[s.paths.compare] = { throws: new DOMException('The operation timed out.', 'TimeoutError') }; }],
-    ['network-error', 'api-error', s => { s.overrides[s.paths.headCommit] = { throws: new TypeError('fetch failed') }; }],
-    ['malformed-json', 'api-malformed-json', s => { s.overrides[s.paths.jobs] = { raw: '{"jobs": [' }; }],
-    ['unexpected-shape', 'api-unexpected-shape', s => { s.responses[s.paths.pulls] = { pulls: [] }; }],
-  ];
-  it.each(failOpen)('classifier-fail-open-%s gives false with reason %s', async (_name, reasonCode, mutate) => {
+  it.each(failOpenCases)('classifier-fail-open-%s gives false with reason %s', async (_name, reasonCode, mutate) => {
     const scenario = githubScenario(); mutate(scenario);
     const result = await classifyPush(scenario.context, scenario.get);
     expect(result.validated).toBe(false); expect(result.reasonCode).toBe(reasonCode);
@@ -194,6 +133,25 @@ describe('classifier workflow step', () => {
     expect(child.status).toBe(0);
     expect(readFileSync(step.output, 'utf8')).toBe('validated=false\nreason=invalid-context\n');
     expect(child.stdout).toContain('cirujano-classifier validated=false reason=invalid-context');
+  });
+});
+
+describe('classifier cases as data', () => {
+  it('classifier-cases-as-data: every case gives the same verdict through the workflow step', async () => {
+    const cases = classifierCases();
+    expect(cases).toHaveLength(failOpenCases.length + 2); expect(new Set(cases.map(c => c.name)).size).toBe(cases.length);
+    for (const testCase of cases) {
+      const directory = mkdtempSync(join(tmpdir(), 'cirujano-classifier-case-')); directories.push(directory);
+      const event = join(directory, 'event.json'), output = join(directory, 'output'); writeFileSync(event, testCase.event); writeFileSync(output, '');
+      const fetcher: typeof fetch = async url => {
+        const response = testCase.responses[String(url).replace('https://api.github.com/', '')];
+        if (!response) return new Response('{"message":"Not Found"}', { status: 404 });
+        if ('error' in response) throw response.error === 'TimeoutError' ? new DOMException('timed out', 'TimeoutError') : new TypeError('fetch failed');
+        return new Response(NULL_BODY_STATUSES.includes(response.status) ? null : response.body, { status: response.status });
+      };
+      const result = await runClassifierStep({ ...testCase.env, GITHUB_EVENT_PATH: event, GITHUB_OUTPUT: output }, fetcher);
+      expect({ validated: result.validated, reasonCode: result.reasonCode }, testCase.name).toEqual(testCase.expected);
+    }
   });
 });
 

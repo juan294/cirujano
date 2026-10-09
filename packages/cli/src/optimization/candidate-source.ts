@@ -23,3 +23,15 @@ export async function readLocalCandidate(repository:string,candidateSha:string,s
  const expected=source.files.map(file=>file.path===source.provenance.workflowPath?{...file,hash:sha256(candidateWorkflow),bytesBase64:Buffer.from(candidateWorkflow).toString('base64')}:file);
  if(canonicalJson(files)!==canonicalJson(expected))throw new Error('candidate-source-drift');return files;
 }
+/** The push candidate is one committed workflow change: the commit descends from the base, changes only that file, and holds exactly the proposed bytes. */
+export async function readLocalPushCandidate(repository:string,candidateSha:string,baseSha:string,workflowPath:string,candidateWorkflow:string):Promise<void> {
+ if(!isAbsolute(repository)||/[\u0000-\u001f]/.test(repository)||!/^[a-f0-9]{40}$/.test(candidateSha)||candidateSha===baseSha)throw new Error('candidate-identity-invalid');
+ safeRelativePath(workflowPath);
+ async function git(args:string[],maximum=8*1024*1024):Promise<Buffer>{const {stdout}=await execute('git',['--no-replace-objects','-c','core.hooksPath=/dev/null','-c','core.fsmonitor=false','-C',repository,...args],{encoding:'buffer',maxBuffer:maximum,timeout:60_000});return stdout;}
+ if((await git(['rev-parse','--verify',`${candidateSha}^{commit}`])).toString().trim()!==candidateSha)throw new Error('candidate-commit-invalid');
+ await git(['merge-base','--is-ancestor',baseSha,candidateSha]);
+ const changed=(await git(['diff','--name-only','-z','--no-renames',baseSha,candidateSha])).toString('utf8').split('\0').filter(Boolean);
+ if(canonicalJson(changed)!==canonicalJson([workflowPath]))throw new Error('candidate-source-drift');
+ const bytes=await git(['cat-file','blob',`${candidateSha}:${workflowPath}`],4*1024*1024+1);
+ if(bytes.length>4*1024*1024||!bytes.equals(Buffer.from(candidateWorkflow)))throw new Error('candidate-source-drift');
+}

@@ -63,3 +63,22 @@ describe('manifest-only reviewable image preparation context',()=>{
   await expect((await load()).generateImageContext(source({'pnpm-lock.yaml':lock}),recipe,directory)).rejects.toThrow();await expect(stat(directory)).rejects.toMatchObject({code:'ENOENT'});
  });
 });
+describe('push-guard image context',()=>{
+ const pushRecipe={schemaVersion:1,kind:'push-guard-image-recipe',from:'docker.io/library/node@sha256:'+'a'.repeat(64),nodeVersion:'22.23.3',toolSourceSha:'b'.repeat(40),bundleDigest:'c'.repeat(64)};
+ type PushLoad={generatePushGuardImageContext:(recipe:unknown,output:string)=>Promise<{recipeHash:string;contextDigest:string;harnessHash:string;files:string[];output:string}>};
+ it('holds only node, the push-guard harness and its manifest builder, deterministically',async()=>{
+  const {generatePushGuardImageContext}=await import(url.href) as PushLoad,directory=await output(),result=await generatePushGuardImageContext(pushRecipe,directory);
+  const harness=await readFile(new URL('../../../../scripts/optimization/push-guard-harness.mjs',import.meta.url));
+  expect(result.files).toEqual(['Dockerfile','build-manifest.mjs','harness.mjs','recipe.json']);expect(result.harnessHash).toBe(sha256(harness));expect(result.recipeHash).toBe(jsonDigest(pushRecipe));
+  expect(await readFile(join(directory,'harness.mjs'))).toEqual(harness);
+  const docker=await readFile(join(directory,'Dockerfile'),'utf8');expect(docker).toContain(pushRecipe.from);expect(docker).toContain('process.versions.node!=="22.23.3"');expect(docker).not.toMatch(/pnpm|dependency-input|COPY \. /);expect(docker).toContain('chmod -R a+rX,a-w /opt/cirujano');
+  const builder=await readFile(join(directory,'build-manifest.mjs'),'utf8');expect(builder).toContain("kind:'push-guard-image'");
+  for(const path of result.files) expect((await stat(join(directory,path))).mode&0o777).toBe(0o600);
+  expect((await generatePushGuardImageContext(pushRecipe,await output())).contextDigest).toBe(result.contextDigest);
+ });
+ it.each(['mutable-from','kind','node-version','tool-sha'])('rejects a %s recipe before creating any context',async mutant=>{
+  const {generatePushGuardImageContext}=await import(url.href) as PushLoad,directory=await output(),r:Record<string,unknown>={...pushRecipe};
+  if(mutant==='mutable-from') r.from='node:22';if(mutant==='kind') r.kind='image-recipe';if(mutant==='node-version') r.nodeVersion='22';if(mutant==='tool-sha') r.toolSourceSha='main';
+  await expect(generatePushGuardImageContext(r,directory)).rejects.toThrow();await expect(stat(directory)).rejects.toMatchObject({code:'ENOENT'});
+ });
+});

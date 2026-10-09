@@ -26,7 +26,8 @@ async function boundProfile(context:ProposalContext,raw:unknown):Promise<{profil
 async function writeJournal(store:OperationStore,journal:PairJournal,options:VerificationOptions):Promise<void>{
  if(canonicalJson(scrubOptimizationValue(journal,[options.iamToken]))!==canonicalJson(journal))throw new Error('sandbox-journal-secret');await store.writeJson('intent.json',journal,{replaceIntent:true});
 }
-function decodeReceipt(raw:unknown,row:RoleJournal,profile:ExecutionProfile):SandboxObservedOperation {
+/** A provider receipt for this journal's operation; shared with the push-guard journal. */
+export function decodeReceipt(raw:unknown,row:{record:SandboxRecord|null},profile:{image:{uuid:string};project:string}):SandboxObservedOperation {
  const receipt=exact(raw,['id','status','imageUuid','project','disposable','process','usage','createdAt','providerDuration','stdoutHash','stderrHash','stdoutTruncated','stderrTruncated']) as unknown as SandboxObservedOperation;
  if(!row.record||receipt.id!==row.record.id||receipt.imageUuid!==profile.image.uuid||receipt.project!==profile.project||receipt.disposable!==true||!['PENDING','ASSIGNED','EXECUTING','SUCCESS','FAILED','CANCELLED'].includes(receipt.status))throw new Error('sandbox-receipt-drift');
  if(![receipt.stdoutTruncated,receipt.stderrTruncated].every(value=>value===null||typeof value==='boolean'))throw new Error('sandbox-truncation-drift');
