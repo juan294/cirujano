@@ -97,6 +97,10 @@ test('skipped jobs cannot refresh execution or charge known duration', () => {
   const data = input(); data.runs[0].jobs[0].conclusion = 'skipped';
   data.runs[0].jobs[0].started_at = null; data.runs[0].jobs[0].completed_at = null;
   assert.equal(measureCadence(data).hostedRoundedMinutes, 3);
+  // GitHub stamps skipped jobs with a completion a second before their start.
+  const native = input(); native.runs[0].jobs[0].conclusion = 'skipped';
+  native.runs[0].jobs[0].completed_at = new Date(Date.parse(native.runs[0].jobs[0].started_at) - 1000).toISOString().replace('.000Z', 'Z');
+  assert.equal(measureCadence(native).hostedRoundedMinutes, 3);
 });
 
 test('missing billing/provider, zero baseline and mismatched allocation cannot manufacture savings', () => {
@@ -206,6 +210,43 @@ test('collector requests subsequent pages and exposes GitHub capped run cohorts'
   assert.equal(evidence.collection.complete, true);
   const capped = await collectEvidence(config, async () => ({ total_count: 1001, workflow_runs: [] }));
   assert.equal(capped.collection.complete, false);
+});
+
+test('collector lane rules split one workflow by event and branch before the workflow fallback', async () => {
+  const config = { repositories: [{ alias: 'A', name: 'example/fixture', visibility: 'private' }], interval: input().interval,
+    start: input().collection.start, end: input().collection.end, earlierCreatedCoverage: true, accountScopeComplete: true,
+    laneByWorkflow: { A: { 7: 'fast', 8: 'nightly' } },
+    laneRules: { A: [
+      { workflowId: 7, event: 'push', headBranch: 'main', lane: 'release' },
+      { workflowId: 7, event: 'pull_request', headBranch: ['develop', 'release/*'], lane: 'release' },
+    ] } };
+  const runs = [
+    { id: 1, workflow_id: 7, event: 'push', head_branch: 'develop' },
+    { id: 2, workflow_id: 7, event: 'push', head_branch: 'main' },
+    { id: 3, workflow_id: 7, event: 'pull_request', head_branch: 'develop' },
+    { id: 4, workflow_id: 7, event: 'pull_request', head_branch: 'release/v1.2.3' },
+    { id: 5, workflow_id: 7, event: 'pull_request', head_branch: 'feature/x' },
+    { id: 6, workflow_id: 8, event: 'schedule', head_branch: 'main' },
+    { id: 9, workflow_id: 99, event: 'push', head_branch: 'develop' },
+  ].map(run => ({ ...input().runs[0], ...run, run_attempt: 1, jobs: undefined }));
+  const evidence = await collectEvidence(config, async e => e.includes('/jobs') ? { total_count: 0, jobs: [] } : { total_count: runs.length, workflow_runs: runs });
+  assert.deepEqual(Object.fromEntries(evidence.runs.map(run => [run.id, run.lane])),
+    { 1: 'fast', 2: 'release', 3: 'release', 4: 'release', 5: 'fast', 6: 'nightly', 9: 'unknown' });
+  assert.deepEqual(evidence.runs.map(run => run.headBranch), runs.map(run => run.head_branch));
+  await assert.rejects(collectEvidence({ ...config, laneRules: { A: [{ workflowId: 7, lane: 'cheap' }] } }, async () => ({ total_count: 0, workflow_runs: [] })), /laneRules\.lane/);
+});
+
+test('collector maps hosted SKUs by runner label when runner names are generated', async () => {
+  const config = { repositories: [{ alias: 'A', name: 'example/fixture', visibility: 'private' }], interval: input().interval,
+    start: input().collection.start, end: input().collection.end, earlierCreatedCoverage: true, accountScopeComplete: true,
+    skuByRunner: { 'fixed-runner': 'self' }, skuByLabel: { 'ubuntu-latest': 'linux', 'macos-latest': 'macos' } };
+  const jobs = [
+    { id: 1, runner_name: 'GitHub Actions 1000123', labels: ['ubuntu-latest'] },
+    { id: 2, runner_name: 'fixed-runner', labels: ['ubuntu-latest'] },
+    { id: 3, runner_name: 'GitHub Actions 1000456', labels: ['windows-latest'] },
+  ].map(job => ({ ...input().runs[0].jobs[0], ...job, run_attempt: 1 }));
+  const evidence = await collectEvidence(config, async e => e.includes('/jobs') ? { total_count: jobs.length, jobs } : { total_count: 1, workflow_runs: [{ ...input().runs[0], run_attempt: 1 }] });
+  assert.deepEqual(evidence.runs[0].jobs.map(job => job.sku), ['linux', 'self', null]);
 });
 
 test('private evidence permissions are restrictive and output cannot overwrite supplied input', async () => {

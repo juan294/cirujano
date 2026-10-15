@@ -157,11 +157,12 @@ export function measureCadence(data) {
       requireField(!seenJobs.has(jobKey), 'job.id', 'duplicate job'); seenJobs.add(jobKey);
       attemptCounts.set(job.run_attempt, (attemptCounts.get(job.run_attempt) ?? 0) + 1);
       requireField(Array.isArray(job.labels) && job.labels.every(x => typeof x === 'string'), 'job.labels', 'supply runner labels');
+      // Skipped jobs never execute; GitHub may stamp their completion before their start.
+      if (job.conclusion === 'skipped') continue;
       const start = job.started_at == null ? null : timestamp(job.started_at, 'job.started_at');
       const end = job.completed_at == null ? null : timestamp(job.completed_at, 'job.completed_at');
       requireField(start === null || end === null || end >= start, 'job.completed_at', 'completion precedes start');
       requireField(start === null || end === null || end <= fetched, 'job.completed_at', 'execution completes after fetch time');
-      if (job.conclusion === 'skipped') continue;
       if (start === null || end === null) { missingTimingJobs++; gaps.push(`missing execution timing for ${run.alias} run ${run.id} attempt ${job.run_attempt}`); continue; }
       const overlap = Math.max(0, Math.min(end, window.end) - Math.max(start, window.start)) / MINUTE;
       if (!overlap) continue;
@@ -248,7 +249,19 @@ export function measureCadence(data) {
 }
 
 // The request transport represents GitHub REST only. gh invocation below uses explicit GET.
+// A rule matches when every field it names matches; headBranch accepts a list and a trailing '*' prefix.
+function laneFor(config, alias, run) {
+  const matches = (expected, actual) => expected === undefined || [expected].flat().some(value =>
+    typeof value === 'string' && value.endsWith('*') ? String(actual ?? '').startsWith(value.slice(0, -1)) : value === actual);
+  const rule = (config.laneRules?.[alias] ?? []).find(r => matches(r.workflowId, run.workflow_id) && matches(r.event, run.event) && matches(r.headBranch, run.head_branch));
+  return rule?.lane ?? config.laneByWorkflow?.[alias]?.[run.workflow_id] ?? 'unknown';
+}
+
 export async function collectEvidence(config, request = ghGet) {
+  for (const rules of Object.values(config.laneRules ?? {})) {
+    requireField(Array.isArray(rules), 'laneRules', 'supply an ordered rule array per repository alias');
+    for (const rule of rules) requireField(isRecord(rule) && LANES.includes(rule.lane), 'laneRules.lane', `use one of ${LANES.join(', ')}`);
+  }
   const window = interval(config.interval, 'interval');
   const source = interval(config, 'collection');
   requireField(source.start < window.start && source.end >= window.end, 'collection.start/end', 'collect a wider created cohort than the accounting window');
@@ -292,12 +305,12 @@ export async function collectEvidence(config, request = ghGet) {
       for (let attempt = 1; attempt <= run.run_attempt; attempt++) {
         const pageJobs = await paginate(`${prefix}/${run.id}/attempts/${attempt}/jobs?per_page=100`, 'jobs', { alias: repo.alias, kind: 'jobs', runId: run.id, attempt }, false);
         for (const job of pageJobs) jobs.push({ id: job.id, run_attempt: attempt, name: job.name, labels: job.labels ?? [],
-          sku: config.skuByRunner?.[job.runner_name] ?? null, conclusion: job.conclusion, started_at: job.started_at ?? null, completed_at: job.completed_at ?? null });
+          sku: config.skuByRunner?.[job.runner_name] ?? (job.labels ?? []).map(label => config.skuByLabel?.[label]).find(Boolean) ?? null, conclusion: job.conclusion, started_at: job.started_at ?? null, completed_at: job.completed_at ?? null });
       }
       result.runs.push({ alias: repo.alias, id: run.id, run_attempt: run.run_attempt, event: run.event, created_at: run.created_at,
-        headSha: run.head_sha ?? null, ownerAlias: config.ownerAliases?.[run.actor?.login] ?? null,
+        headSha: run.head_sha ?? null, headBranch: run.head_branch ?? null, ownerAlias: config.ownerAliases?.[run.actor?.login] ?? null,
         publication: config.publicationByRun?.[repo.alias]?.[run.id] ?? null,
-        lane: config.laneByWorkflow?.[repo.alias]?.[run.workflow_id] ?? 'unknown', jobs });
+        lane: laneFor(config, repo.alias, run), jobs });
     }
   }
   result.collection.fetchedAt = new Date().toISOString();
