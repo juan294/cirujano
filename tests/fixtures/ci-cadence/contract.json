@@ -13,6 +13,6 @@
     "tests/fixtures/ci-cadence/jobs.json",
     "tests/fixtures/ci-cadence/policy.json"
   ],
-  "checksum": "512909b55a465244b4095e5b9fef06e045018554c8b225fb374b1c523792e013",
+  "checksum": "7c809e07ed8fc51f0370d031fccb4af21a1c14d77f72d408419e1982b58ed91f",
   "helperSha256": "9f2da9ab55525a3ca4acc311feaf5426fc86d83258c5dda7754dc05405c9a7ab"
 }

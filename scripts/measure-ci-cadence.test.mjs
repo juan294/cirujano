@@ -97,6 +97,10 @@ test('skipped jobs cannot refresh execution or charge known duration', () => {
   const data = input(); data.runs[0].jobs[0].conclusion = 'skipped';
   data.runs[0].jobs[0].started_at = null; data.runs[0].jobs[0].completed_at = null;
   assert.equal(measureCadence(data).hostedRoundedMinutes, 3);
+  // GitHub stamps skipped jobs with a completion a second before their start.
+  const native = input(); native.runs[0].jobs[0].conclusion = 'skipped';
+  native.runs[0].jobs[0].completed_at = new Date(Date.parse(native.runs[0].jobs[0].started_at) - 1000).toISOString().replace('.000Z', 'Z');
+  assert.equal(measureCadence(native).hostedRoundedMinutes, 3);
 });
 
 test('missing billing/provider, zero baseline and mismatched allocation cannot manufacture savings', () => {
@@ -230,6 +234,19 @@ test('collector lane rules split one workflow by event and branch before the wor
     { 1: 'fast', 2: 'release', 3: 'release', 4: 'release', 5: 'fast', 6: 'nightly', 9: 'unknown' });
   assert.deepEqual(evidence.runs.map(run => run.headBranch), runs.map(run => run.head_branch));
   await assert.rejects(collectEvidence({ ...config, laneRules: { A: [{ workflowId: 7, lane: 'cheap' }] } }, async () => ({ total_count: 0, workflow_runs: [] })), /laneRules\.lane/);
+});
+
+test('collector maps hosted SKUs by runner label when runner names are generated', async () => {
+  const config = { repositories: [{ alias: 'A', name: 'example/fixture', visibility: 'private' }], interval: input().interval,
+    start: input().collection.start, end: input().collection.end, earlierCreatedCoverage: true, accountScopeComplete: true,
+    skuByRunner: { 'fixed-runner': 'self' }, skuByLabel: { 'ubuntu-latest': 'linux', 'macos-latest': 'macos' } };
+  const jobs = [
+    { id: 1, runner_name: 'GitHub Actions 1000123', labels: ['ubuntu-latest'] },
+    { id: 2, runner_name: 'fixed-runner', labels: ['ubuntu-latest'] },
+    { id: 3, runner_name: 'GitHub Actions 1000456', labels: ['windows-latest'] },
+  ].map(job => ({ ...input().runs[0].jobs[0], ...job, run_attempt: 1 }));
+  const evidence = await collectEvidence(config, async e => e.includes('/jobs') ? { total_count: jobs.length, jobs } : { total_count: 1, workflow_runs: [{ ...input().runs[0], run_attempt: 1 }] });
+  assert.deepEqual(evidence.runs[0].jobs.map(job => job.sku), ['linux', 'self', null]);
 });
 
 test('private evidence permissions are restrictive and output cannot overwrite supplied input', async () => {
