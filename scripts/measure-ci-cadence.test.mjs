@@ -208,6 +208,30 @@ test('collector requests subsequent pages and exposes GitHub capped run cohorts'
   assert.equal(capped.collection.complete, false);
 });
 
+test('collector lane rules split one workflow by event and branch before the workflow fallback', async () => {
+  const config = { repositories: [{ alias: 'A', name: 'example/fixture', visibility: 'private' }], interval: input().interval,
+    start: input().collection.start, end: input().collection.end, earlierCreatedCoverage: true, accountScopeComplete: true,
+    laneByWorkflow: { A: { 7: 'fast', 8: 'nightly' } },
+    laneRules: { A: [
+      { workflowId: 7, event: 'push', headBranch: 'main', lane: 'release' },
+      { workflowId: 7, event: 'pull_request', headBranch: ['develop', 'release/*'], lane: 'release' },
+    ] } };
+  const runs = [
+    { id: 1, workflow_id: 7, event: 'push', head_branch: 'develop' },
+    { id: 2, workflow_id: 7, event: 'push', head_branch: 'main' },
+    { id: 3, workflow_id: 7, event: 'pull_request', head_branch: 'develop' },
+    { id: 4, workflow_id: 7, event: 'pull_request', head_branch: 'release/v1.2.3' },
+    { id: 5, workflow_id: 7, event: 'pull_request', head_branch: 'feature/x' },
+    { id: 6, workflow_id: 8, event: 'schedule', head_branch: 'main' },
+    { id: 9, workflow_id: 99, event: 'push', head_branch: 'develop' },
+  ].map(run => ({ ...input().runs[0], ...run, run_attempt: 1, jobs: undefined }));
+  const evidence = await collectEvidence(config, async e => e.includes('/jobs') ? { total_count: 0, jobs: [] } : { total_count: runs.length, workflow_runs: runs });
+  assert.deepEqual(Object.fromEntries(evidence.runs.map(run => [run.id, run.lane])),
+    { 1: 'fast', 2: 'release', 3: 'release', 4: 'release', 5: 'fast', 6: 'nightly', 9: 'unknown' });
+  assert.deepEqual(evidence.runs.map(run => run.headBranch), runs.map(run => run.head_branch));
+  await assert.rejects(collectEvidence({ ...config, laneRules: { A: [{ workflowId: 7, lane: 'cheap' }] } }, async () => ({ total_count: 0, workflow_runs: [] })), /laneRules\.lane/);
+});
+
 test('private evidence permissions are restrictive and output cannot overwrite supplied input', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'cadence-'));
   const path = join(dir, 'evidence.json');

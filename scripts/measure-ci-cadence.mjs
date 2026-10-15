@@ -248,7 +248,19 @@ export function measureCadence(data) {
 }
 
 // The request transport represents GitHub REST only. gh invocation below uses explicit GET.
+// A rule matches when every field it names matches; headBranch accepts a list and a trailing '*' prefix.
+function laneFor(config, alias, run) {
+  const matches = (expected, actual) => expected === undefined || [expected].flat().some(value =>
+    typeof value === 'string' && value.endsWith('*') ? String(actual ?? '').startsWith(value.slice(0, -1)) : value === actual);
+  const rule = (config.laneRules?.[alias] ?? []).find(r => matches(r.workflowId, run.workflow_id) && matches(r.event, run.event) && matches(r.headBranch, run.head_branch));
+  return rule?.lane ?? config.laneByWorkflow?.[alias]?.[run.workflow_id] ?? 'unknown';
+}
+
 export async function collectEvidence(config, request = ghGet) {
+  for (const rules of Object.values(config.laneRules ?? {})) {
+    requireField(Array.isArray(rules), 'laneRules', 'supply an ordered rule array per repository alias');
+    for (const rule of rules) requireField(isRecord(rule) && LANES.includes(rule.lane), 'laneRules.lane', `use one of ${LANES.join(', ')}`);
+  }
   const window = interval(config.interval, 'interval');
   const source = interval(config, 'collection');
   requireField(source.start < window.start && source.end >= window.end, 'collection.start/end', 'collect a wider created cohort than the accounting window');
@@ -295,9 +307,9 @@ export async function collectEvidence(config, request = ghGet) {
           sku: config.skuByRunner?.[job.runner_name] ?? null, conclusion: job.conclusion, started_at: job.started_at ?? null, completed_at: job.completed_at ?? null });
       }
       result.runs.push({ alias: repo.alias, id: run.id, run_attempt: run.run_attempt, event: run.event, created_at: run.created_at,
-        headSha: run.head_sha ?? null, ownerAlias: config.ownerAliases?.[run.actor?.login] ?? null,
+        headSha: run.head_sha ?? null, headBranch: run.head_branch ?? null, ownerAlias: config.ownerAliases?.[run.actor?.login] ?? null,
         publication: config.publicationByRun?.[repo.alias]?.[run.id] ?? null,
-        lane: config.laneByWorkflow?.[repo.alias]?.[run.workflow_id] ?? 'unknown', jobs });
+        lane: laneFor(config, repo.alias, run), jobs });
     }
   }
   result.collection.fetchedAt = new Date().toISOString();
