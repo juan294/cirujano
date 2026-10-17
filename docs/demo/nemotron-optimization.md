@@ -1,5 +1,8 @@
 # Nemotron workflow optimization
 
+For a timed pitch, exact screen cues and rehearsal steps, use the
+[recording script](recording-script.md). This page is the technical reproduction guide.
+
 Cirujano implements two bounded optimizations. The first, described in the sections below, enables pnpm store caching on an existing immutable `actions/setup-node` step. The second, [skip validated pushes](#skip-validated-pushes), is described at the end. The cache family collects GitHub evidence, obtains a structured NVIDIA model decision through Nebius Token Factory, constructs the two-field patch, verifies quality in paired Sandboxes, measures a predefined GitHub cohort, and prepares an authorized unmerged PR. Local implementation and replay checks do not establish a live improvement or close H1.
 
 ## Live outcome
@@ -15,7 +18,7 @@ pnpm run build
 node scripts/optimization/evaluate.mjs --offline
 ```
 
-The evaluator calls the actual product modules. Its 21 cases have separate denominators: six deterministic prefilters with zero inference calls; eight adversarial cases with zero accepted unsafe operations; and seven model cases replayed with synthetic external responses. Model accuracy is not assessed by offline replay. The seven eligible live cases contain six opportunities and one negligible-install abstention. Actual live acceptance requires at least five correct opportunities, the abstention, and valid evidence references for every proposal. Non-improving elapsed time, insufficient rounded-minute savings, missing cold samples, failed attempts and changed quality cannot pass the measurement probes.
+The evaluator calls the actual product modules. Its cache corpus has 21 cases with separate denominators: six deterministic prefilters with zero inference calls; eight adversarial cases with zero accepted unsafe operations; and seven model cases replayed with synthetic external responses. It also runs six skip-validated-push cases, for 27 total cases. Model accuracy is not assessed by offline replay. The seven eligible live cache cases contain six opportunities and one negligible-install abstention. Actual live acceptance requires at least five correct opportunities, the abstention, and valid evidence references for every proposal. Non-improving elapsed time, insufficient rounded-minute savings, missing cold samples, failed attempts and changed quality cannot pass the measurement probes.
 
 ## Reproduce the public workload
 

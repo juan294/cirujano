@@ -1,5 +1,7 @@
 # Cirujano documentation
 
+- [Demo recording script](demo/recording-script.md): a 2:50 pitch with exact screen cues,
+  rehearsal steps, current evidence and [presentation cards](demo/recording-cards.html).
 - [Research](research/): dated findings. Start with the
   [2026-09-08 GitHub Actions cost baseline](research/2026-09-08-github-actions-cost-baseline.md).
 - [Plans](plans/): phased implementation specs produced by `/plan`.
