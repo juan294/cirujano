@@ -195,7 +195,7 @@ The Cirujano proof did not use Sutura's Nemotron Super and Ultra roles, Nebius C
 | Measured usage | **800** Cirujano jobs, 3,297 minutes on Nebius VMs, 2026-09-13 to 2026-10-17 | A usage count. Fleet report: **$18.84** gross hosted list cost avoided against **$19.87** controller-accounted Nebius cost; accounting incomplete, net savings unavailable. |
 | Measured inference | **$0.00012**, 1,115 tokens for the live Nemotron decision | One proof decision, not a fleet cost. |
 | Observed, not attributed | Private-repository CI **2,109 → 164** minutes a day (about **$380 → $30** a month at list price) | July-August average against October 14-16. Activity not normalized; release work in the heaviest repository was paused. List price before included minutes and provider costs. |
-| GitHub Actions bill | Net **$370.64** July, **$401.78** August, **$81.16** September, **$93.49** October 1-17 | The September drop started before any Cirujano change shipped. Do not attribute it. |
+| GitHub Actions bill | Net **$370.64** July, **$401.78** August, **$81.16** September, **$102.08** October 1-18 | The September drop started before any Cirujano change shipped. Do not attribute it. |
 | Modeled | About **$120** a month net from packing heavy jobs onto shared VMs | Assumes four concurrent runner slots; implemented runners have one slot per enrollment. |
 | Pending | Net runner savings and developer hours | The 45-day runner window closes 2026-10-28; closing it does not guarantee a complete net result. Hours are unmeasured. |
 
