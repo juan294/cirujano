@@ -4,8 +4,8 @@ Living pitch narrative, measured economics, joint Sutura positioning, and
 rollout evidence.
 
 Updated: 2026-10-17. For the recording, follow the
-[2:50 script with screen cues](demo/recording-script.md) and
-[presentation cards](demo/recording-cards.html).
+[recording script with Show and Say beats](demo/recording-script.md) and
+[video cards](demo/video-cards/).
 
 ## Purpose
 
@@ -179,7 +179,7 @@ benefits have not been measured.
   2026-10-17T04:17:26.096Z records $18.840 gross hosted list cost avoided and
   $19.872 controller-accounted Nebius cost. Accounting is incomplete and net
   savings are unavailable. These values cannot support a positive net-saving
-  claim. The [recording evidence note](demo/recording-script.md#evidence-refresh-2026-10-17)
+  claim. The [recording evidence note](demo/recording-script.md#evidence)
   records the window and limitations without exposing private repositories.
 - **Observed, not attributed:** Cirujano's 2026-10-02 cadence assessment
   recommended fast checks on routine pushes and the full suite nightly and at

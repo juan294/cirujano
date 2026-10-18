@@ -1,28 +1,38 @@
-# Cirujano recording script (final)
+# Cirujano demo video: recording script
 
-Final version, 2026-10-17. Audience: hackathon judges and developers who pay for private GitHub Actions minutes. Target **2:50**, hard stop before 3:00. Read only the blockquotes aloud; everything else is screen direction or evidence. The narration is about 360 words, so at 140-150 words per minute the tables have time to register.
+Final version, 2026-10-18. Record this for the hackathon. Target **2:55**, export below **3:00** including the intro card and the end card. Track: Coding and Agentic Engineering.
 
-## The story
+This version follows the production playbook learned on the Sutura video (2026-10-17 and 2026-10-18): numbered beats with **Show** and **Say** blocks, one clip per beat, a live run on camera, still cards rendered at 4K, and a fitted ElevenLabs voice-over. The **Say** blocks are the only lines the narrator reads and the only text the voice step consumes; everything else stays out of quote syntax inside the Script section.
 
-**More software for the same engineering budget.** Open on that future, make the pain personal, show one verified cut working end to end, show Nebius carrying the work that cannot be cut, connect it to Sutura, and finish on what it has saved so far. The headline result is the controlled proof (3 runner-minutes to 1, every pull request check unchanged). The account-wide drop is supporting evidence, spoken as early and still being measured.
+## The pitch to remember
 
-Every product shot is real: the CLI, the generated evidence PR, its diff and the GitHub runs. Provider results are recorded evidence and are labeled that way. Rehearsal and recording need no new inference, Sandbox execution, workflow dispatch, runner start, publication or merge.
+**Every development team ships more software on the same budget, because CI removes its own waste and proves every cut. Nebius makes it practical.**
 
-## Prepare the screen once
+Metaphor rule (owner decision 2026-10-18): Cirujano (Spanish for surgeon) is the **surgeon**, who operates on CI that works but costs too much. Sutura is the **nurse**, who triages and stitches CI that breaks. The developer is the **doctor** who signs off on both. Never call Sutura a surgeon.
 
-Use a clean browser profile, Do Not Disturb, a large terminal font and 125-150% browser zoom. Hide bookmarks, account menus and unrelated tabs. **Private repository names never appear on camera**, and the GitHub billing page stays closed because it lists them.
+Open big, then make it tangible: one real cut, proven twice (Sandboxes, then real runs); one live on-demand runner on Nebius AI Cloud; then close on what is measured today and on the next measurement. Be ambitious about the future and exact about the numbers.
 
-Open in this order:
+The [official rules](https://nebiusglobalaihackathon.devpost.com/rules) and [organizer video guidance](https://nebiusglobalaihackathon.devpost.com/updates/46205-how-to-build-a-winning-project) ask for functioning software, public YouTube, under three minutes, a pitch and not a tutorial, and audible Nebius and NVIDIA callouts. Use plain-text sponsor names and your own visuals. GitHub is named only as the platform Cirujano measures; no other third-party marks, no copyrighted music.
 
-1. [Recording cards](recording-cards.html), opened locally in the browser (`open docs/demo/recording-cards.html`). Press `f` for full screen, arrow keys or click to move, `h` to hide the card counter. Keep this script on a second display, outside the capture.
-2. [Cost baseline](../research/2026-09-08-github-actions-cost-baseline.md), rendered on GitHub, at **Monthly bill**.
-3. [Evidence PR #8](https://github.com/juan294/cirujano-push-proof/pull/8), body near **Model requested** and **Sandbox**. Read back as OPEN on 2026-10-17, base `d5dc444`, head `b359f3b`.
-4. [PR #8 Files changed](https://github.com/juan294/cirujano-push-proof/pull/8/files). Find the `cirujano_validated_push` job and one added job condition beforehand. Do not scroll the embedded classifier while speaking.
-5. Runs: [PR run, three checks green](https://github.com/juan294/cirujano-push-proof/actions/runs/37920229570), [baseline push](https://github.com/juan294/cirujano-push-proof/actions/runs/37919235519), [optimized push](https://github.com/juan294/cirujano-push-proof/actions/runs/37920318553), [direct-push control](https://github.com/juan294/cirujano-push-proof/actions/runs/37920425565).
-6. [Runner pilot](../research/2026-09-15-nebius-runner-pilot-r14.md) at **R14 rows at the final candidate**. Recorded September evidence, not a live dashboard.
-7. [Cirujano Actions](https://github.com/juan294/cirujano/actions), showing the Sutura rows "Repair requested: CI #110 (failure)" and "No repair needed: CI #114 (success)".
+## Set up before rehearsing
 
-Terminal, in the repository root. Stage the two API reads before recording; run only the two `estimate` commands on camera:
+**Recording method.** Each beat is its own clip, `~/Desktop/Cirujano Demo/split-N.mp4`, assembled in the editor, so any beat can be retaken or replaced (beat 8 after the October 28 measurement). Claude drives the browser tab through the extension: you say "prep N", Claude parks the tab at the beat's first view and answers "ready"; you start recording and say "go N"; Claude runs the beat and answers "done". "go N again" repeats it. Claude can only control tabs it opened, not incognito windows, and acting on a background tab does not bring it to the front, so everything loads into the one tab you are recording.
+
+**Capture.** Record the browser window, not the 6K desktop: a window of 1920x1080 points on the Retina display captures at 3840x2160, so the video is 4K and text still reads on a phone. Clean profile, bookmarks bar hidden, notifications off. GitHub pages are zoomed with `document.documentElement.style.zoom = '1.4'`. **Private repository names never appear on camera**, and the GitHub billing page stays closed because it lists them.
+
+Pages Claude loads, in capture order:
+
+| Tab | Open | Prepare |
+| --- | --- | --- |
+| A | [Cirujano repository](https://github.com/juan294/cirujano) | README top: name and one-line description. |
+| B | [Cost baseline](https://github.com/juan294/cirujano/blob/develop/docs/research/2026-09-08-github-actions-cost-baseline.md) | **Monthly bill** ($370.64, $401.78), then **Where the minutes go**. |
+| C | [Evidence PR #8](https://github.com/juan294/cirujano-push-proof/pull/8) | Body at **Model requested**, token counts and the **Sandbox** line, then the measurement table. Read back OPEN on 2026-10-17, base `d5dc444`, head `b359f3b`. |
+| D | [PR #8 Files changed](https://github.com/juan294/cirujano-push-proof/pull/8/files) | The `cirujano_validated_push` job and one added job condition. Do not scroll the embedded classifier. |
+| E | [PR run](https://github.com/juan294/cirujano-push-proof/actions/runs/37920229570), [optimized push](https://github.com/juan294/cirujano-push-proof/actions/runs/37920318553), [direct-push control](https://github.com/juan294/cirujano-push-proof/actions/runs/37920425565) | Lint, test and build green; then the skipped jobs; then every job green on the control. |
+| F | Nebius AI Cloud console → Cirujano project → **Compute → Virtual machines** (Chrome, signed in) | Starts at "No standalone VMs". Used only in beat 6. |
+| G | [Cirujano Actions](https://github.com/juan294/cirujano/actions) | The Sutura rows "Repair requested: CI #110 (failure)" and "No repair needed: CI #114 (success)". |
+
+Terminal (large font, dark theme), in the repository root. Stage the API reads before recording; run only the two `estimate` commands on camera:
 
 ```sh
 gh api repos/juan294/cirujano-push-proof/actions/runs/37919235519/jobs > /tmp/cirujano-demo-baseline-jobs.json
@@ -33,133 +43,206 @@ node packages/cli/dist/bin.js estimate --jobs /tmp/cirujano-demo-candidate-jobs.
 
 Expected: `Billable minutes: 3` with 0 skipped jobs, then `Billable minutes: 1` with 3 skipped jobs (re-checked 2026-10-17). If `packages/cli/dist` is missing, run `pnpm run build` first. Never fake terminal output.
 
-## Timed narration and screen choreography
+**Cards** (still 3840x2160 images for the editor) are in [video-cards](video-cards/): `0-intro-card.png` (beat 0, 10 seconds; `0-intro-card-youtube-thumbnail.jpg` is the YouTube thumbnail), `1-vision.png` (beat 1), `2-same-tree-illustration.png` (beat 2, labeled "Illustration"), `3-together.png` (beat 7), `4-results.png` (beat 8) and `5-end-card.png` (beat 8, silent hold). Sources, the stylesheet and the renderer are in [video-cards/src](video-cards/src/); after a text change run `zsh docs/demo/video-cards/src/render.sh`.
 
-### 0:00-0:16 | The future
+**Live run (beat 6) preflight.** The run starts a billable Nebius VM, so it needs Juan's explicit go at recording time; preparation alone does not authorize it. Check that the P5 controller is alive (`launchctl list | grep cirujano-runner-P5`) and idle with no VM (`tail -1 ~/Library/Logs/cirujano/runner-P5.log` shows `"state":"absent"`; it did at 2026-10-18 13:5x local). The repository and coverage workflow behind handle P5 are in the gitignored `docs/agents/fleet-migration-targets.md`.
 
-**Show:** card 1, Opening. Hold it for a beat before speaking. No code, no logo animation.
+## Script
 
-> Imagine every development team shipping more software on the same budget, because their CI removes its own waste, with proof. That's Cirujano: verified CI cost surgery, built on NVIDIA Nemotron and Nebius.
+The narration is 383 words including the intro: 2:33 at 150 words per minute, 2:57 at 130. Eric on ElevenLabs speaks about 2.4 words per second, about 2:40. Beat 8 has 87 words, about 36 seconds of speech, so the end card holds about 10 seconds in silence. Timestamps are editing targets; the recorded clips set the final lengths.
 
-### 0:16-0:32 | Why I needed it
+### 0. Intro | 0:00-0:10
 
-**Show:** the cost baseline page. Point at $370.64 and $401.78, then scroll to **Where the minutes go**.
+**Show:** `0-intro-card.png` full screen for the whole beat. No browser.
 
-> It started with my own bill. My AI agents push all day, and GitHub Actions cost me 386 dollars a month. Two workflows used about 70 percent, and every push ran the full suite.
+**Say:**
 
-### 0:32-0:51 | How it works on Nebius
+> I'm Juan González. I run more than twenty projects with AI coding agents, and this is Cirujano, my second entry for the Nebius and NVIDIA Global AI Hackathon.
 
-**Show:** card 2, Reason, verify, execute. Then PR #8 body: the model line, token counts and the Sandbox line. Small caption: "Recorded live proof, 2026-10-09".
+### 1. The future | 0:10-0:27
 
-> Cirujano reads billing and run history to find where the minutes go. NVIDIA Nemotron, on Nebius Token Factory, proposes one bounded cut, or abstains. Cirujano builds the patch itself, verifies it in Nebius Sandboxes, and opens a pull request. A human decides.
+**Show:** `1-vision.png` for most of the beat, then cut to Tab A, README top, for the last sentence.
 
-### 0:51-1:09 | The actual change
+**Say:**
 
-**Show:** PR #8 Files changed. Point at `cirujano_validated_push`, then one job's added condition. Switch to the PR run with lint, test and build green.
+> Imagine every development team shipping more software on the same budget, because CI removes its own waste, with proof. If Sutura is the nurse for CI that breaks, Cirujano is the surgeon for CI that works but costs too much.
 
-> Here is a live cut on a public proof repository. Each merge was re-testing code its pull request had already passed. Cirujano added a guard: skip the merge run only when that exact tree already passed.
+### 2. Why I built it | 0:27-0:42
 
-### 1:09-1:31 | The result, with receipts
+**Show:** Tab B, point at $370.64 and $401.78, scroll to **Where the minutes go**. Last four seconds: `2-same-tree-illustration.png`.
 
-**Show:** run both `estimate` commands (3, then 1). Then the PR body measurement table, pausing on baseline 3 and candidate 1. Then the direct-push control run with every job green. End on card 3, Evidence.
+**Say:**
+
+> It started with my own bill. My agents push all day, and GitHub Actions cost me 386 dollars a month. Two workflows used about 70 percent, and every push ran the full suite.
+
+### 3. How it works on Nebius | 0:42-0:59
+
+**Show:** Tab C, PR #8 body: the model line, token counts and the Sandbox line. Caption in the editor: **Recorded live result, 2026-10-09**.
+
+**Say:**
+
+> Cirujano reads billing and run history. NVIDIA Nemotron, on Nebius Token Factory, proposes one bounded cut, or abstains. Cirujano builds the patch itself, verifies it in Nebius Token Factory Sandboxes, and opens a pull request. A developer signs off.
+
+### 4. The actual cut | 0:59-1:14
+
+**Show:** Tab D, point at `cirujano_validated_push`, then one job's added condition. Switch to Tab E, the PR run with lint, test and build green. Keep the **Recorded live result, 2026-10-09** caption.
+
+**Say:**
+
+> Here is a real cut on a public proof repository. Each merge re-ran checks its pull request had already passed. Cirujano added a guard: skip the merge run only when that exact tree already passed.
+
+### 5. The receipts | 1:14-1:33
+
+**Show:** the terminal, run both `estimate` commands (3, then 1). Then Tab C's measurement table, pausing on baseline 3 and candidate 1. Then Tab E's direct-push control with every job green.
+
+**Say:**
 
 > Sandboxes checked the guard with the network off: 129 scenarios, zero mismatches. Then GitHub measured it. Each merged push used one runner-minute instead of three, and a direct push still ran everything. When an earlier idea saved nothing, Cirujano opened no pull request.
 
-### 1:31-1:50 | Heavy work moves to Nebius
+### 6. Heavy work moves to Nebius, live | 1:33-1:53
 
-**Show:** card 4, On-demand runners. Then the runner pilot table: queue and execute, idle stop, restart and failure. Do not present the card's lifecycle as live provider footage.
+**Show: a live run, split screen, sped up.** Left half: the terminal with the controller's decision view (below). Right half: Tab F, **Virtual machines**, starting from "No standalone VMs". Caption in the editor: **Live run, sped up**.
 
-> Work that can't be cut, like databases and end-to-end tests, moves to Nebius AI Cloud. A VM starts when a job queues and stops when the queue empties. 800 of my real CI jobs have already run this way.
+1. Start the decision view in the left terminal:
 
-### 1:50-2:08 | Better together with Sutura
+   ```sh
+   tail -n 0 -F ~/Library/Logs/cirujano/runner-P5.log | jq -r --unbuffered 'select(.decision) | "\((.queue.observedAtMs // 0)/1000 | strftime("%H:%M:%S"))  \(.decision.state)  \(.decision.effect.type)  \(.decision.reason)"' | awk '{k=$0; sub(/^[^ ]+  /,"",k); if(k!=p){print; fflush(); p=k}}'
+   ```
 
-**Show:** card 5, Together. Then the Cirujano Actions tab with the two Sutura rows. Do not start a Sutura walkthrough.
+   It prints one line per state change (UTC) and no repository name.
+2. After Juan's go, Claude dispatches the P5 coverage workflow off camera: `gh workflow run <P5 coverage workflow> -R <P5 repository> --ref develop`. A manual run of an existing workflow, no commit. The enrolled job runs on the Cirujano label only for a `develop` push or an owner `workflow_dispatch`.
+3. Claude reloads the Virtual machines page every 8 to 10 seconds, with a 3-second settle after each reload, in short batches (a browser action times out after about 90 seconds).
+4. Expected sequence, from the 2026-10-18 cycle on P5: `create-vm` within 30 seconds of dispatch; VM **Running** about 2.5 minutes in; `register-runner` and `busy` about 4 minutes in; job done and `begin-drain` about 6.5 minutes in; `stop-vm` after the idle grace, about 13 minutes in; `delete-vm` about 14 minutes in, and the console is empty again.
 
-> Cirujano's sibling, Sutura, is my other entry. Cirujano's audit recommended fast checks on every push and the full suite nightly. Sutura now owns that cadence and requests a repair when a run fails. Less CI, without trusting it less.
+Compress the 14 minutes to about 20 seconds; keep the `create-vm`, `busy`, `stop-vm` and `delete-vm` lines readable for a second each. The GitHub run page names the private repository, so it stays off camera. Fallback if the run is not authorized or fails: use the runner pilot record ([R14 rows](../research/2026-09-15-nebius-runner-pilot-r14.md)) with the caption **Recorded, 2026-09-15**, and change "This is live" to "Here it is".
 
-### 2:08-2:38 | What it saved me
+**Say:**
 
-**Show:** card 6, Results. Point at the proof line first, then the early account line, then the feedback line. Keep the card's "early, not an invoice" label in frame.
+> Work that can't be cut moves to Nebius AI Cloud. This is live: a job queues, Cirujano starts a VM, the job runs, and once the queue is empty the VM stops and is deleted. 800 of my real CI jobs have already run this way.
 
-> What has it saved me? On the proof, two of every three runner-minutes on merged pushes. Across my private repositories, the first days on the new cadence used 164 CI minutes a day instead of about 2,100. At list price, that's about 30 dollars a month instead of 380. It's early and activity varies, so I keep measuring. Routine feedback now arrives in about 20 seconds; the full suite runs nightly.
+### 7. Sutura and Cirujano | 1:53-2:08
 
-### 2:38-2:50 | Close
+**Show:** `3-together.png`, then Tab G with the two Sutura rows. Do not start a Sutura walkthrough.
 
-**Show:** card 7, Closing. Slow down for the last line.
+**Say:**
 
-> We've shown verified waste removal on real pipelines. Next: every development team, continuously. Cirujano. Keep every check. Cut every wasted dollar.
+> Sutura triages red CI and requests verified repairs. Cirujano operates on green CI; its audit recommended the lean cadence that Sutura now coordinates. The developer is the doctor and approves every change.
 
-## Practice three passes
+### 8. What it saved me, and close | 2:08-2:55
 
-1. **Screen only.** Move through the surfaces on the timestamps. Keep the pointer still except to highlight the named evidence.
-2. **Voice and screen.** Read the nine blocks at 140-150 words per minute. If a section runs long, move on at its next timestamp. Never rush the results segment.
-3. **One full take.** Start the timer on the first word. Check that the diff, the green PR run, the optimized push, the control and the results card were readable. Finish by 2:50; cut dead time before cutting proof.
+**Show:** `4-results.png`. Point at the measured line first, then the early line with its **EARLY, NOT ATTRIBUTED** label in frame, then **Oct 28**. Cut to `5-end-card.png` on "Cirujano: keep every check" and hold it in silence to 2:55.
 
-If a page loads slowly mid-take, stop and redo that segment. Prefer clean cuts to typing credentials, waiting for cloud boot or triggering paid operations on camera.
+**Say:**
 
-## Recording checklist
+> What has it saved me? Measured: two of every three runner-minutes on merged pushes, with every check kept. Observed: on the new cadence, my private repositories used 164 CI minutes a day instead of about 2,100, roughly 30 dollars a month instead of 380 at list price. Activity changed too, so I don't count that as Cirujano's saving yet. Next, the runner study closes on October 28 to measure net cost. Cirujano: keep every check, cut every wasted dollar. Built on Nebius, with NVIDIA Nemotron. Thank you.
 
-- Record the voice-over separately from the screen capture, 1080p or higher, so beats can be re-timed without re-recording audio.
-- Say "Nebius Token Factory", "NVIDIA Nemotron" and "Nebius AI Cloud" clearly. Pick one pronunciation of Cirujano (see-roo-HAH-no) and keep it.
-- **Refresh the account numbers the morning you record.** The results line uses October 14-16. Ask Claude to re-read the billing API; if the new window differs, update the card and the narration together.
-- **Runner footage:** use the recorded pilot. A fresh push to start a VM on camera is not covered by this script: confirm that the operating permit covers it before trying.
-- No music unless you own the track. Upload to YouTube as public, with captions; an `.srt` can be generated once the narration is locked.
+## Rehearse three times, then capture
 
-## What we used
+1. **Voice only.** Read the nine Say blocks with a stopwatch. Aim for 2:30-2:45 before the end-card hold. If long, cut "Then GitHub measured it." in beat 5 and "with proof" in beat 1; keep the cut, the receipts and the live run intact.
+2. **Screen only.** Practice A → B → C → D → E → terminal → C → E → F → G. Hold key details three to five seconds, point once, then stop moving the pointer. Keep recorded-result captions visible.
+3. **Full practice.** Speak while switching views. Watch it back once: can a stranger see the guard in the diff, see 3 become 1, see a VM start and stop on Nebius, and tell measured savings from the early observation? Re-record the weak beat, not the whole video.
+4. **Capture.** One clip per beat. Measure them before the voice-over: `for i in 1 2 3 4 5 6 7 8; do ffprobe -v error -show_entries format=duration -of csv=p=0 ~/Desktop/"Cirujano Demo"/split-$i.mp4; done`. Beats 1 to 8 plus the 10-second intro must stay under 3:00; take any excess from beat 8's silent end-card hold.
 
-The narration names the runtime platforms. Use the rest for judge questions.
+**Refresh the account numbers the morning you record.** Beat 8 uses October 14-16. Ask Claude to re-read the billing API; if the window changes, update the Say block, `results.html` and the Evidence table together, then re-render the cards.
 
-| Technology | Role | Evidence |
+## Voice-over and assembly
+
+Voice: ElevenLabs **Eric** (`cjVigY5qzO86Huf0OWal`, premade, American) on `eleven_multilingual_v2`, not `eleven_v3` (v3 ignores the speed setting and its pace varies between takes). Settings: stability 0.5, similarity 0.75, style 0.15, speaker boost on, `language_code` "en".
+
+Run `zsh docs/demo/video-cards/src/fit-voice.sh` after the clips exist. It writes `beat-N.txt` from the Say blocks above (the caption source), reads each clip length, generates at speed 1.0, regenerates once at the fitting speed when speech is longer than the clip (max 1.2; up to about 1.08 is not noticeable), pads silence to the clip length minus 0.1 s, checks that each file decodes cleanly, and leaves one `voice-N.mp3` per clip. To redo one beat, pass its number (`fit-voice.sh 5`): every generation spends quota (about 2,300 characters for the whole script). Never cut words to fit; if a clip has more than about 3 seconds of slack, add a verified sentence instead.
+
+Assembly in iMovie: import `split-N.mp4` in order, drop the cards as cutaways, place `voice-N.mp3` under its clip aligned at the start, add the **Recorded live result, 2026-10-09** and **Live run, sped up** captions, export 3840x2160, upload public on YouTube with captions from the `beat-N.txt` files, set `0-intro-card-youtube-thumbnail.jpg` as the thumbnail and keep the transcript for the judging archive.
+
+Say **Nebius Token Factory**, **NVIDIA Nemotron** and **Nebius AI Cloud** clearly. One pronunciation of Cirujano (see-roo-HAH-no). Excited about the future, calm during the proof, precise on numbers.
+
+## Longer pitch for conversations
+
+Use this outside the submission cut, or for judge questions.
+
+> Developer teams already pay for every push. As AI agents push more often, CI spend grows with them, and most of it is the same verification run again. Imagine every team's CI finding its own waste, proving each cut, and running the work that remains only when it is needed. Across thousands of teams, that is more software for the same engineering budget.
+>
+> Cirujano came from my own bill: about 386 dollars a month of GitHub Actions, most of it in two workflows that ran the full suite on every push. I did not want to fix that by deleting checks, so Cirujano only accepts a cut it can prove.
+>
+> Nebius makes this practical. NVIDIA Nemotron on Nebius Token Factory proposes one bounded operation or abstains. Cirujano builds the patch deterministically and verifies it in Token Factory Sandboxes with the network off, then measures it on real runs. Work that cannot be cut moves to Nebius AI Cloud VMs that start when a job queues and are deleted when the queue is empty.
+>
+> On the public proof, eligible merge pushes went from three runner-minutes to one with every pull request check kept, and 800 real CI jobs from my projects have run on Nebius. When the first optimization family saved nothing, Cirujano opened no pull request. Sutura, my other entry, triages red CI; the developer approves every change from both. The runner study closes on October 28 with net cost.
+
+## Everything we used
+
+Say the first three out loud. The rest can sit in the Devpost text.
+
+| Component | Role | Evidence |
 | --- | --- | --- |
-| NVIDIA Nemotron 3 Nano 30B A3B | Proposes one supported operation or abstains; live model `nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B` | PR #8 model and token record |
-| Nebius Token Factory inference API | Hosts the model call through an OpenAI-compatible API | PR #8, [live chain](../research/2026-10-09-skip-validated-push-live-proof.md#chain) |
-| Nebius Token Factory Sandboxes | Runs the push-guard verification harness in disposable, network-disabled isolation | PR #8: 69 matrix cells, 60 classifier cases |
-| Nebius AI Cloud | CPU VMs and disks for one-job-at-a-time on-demand runners | [Runner pilot](../research/2026-09-15-nebius-runner-pilot-r14.md) |
-| GitHub Actions, REST API and GitHub CLI | Run and job evidence, rounded-minute estimates, PR identity and readback | Runs, `gh api`, `cirujano estimate` |
+| Nebius Token Factory | OpenAI-compatible inference for the Nemotron call | PR #8, [live chain](../research/2026-10-09-skip-validated-push-live-proof.md#chain) |
+| NVIDIA Nemotron 3 Nano 30B A3B | Proposes one supported operation or abstains; live model `nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B` | PR #8 model and token record (1,115 tokens, $0.00012) |
+| Nebius Token Factory Sandboxes | Runs the push-guard harness in disposable, network-disabled isolation | PR #8: 69 matrix cells, 60 classifier cases |
+| Nebius AI Cloud | CPU VMs and disks for one-job-at-a-time on-demand runners | [Runner pilot](../research/2026-09-15-nebius-runner-pilot-r14.md), [runbook](../runbooks/nebius-runner.md) |
+| GitHub Actions, REST API, GitHub CLI | Run and job evidence, rounded-minute estimates, PR identity and readback | Runs, `gh api`, `cirujano estimate` |
 | TypeScript 6, Node 22, pnpm | Product runtime and workspace | [Stack](../../CLAUDE.md#stack) |
 | YAML parser, deterministic classifier, bounded patch builder | Keep the model to supported edits and preserve workflow meaning | PR diff, [guard description](nemotron-optimization.md#skip-validated-pushes) |
 | Docker/OCI images, cloud-init, Actions runner | Sandbox images and cloud runner bootstrap | [Technical demo](nemotron-optimization.md), [runner pilot](../research/2026-09-15-nebius-runner-pilot-r14.md) |
-| Vitest, V8 coverage, ESLint, TypeScript, esbuild | Product verification, quality comparisons, bundles | [Contributor setup](../../README.md#contributor-setup) |
-| Daily telemetry, macOS launchd controller | Fleet usage collection and the owner-hosted runner control loop | [Telemetry runbook](../runbooks/fleet-telemetry.md) |
+| Vitest, V8 coverage, ESLint, esbuild | Product verification, quality comparisons, bundles | [Contributor setup](../../README.md#contributor-setup) |
+| Daily telemetry, macOS launchd controllers | Fleet usage collection and the owner-hosted runner control loops | [Telemetry runbook](../runbooks/fleet-telemetry.md) |
+| Codex and Claude Code | Development assistance, separate from the runtime model | Not shown in the video |
 
-The Cirujano proof did not use Sutura's Nemotron Super and Ultra roles, Tavily, GPU runners, Kubernetes, fine-tuning or an automatic Sutura-Cirujano hand-off.
+The Cirujano proof did not use Sutura's Nemotron Super and Ultra roles, Nebius ConTree, Tavily, GPU runners, Kubernetes, fine-tuning or an automatic Sutura-Cirujano hand-off.
 
-## Every spoken claim and its source
+## Time and money: what is measured
 
-| Spoken claim | Evidence | Status |
+| Status | Number | Limit |
 | --- | --- | --- |
-| $386 a month | Billing page: July $370.64, August $401.78 ([baseline](../research/2026-09-08-github-actions-cost-baseline.md#monthly-bill)); same totals from the billing usage API, read 2026-10-17 | VERIFIED |
+| Measured mechanism | **3 → 1** rounded runner-minutes per eligible merge push (66.7%) | Three sampled pushes on a public repository: **$0** invoice effect. Direct-push control billed 4. Not human waiting time. |
+| Measured usage | **800** Cirujano jobs, 3,297 minutes on Nebius VMs, 2026-09-13 to 2026-10-17 | A usage count. Fleet report: **$18.84** gross hosted list cost avoided against **$19.87** controller-accounted Nebius cost; accounting incomplete, net savings unavailable. |
+| Measured inference | **$0.00012**, 1,115 tokens for the live Nemotron decision | One proof decision, not a fleet cost. |
+| Observed, not attributed | Private-repository CI **2,109 → 164** minutes a day (about **$380 → $30** a month at list price) | July-August average against October 14-16. Activity not normalized; release work in the heaviest repository was paused. List price before included minutes and provider costs. |
+| GitHub Actions bill | Net **$370.64** July, **$401.78** August, **$81.16** September, **$93.49** October 1-17 | The September drop started before any Cirujano change shipped. Do not attribute it. |
+| Modeled | About **$120** a month net from packing heavy jobs onto shared VMs | Assumes four concurrent runner slots; implemented runners have one slot per enrollment. |
+| Pending | Net runner savings and developer hours | The 45-day runner window closes 2026-10-28; closing it does not guarantee a complete net result. Hours are unmeasured. |
+
+If a judge asks "How much has it saved you?":
+
+> On the controlled proof, two of every three runner-minutes on eligible merge pushes, with every check kept. Since my private repositories moved to the cadence Cirujano recommended, CI fell from about 2,100 minutes a day to 164, but activity also changed, so I don't claim it as a Cirujano saving. The runner study reports net cost after October 28.
+
+## How the products work together
+
+**Sutura heals red CI. Cirujano trims green CI. A developer keeps approval.** Sutura is the nurse who triages and stitches what breaks; Cirujano is the surgeon who operates on CI that works but costs too much; the developer is the doctor who signs off on both. Keep Sutura to its one beat; they are distinct products and separate submissions.
+
+- **Two failure modes.** A pipeline can break, or it can keep working while it wastes money. Sutura answers red CI with a verified repair, a flaky verdict or a refusal. Cirujano measures green CI, removes verified waste and moves heavy jobs to on-demand Nebius VMs.
+- **One link today.** Cirujano's 2026-10-02 cadence assessment recommended fast checks per push and the full suite nightly and at release. Since the owner decision of 2026-10-16, Sutura coordinates that cadence and requests a repair when a run fails.
+- **One evidence standard.** Neither trusts a green check alone. Sutura rejects fixes that delete tests; Cirujano rejects savings that delete coverage. Both open evidence-backed pull requests and never merge.
+- **Not built yet.** There is no automatic hand-off, and Sutura does not provision Cirujano runners.
+
+## Lines you must not say
+
+| Tempting line | Why not |
+| --- | --- |
+| "Cirujano cut my bill from $386 to $81." | September's drop began before any Cirujano change shipped; the heaviest repository fell to about 10 minutes a day from 2026-08-22. |
+| "It saves me $350 a month" or "$4,000 a year." | The 164-minute window is three days, activity is not normalized and the figure is list price. |
+| "The runners save money" or "break even." | $18.84 avoided against $19.87 of Nebius cost, with incomplete accounting. |
+| "92 percent cheaper" or "CI is 67 percent faster." | 92 percent is the unattributed observation; 66.7 percent is rounded runner-minutes on three sampled pushes, not delivery time. |
+| "Sutura fixed my failing runs." | The Actions rows show a repair request, not a completed repair. |
+| "Cirujano is the nurse" or "Sutura is the surgeon." | Owner metaphor rule, 2026-10-18. |
+| Calling recorded footage live. | Only beat 6 is executed during the recording. PR #8 and its runs are a recorded live result from 2026-10-09. |
+| Any private repository name. | This repository is public; use handles (P5). |
+
+## Evidence
+
+| Claim | Source | Status |
+| --- | --- | --- |
+| More than twenty projects | Fleet routing list: 19 local repositories plus 2 hosted ones in the owner's global instructions | VERIFIED 2026-10-18 |
+| $386 a month | [Baseline](../research/2026-09-08-github-actions-cost-baseline.md#monthly-bill): July $370.64, August $401.78; same totals from the billing usage API | VERIFIED 2026-10-17 |
 | Two workflows used about 70 percent | Baseline, "Where the minutes go" | VERIFIED sample, INFERRED total |
 | Every push ran the full suite | [Cadence assessment](../research/2026-10-02-ci-cadence-assessment.md): full CI on routine changes before the lean cadence | VERIFIED |
-| Nemotron proposes or abstains | PR #8 model record; six live push cases passed, including two abstentions and an injection case ([live proof](../research/2026-10-09-skip-validated-push-live-proof.md#live-model-evaluation)) | VERIFIED, small labeled corpus |
+| Nemotron proposes or abstains; Cirujano builds the patch | PR #8 model record; six live push cases including two abstentions and an injection case ([live proof](../research/2026-10-09-skip-validated-push-live-proof.md#live-model-evaluation)) | VERIFIED, small labeled corpus |
 | 129 scenarios, zero mismatches, network off | PR #8: 69 guard-matrix cells plus 60 classifier cases | VERIFIED |
-| One runner-minute instead of three; direct push ran everything | Candidates 37920072110, 37920192411, 37920318553 billed 1; baselines billed 3; control 37920425565 ran all jobs and billed 4 ([measured runs](../research/2026-10-09-skip-validated-push-live-proof.md#measured-runs)); `cirujano estimate` re-checked 2026-10-17 | VERIFIED |
+| One runner-minute instead of three; direct push ran everything | Candidates 37920072110, 37920192411, 37920318553 billed 1; baselines billed 3; control 37920425565 ran all jobs and billed 4 ([measured runs](../research/2026-10-09-skip-validated-push-live-proof.md#measured-runs)); `cirujano estimate` re-checked | VERIFIED 2026-10-17 |
 | An earlier idea saved nothing, no PR opened | Cache family, 3 against 3 rounded minutes ([live outcome](nemotron-optimization.md#live-outcome)) | VERIFIED |
-| VM starts on queue, stops when idle | [Runner pilot](../research/2026-09-15-nebius-runner-pilot-r14.md), 2026-09-15 | VERIFIED |
+| VM starts on queue, stops and is deleted when idle | P5 controller log, 2026-10-18: `create-vm` 09:25:05Z, `busy` 09:29:20Z, `stop-vm` 09:38:06Z, `delete-vm` 09:39:15Z; [runner pilot](../research/2026-09-15-nebius-runner-pilot-r14.md) | VERIFIED 2026-10-18 |
 | 800 real CI jobs on Nebius | Scheduled fleet telemetry, 2026-09-13 to 2026-10-17T04:17Z: 800 Cirujano jobs, 3,297 minutes | VERIFIED usage; not a savings claim |
-| Cirujano's audit recommended the cadence | [Cadence assessment](../research/2026-10-02-ci-cadence-assessment.md), 2026-10-02 | VERIFIED |
-| Sutura owns the cadence, requests repairs | Owner decision 2026-10-16; public Cirujano Actions: "Repair requested: CI #110 (failure)", 2026-10-14 | VERIFIED request; a request is not a completed repair |
-| 164 instead of about 2,100 CI minutes a day; $30 instead of $380 at list price | Billing usage API, private repositories: 2,109 min and $12.66 list a day (July-August) against 164 min and $0.98 a day (October 14-16), times 30 | VERIFIED observation; NOT attributed (see below) |
-| Routine feedback in about 20 seconds; full suite nightly | `gh run list`, three private repositories, successful runs October 9-17: fast-lane median 0.3 min wall clock; the full suite runs separately | VERIFIED; a different amount of verification, not a faster full suite |
+| Audit recommended the cadence; Sutura coordinates it and requests repairs | [Cadence assessment](../research/2026-10-02-ci-cadence-assessment.md); owner decision 2026-10-16; public Actions row "Repair requested: CI #110 (failure)", 2026-10-14 | VERIFIED; a request is not a completed repair |
+| 164 instead of about 2,100 minutes a day; $30 instead of $380 at list price | Billing usage API, private repositories: 2,109 min and $12.66 list a day (July-August) against 164 min and $0.98 a day (October 14-16), times 30 | VERIFIED observation 2026-10-17; NOT attributed |
+| Runner study closes October 28 | 45-day matched window of the enrolled migrations | VERIFIED date; result pending |
 
-### Answers to keep precise when judges ask
+**Gross, discount and net, re-derived 2026-10-18** from the billing usage API pulls of 2026-10-17. Fully discounted usage (free public-repository minutes) grew from $132.57 gross in August to $284.30 in September; the remaining gross fell from $414.32 to $89.03. The larger "discount" is therefore mostly public minutes, which cost nothing, and the bill fell because private usage fell. Neither product is credited with it.
 
-| Question | Safe answer |
-| --- | --- |
-| "Is 92 percent your saving?" | No. It is an observed usage drop over three days after the cadence switch. Releases in the heaviest repository were paused and activity was not normalized, so part of it may be lower activity. The causal result is the controlled proof. |
-| "What did it save you in dollars?" | The public proof saves $0 on an invoice (public minutes are free); it proves compute reduction. The private account observation is list price, before included minutes, Nebius, inference and Sandbox costs. A matched 45-day runner study closes 2026-10-28. |
-| "Do the runners save money?" | Not yet established. The latest report has $18.84 gross hosted cost avoided against $19.87 controller-accounted Nebius cost, with incomplete accounting and net savings unavailable. Packing four jobs per VM is modeled at about $30 a month instead of $155; it is not built. |
-| "Is the 67 percent faster delivery?" | No. It is 66.7% fewer rounded runner-minutes on three sampled eligible merge pushes. Jobs ran concurrently, so it is not six minutes of human waiting. |
-| "What about direct pushes?" | They run every check plus the one-minute classifier (four minutes in the control). One-minute workflows cannot benefit, and the model is expected to abstain. |
-| "Do the two products hand off automatically?" | No. Sutura owns cadence coordination and requests repairs; Cirujano supplies cost evidence and verified optimizations. A direct automated hand-off is not built. |
-| "Did you save developer hours?" | Not measured. Routine feedback is earlier; full verification still runs nightly and before release. |
-
-### What was not claimed, and why
-
-- **"$386 to $81."** September billed $81.16, but the heaviest repository's minutes fell to about 10 a day from 2026-08-22, before any Cirujano change shipped.
-- **$4,000+ a year.** An annualized gross projection on a three-day window is too thin to say aloud.
-- **Runner break-even or net savings.** Accounting is incomplete.
-
-### Evidence refresh, 2026-10-17
-
-Prepared on Cirujano `develop` `6e63d5f`. The live optimizer result stays bound to tool `49c934d` and proof candidate `b359f3b`. GitHub readback confirmed PR #8 open with its base and head, and the baseline, candidate and control jobs. The CLI returned 3 and 1 billable minutes on the fetched public jobs. The offline evaluation passed 27 synthetic cases with zero inference calls. Billing figures come from the GitHub billing usage API, read 2026-10-17; private repository names and raw rows stay outside this public repository. No proof workflow or paid provider operation was rerun.
+Prepared on Cirujano `develop` after `906bad5`. The live optimizer result stays bound to tool `49c934d` and proof candidate `b359f3b`. Private repository names and raw billing rows stay outside this public repository. No proof workflow, provider operation or runner start was run to prepare this script; beat 6 needs Juan's go at recording time.
