@@ -21,10 +21,11 @@ gen() { # $1 beat, $2 speed, $3 out
 beats=(${@:-$(ls beat-*.txt | sed 's/beat-\(.*\)\.txt/\1/' | sort -n)})
 for b in $beats; do
   if [[ -f "$demo/split-$b.mp4" ]]; then target=$(python3 -I -c "print(round($(dur "$demo/split-$b.mp4") - 0.1, 2))")
-  elif [[ $b == 0 ]]; then target=9.90
+  elif [[ $b == 0 ]]; then target=0   # intro card: no clip yet, the card is cut to the audio length
   else echo "beat $b: no split-$b.mp4 yet, skipped"; continue; fi
   if ! gen $b 1.0 raw-$b.mp3; then echo "beat $b FAILED: $(head -c 200 err-$b.txt)"; continue; fi
   v=$(dur raw-$b.mp3); speed=1.0
+  [[ $target == 0 ]] && target=$(python3 -I -c "print(round($v + 0.8, 2))")
   if python3 -I -c "import sys; sys.exit(0 if $v > $target else 1)"; then
     speed=$(python3 -I -c "print(min(1.2, round($v/($target-0.25), 3)))")
     if gen $b $speed raw-$b.v2.mp3; then mv -f raw-$b.v2.mp3 raw-$b.mp3; v=$(dur raw-$b.mp3); else echo "beat $b speed retake FAILED, keeping 1.0"; speed=1.0; fi

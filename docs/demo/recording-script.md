@@ -57,7 +57,7 @@ The narration is 383 words including the intro: 2:33 at 150 words per minute, 2:
 
 **Say:**
 
-> I'm Juan González. I run more than twenty projects with AI coding agents, and this is Cirujano, my second entry for the Nebius and NVIDIA Global AI Hackathon.
+> Hi, I'm Juan González. I run more than twenty projects with AI coding agents, and this is Cirujano, one of my two entries for the Nebius and NVIDIA Global AI Hackathon.
 
 ### 1. The future | 0:10-0:27
 
