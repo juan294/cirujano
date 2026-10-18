@@ -15,11 +15,10 @@ verified numbers and a stated assumption).
 | --- | --- | --- | --- |
 | July 2026 | $442.75 | $370.64 | VERIFIED, billing page |
 | August 2026 | $546.90 | $401.78 | VERIFIED, billing page |
-| September 1 to 8, 2026 | $105.76 | $6.15 | VERIFIED, billing page |
-| September 2026 (full month) | $373.33 | $81.16 | VERIFIED, billing usage API, refreshed 2026-10-18 |
+| September 2026 | $373.33 | $81.16 | VERIFIED, billing usage API, refreshed 2026-10-18 |
 | October 1 to 18, 2026 | $268.74 | $102.08 | VERIFIED, billing usage API, refreshed 2026-10-18 |
 
-Refresh note, 2026-10-18: the two added rows come from the account billing
+Refresh note, 2026-10-18: the September and October rows come from the account billing
 usage API (`/users/{owner}/settings/billing/usage`), summed over every usage
 item for the month; the same sum reproduces the July and August billing-page
 figures to the cent. The gap between gross and billed widened from September
