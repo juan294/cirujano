@@ -1,9 +1,23 @@
 # Cirujano: Verified CI Cost Surgery
 
-[![CI](https://github.com/juan294/cirujano/actions/workflows/ci.yml/badge.svg)](https://github.com/juan294/cirujano/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-![TypeScript](https://img.shields.io/badge/TypeScript-6-3178C6)
-![Node](https://img.shields.io/badge/Node-22%2B-339933)
+[![CI](https://github.com/juan294/cirujano/actions/workflows/ci.yml/badge.svg?branch=develop&event=push)](https://github.com/juan294/cirujano/actions/workflows/ci.yml?query=branch%3Adevelop+event%3Apush)
+[![CodeQL](https://github.com/juan294/cirujano/actions/workflows/codeql.yml/badge.svg?branch=develop&event=push)](https://github.com/juan294/cirujano/actions/workflows/codeql.yml?query=branch%3Adevelop+event%3Apush)
+![TypeScript](https://img.shields.io/badge/TypeScript-6.0.3-3178C6?logo=typescript&logoColor=white)
+![Node.js](https://img.shields.io/badge/Node.js-22-43853D?logo=node.js&logoColor=white)
+![pnpm](https://img.shields.io/badge/pnpm-11.22.0-F69220?logo=pnpm&logoColor=white)
+![Vitest](https://img.shields.io/badge/Vitest-4.1.11-6E9F18?logo=vitest&logoColor=white)
+![ESLint](https://img.shields.io/badge/ESLint-10.10.0-4B32C3?logo=eslint&logoColor=white)
+![esbuild](https://img.shields.io/badge/esbuild-0.28.2-FFCF00?logo=esbuild&logoColor=black)
+[![GitHub Actions](https://img.shields.io/badge/GitHub-Actions-2088FF?logo=githubactions&logoColor=white)](https://docs.github.com/en/actions)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![NVIDIA Nemotron](https://img.shields.io/badge/NVIDIA-Nemotron_3_Nano-76B900?logo=nvidia&logoColor=white)](https://build.nvidia.com/nvidia/nvidia-nemotron-3-nano-30b-a3b)
+[![Nebius Token Factory](https://img.shields.io/badge/Nebius-Token_Factory-5B5BD6)](https://tokenfactory.nebius.com/)
+[![Nebius Token Factory Sandboxes](https://img.shields.io/badge/Nebius-Token_Factory_Sandboxes-5B5BD6)](https://docs.tokenfactory.nebius.com/)
+[![Nebius AI Cloud](https://img.shields.io/badge/Nebius-AI_Cloud_VMs-5B5BD6)](https://nebius.com/ai-cloud)
+
+<a href="https://chapa.thecreativetoken.com/u/juan294">
+  <img src="https://chapa.thecreativetoken.com/u/juan294/badge.svg" alt="juan294's Chapa Impact Badge" width="100%" />
+</a>
 
 Cirujano reads GitHub Actions billing and run history, ranks where the
 minutes go, proposes and verifies workflow patches that cut cost without
