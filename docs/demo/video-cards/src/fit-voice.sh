@@ -1,8 +1,9 @@
 #!/bin/zsh
 # Voice-over for the Cirujano demo: ElevenLabs Eric on eleven_multilingual_v2, one file per clip.
-# Usage: zsh docs/demo/video-cards/src/fit-voice.sh [beat ...]   (no arguments = every beat)
+# Usage: zsh docs/demo/video-cards/src/fit-voice.sh [beat[=seconds] ...]   (no arguments = every beat)
 # 1. Writes beat-N.txt from the Say blocks of docs/demo/recording-script.md (the only text source).
 # 2. Reads each clip length from split-N.mp4 (beat 0 without a clip is the 10-second intro card).
+#    `1=17` fits beat 1 to a 17-second clip instead, for a clip already trimmed in iMovie.
 # 3. Generates at speed 1.0; if speech is longer than the clip, regenerates once at the speed that
 #    fits (max 1.2). Never cuts words. Pads silence to the clip length minus 0.1 s.
 setopt +o nomatch
@@ -19,8 +20,10 @@ gen() { # $1 beat, $2 speed, $3 out
   elevenlabs text-to-speech convert --voice-id $VOICE --output-format mp3_44100_128 --json "$body" -o "$3" -q 2>err-$1.txt
 }
 beats=(${@:-$(ls beat-*.txt | sed 's/beat-\(.*\)\.txt/\1/' | sort -n)})
-for b in $beats; do
-  if [[ -f "$demo/split-$b.mp4" ]]; then target=$(python3 -I -c "print(round($(dur "$demo/split-$b.mp4") - 0.1, 2))")
+for spec in $beats; do
+  b=${spec%%=*}; given=${spec#*=}; [[ $given == $spec ]] && given=""
+  if [[ -n $given ]]; then target=$(python3 -I -c "print(round($given - 0.1, 2))")
+  elif [[ -f "$demo/split-$b.mp4" ]]; then target=$(python3 -I -c "print(round($(dur "$demo/split-$b.mp4") - 0.1, 2))")
   elif [[ $b == 0 ]]; then target=0   # intro card: no clip yet, the card is cut to the audio length
   else echo "beat $b: no split-$b.mp4 yet, skipped"; continue; fi
   if ! gen $b 1.0 raw-$b.mp3; then echo "beat $b FAILED: $(head -c 200 err-$b.txt)"; continue; fi
