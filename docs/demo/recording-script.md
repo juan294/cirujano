@@ -49,7 +49,7 @@ Expected: `Billable minutes: 3` with 0 skipped jobs, then `Billable minutes: 1` 
 
 ## Script
 
-The narration is 383 words including the intro: 2:33 at 150 words per minute, 2:57 at 130. Eric on ElevenLabs speaks about 2.4 words per second, about 2:40. Beat 8 has 87 words, about 36 seconds of speech, so the end card holds about 10 seconds in silence. Timestamps are editing targets; the recorded clips set the final lengths.
+The narration is 389 words including the intro: 2:36 at 150 words per minute, 3:00 at 130. Eric on ElevenLabs speaks about 2.4 words per second, about 2:40. Beat 8 has 87 words, about 36 seconds of speech, so the end card holds about 10 seconds in silence. Timestamps are editing targets; the recorded clips set the final lengths.
 
 ### 0. Intro | 0:00-0:10
 
@@ -89,7 +89,7 @@ The narration is 383 words including the intro: 2:33 at 150 words per minute, 2:
 
 **Say:**
 
-> Here is a real cut on a public proof repository. Each merge re-ran checks its pull request had already passed. Cirujano added a guard: skip the merge run only when that exact tree already passed.
+> Here is a real cut on a public proof repository. Each merge re-ran checks its pull request had already passed. Cirujano added a guard: skip the merge run only when that exact tree already passed. Any doubt, and every job runs.
 
 ### 5. The receipts | 1:14-1:33
 
