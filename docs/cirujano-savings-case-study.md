@@ -183,12 +183,14 @@ benefits have not been measured.
   records the window and limitations without exposing private repositories.
 - **Observed, not attributed:** Cirujano's 2026-10-02 cadence assessment
   recommended fast checks on routine pushes and the full suite nightly and at
-  release. In the first days with every private repository on that cadence
-  (2026-10-14 to 2026-10-16), private-repository CI used 164 minutes a day
-  against a July-August average of 2,109 (about $30 against $380 a month at
-  list price, before included minutes and provider costs). Release activity in
-  the heaviest repository was paused and activity is not normalized, so this is
-  an observed usage drop, not a measured Cirujano saving.
+  release. In the first full week with every private repository on that cadence
+  (2026-10-17 to 2026-10-23), private-repository CI used 778 minutes a day
+  against a July-August average of 2,109 (about $140 against $380 a month at
+  list price, before included minutes and provider costs). Daily usage that
+  week ranged from 157 to 1,297 minutes. An earlier three-day window
+  (2026-10-14 to 2026-10-16, 164 minutes a day) was the quietest stretch and
+  is superseded. Activity is not normalized, so this is an observed usage
+  drop, not a measured Cirujano saving.
 - **Pending for Cirujano:** Complete matched before-and-after net savings from
   the enrolled migrations, whose 45-day window closes on 2026-10-28; measured
   developer hours recovered; and outcomes on larger private workflows.

@@ -11,13 +11,20 @@
   .lab.early { background: var(--muted); }
   .lab.next { background: var(--blue); }
   .ok { color: var(--ok); } .blue { color: var(--blue); } .muted { color: var(--muted); }
+  .stamp { position: absolute; top: 22px; right: 120px; transform: rotate(-3deg); border: 6px solid #ff3b3b; border-radius: 18px; padding: 10px 30px 14px; color: #ff3b3b; background: rgba(255,59,59,.08); text-align: center; box-shadow: 0 0 40px rgba(255,59,59,.25); }
+  .stamp b { display: block; font-size: 74px; font-weight: 900; letter-spacing: -.03em; line-height: 1; }
+  .stamp span { display: block; font-family: var(--mono); font-size: 19px; font-weight: 700; letter-spacing: .08em; margin-top: 6px; }
+  .vision { position: absolute; left: 120px; right: 120px; bottom: 70px; border-top: 2px solid var(--accent); padding-top: 34px; }
+  .vision b { display: block; font-size: 60px; font-weight: 800; letter-spacing: -.02em; line-height: 1.1; color: var(--ink); }
+  .vision span { display: block; font-size: 32px; color: var(--muted); margin-top: 14px; line-height: 1.35; }
 </style></head>
 <body>
-  <div class="tag">What it has saved so far</div>
+  <div class="tag">What it saves today, and where it goes</div>
+  <div class="stamp"><b>−67%</b><span>RUNNER-MINUTES PER MERGE PUSH · MEASURED</span></div>
   <div class="wrap">
     <div class="row"><div class="num ok">3 → 1</div><div class="txt">runner-minutes per eligible merge push<span class="lab">MEASURED</span><small>Public proof, 2026-10-09. Every pull request check kept; a direct push still runs everything.</small></div></div>
-    <div class="row"><div class="num blue">800</div><div class="txt">real CI jobs on on-demand Nebius VMs<span class="lab">MEASURED</span><small>2026-09-13 to 2026-10-17. A usage count, not a net saving.</small></div></div>
-    <div class="row"><div class="num muted">2,109 → 164</div><div class="txt">private CI minutes a day<span class="lab early">EARLY, NOT ATTRIBUTED</span><small>On the cadence Cirujano recommended. July-August average against October 14-16.<br>About $380 → $30 a month at list price, not an invoice.</small></div></div>
-    <div class="row"><div class="num">Oct 28</div><div class="txt">the 45-day runner study closes<span class="lab next">NEXT</span><small>Net savings, after Nebius, inference and Sandbox costs.</small></div></div>
+    <div class="row"><div class="num blue">800</div><div class="txt">real CI jobs on on-demand Nebius VMs<span class="lab">MEASURED</span><small>Started when queued, deleted when idle. 2026-09-13 to 2026-10-17.</small></div></div>
+    <div class="row"><div class="num muted">2,109 → 778</div><div class="txt">private CI minutes a day<span class="lab early">OBSERVED</span><small>On the cadence Cirujano recommended. July-August average against October 17-23.<br>About $380 → $140 a month at list price, not an invoice.</small></div></div>
   </div>
+  <div class="vision"><b>Next: every team shipping with AI agents.</b><span>CI that finds its own waste, proves every cut and runs heavy work on Nebius only when it is needed. More software on the same budget.</span></div>
 </body></html>
