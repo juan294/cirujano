@@ -1,0 +1,7 @@
+{
+  "tag_name": "v2.338.1",
+  "assets": [
+    { "name": "actions-runner-osx-arm64-2.338.1.tar.gz", "digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111" },
+    { "name": "actions-runner-linux-x64-2.338.1.tar.gz", "digest": "sha256:08e9ccb3604d2462c24b5e33604dc30810296ca15cc65f23cffd4317eb144c37" }
+  ]
+}

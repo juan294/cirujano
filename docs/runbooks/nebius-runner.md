@@ -19,17 +19,22 @@ export CIRUJANO_SSH_KEY_PATH="$PWD/.cirujano/runner/controller_ed25519"
 export CIRUJANO_GUEST_DIR="$PWD/packages/runner/guest"
 export CIRUJANO_HOST_PRIVATE_KEY_PATH="$PWD/.cirujano/runner/ssh_host_ed25519_key"
 export CIRUJANO_LOGIN_PUBLIC_KEY_PATH="$PWD/.cirujano/runner/controller_ed25519.pub"
-export CIRUJANO_ACTIONS_RUNNER_VERSION=2.337.0
-export CIRUJANO_ACTIONS_RUNNER_SHA256=<verified-linux-x64-archive-sha256>
 export CIRUJANO_NETWORK_EGRESS_LIMIT_GIB=<owner-approved-conservative-bound>
 export CIRUJANO_CANDIDATE_DIGEST="$(shasum -a 256 packages/cli/dist/bin.js | awk '{print $1}')"
 ```
 
-GitHub refuses messages to runner versions it has deprecated, and the guest
-registers with `--disableupdate`, so a stale pin registers a runner that stays
-offline. Before each live attempt compare the pinned version with the latest
-`actions/runner` release and take the SHA-256 from that release's notes,
-verified against the downloaded archive.
+The Actions runner release is machine-owned. `scripts/install-runner-agent.sh`
+runs `scripts/resolve-actions-runner-release.mjs`, which reads the latest
+`actions/runner` release and the SHA-256 digest GitHub publishes for its
+linux-x64 archive, and records both in `actions-runner.env`; the controller
+wrapper sources that file and the guest verifies the archive against the digest
+before extracting it. Re-run the installer to move to a newer release. GitHub
+refuses messages to runner versions it has deprecated, and the guest registers
+with `--disableupdate`, so a stale release registers a runner that stays offline.
+To pin a release deliberately (or to install offline), export both
+`CIRUJANO_ACTIONS_RUNNER_VERSION` (exact version) and
+`CIRUJANO_ACTIONS_RUNNER_SHA256` together; the resolver refuses a half pin.
+`scripts/render-runner-cloud-init.mjs` resolves the release the same way.
 
 Create the controller login key and a separate per-VM Ed25519 host-key pair
 before rendering cloud-init. The public half of the host key and its SHA-256

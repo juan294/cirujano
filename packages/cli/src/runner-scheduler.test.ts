@@ -36,6 +36,13 @@ describe('operating controller launch agent (phase 2 U3)', () => {
     expect(wrapper).not.toMatch(/GITHUB_TOKEN|ghp_|github_pat_|cat .*key/u);
   });
 
+  it('resolves the Actions runner release at install time instead of carrying a typed version', async () => {
+    const installer = await readFile(resolve(root, 'scripts/install-runner-agent.sh'), 'utf8');
+    expect(installer).toContain('resolve-actions-runner-release.mjs');
+    expect(installer).not.toMatch(/CIRUJANO_ACTIONS_RUNNER_(VERSION|SHA256):-/u);
+    expect(installer).not.toMatch(/\b2\.\d{3}\.\d+\b/u);
+  });
+
   macIt('installs one enrollment agent, verifies its first dry-run tick and removes it again', async () => {
     const fixture = await installerFixture();
     const result = await execFile(resolve(root, 'scripts/install-runner-agent.sh'), ['P1'], { env: fixture.env, timeout: 15_000 });
@@ -48,7 +55,7 @@ describe('operating controller launch agent (phase 2 U3)', () => {
     expect(plist).not.toMatch(/__[A-Z_]+__/u);
     expect((await stat(resolve(fixture.home, '.local/lib/cirujano/runner'))).mode & 0o777).toBe(0o700);
     expect((await stat(resolve(fixture.stateDir, 'actions-runner.env'))).mode & 0o777).toBe(0o600);
-    expect(await readFile(resolve(fixture.stateDir, 'actions-runner.env'), 'utf8')).toBe('CIRUJANO_ACTIONS_RUNNER_VERSION=2.337.0\nCIRUJANO_ACTIONS_RUNNER_SHA256=70920811a4f8ad4328818682bca5c6469c1c942fab52448868071d0063816613\n');
+    expect(await readFile(resolve(fixture.stateDir, 'actions-runner.env'), 'utf8')).toBe('CIRUJANO_ACTIONS_RUNNER_VERSION=2.338.1\nCIRUJANO_ACTIONS_RUNNER_SHA256=08e9ccb3604d2462c24b5e33604dc30810296ca15cc65f23cffd4317eb144c37\n');
     expect((await stat(resolve(fixture.home, '.local/share/cirujano/runner/controller_ed25519'))).mode & 0o777).toBe(0o600);
     const invocation = await readFile(resolve(fixture.home, 'invocation'), 'utf8');
     expect(invocation).toContain(`runner watch --config ${fixture.stateDir}/config.json --dry-run`);
@@ -162,6 +169,7 @@ esac
       CIRUJANO_LAUNCHCTL_PATH: fakeLaunchctl,
       CIRUJANO_INSTALL_POLL_SECONDS: '0.05',
       CIRUJANO_INSTALL_WAIT_SECONDS: '10',
+      CIRUJANO_ACTIONS_RUNNER_RELEASE_JSON: resolve(root, 'packages/cli/fixtures/actions-runner-release.fixture.json'),
     },
   };
 }
