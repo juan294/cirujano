@@ -48,7 +48,7 @@ describe('operating controller launch agent (phase 2 U3)', () => {
     expect(plist).not.toMatch(/__[A-Z_]+__/u);
     expect((await stat(resolve(fixture.home, '.local/lib/cirujano/runner'))).mode & 0o777).toBe(0o700);
     expect((await stat(resolve(fixture.stateDir, 'actions-runner.env'))).mode & 0o777).toBe(0o600);
-    expect(await readFile(resolve(fixture.stateDir, 'actions-runner.env'), 'utf8')).toBe('CIRUJANO_ACTIONS_RUNNER_VERSION=2.337.0\nCIRUJANO_ACTIONS_RUNNER_SHA256=70920811a4f8ad4328818682bca5c6469c1c942fab52448868071d0063816613\n');
+    expect(await readFile(resolve(fixture.stateDir, 'actions-runner.env'), 'utf8')).toBe('CIRUJANO_ACTIONS_RUNNER_VERSION=2.338.1\nCIRUJANO_ACTIONS_RUNNER_SHA256=08e9ccb3604d2462c24b5e33604dc30810296ca15cc65f23cffd4317eb144c37\n');
     expect((await stat(resolve(fixture.home, '.local/share/cirujano/runner/controller_ed25519'))).mode & 0o777).toBe(0o600);
     const invocation = await readFile(resolve(fixture.home, 'invocation'), 'utf8');
     expect(invocation).toContain(`runner watch --config ${fixture.stateDir}/config.json --dry-run`);
