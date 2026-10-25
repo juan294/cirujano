@@ -36,6 +36,13 @@ describe('operating controller launch agent (phase 2 U3)', () => {
     expect(wrapper).not.toMatch(/GITHUB_TOKEN|ghp_|github_pat_|cat .*key/u);
   });
 
+  it('resolves the Actions runner release at install time instead of carrying a typed version', async () => {
+    const installer = await readFile(resolve(root, 'scripts/install-runner-agent.sh'), 'utf8');
+    expect(installer).toContain('resolve-actions-runner-release.mjs');
+    expect(installer).not.toMatch(/CIRUJANO_ACTIONS_RUNNER_(VERSION|SHA256):-/u);
+    expect(installer).not.toMatch(/\b2\.\d{3}\.\d+\b/u);
+  });
+
   macIt('installs one enrollment agent, verifies its first dry-run tick and removes it again', async () => {
     const fixture = await installerFixture();
     const result = await execFile(resolve(root, 'scripts/install-runner-agent.sh'), ['P1'], { env: fixture.env, timeout: 15_000 });
@@ -162,6 +169,7 @@ esac
       CIRUJANO_LAUNCHCTL_PATH: fakeLaunchctl,
       CIRUJANO_INSTALL_POLL_SECONDS: '0.05',
       CIRUJANO_INSTALL_WAIT_SECONDS: '10',
+      CIRUJANO_ACTIONS_RUNNER_RELEASE_JSON: resolve(root, 'packages/cli/fixtures/actions-runner-release.fixture.json'),
     },
   };
 }

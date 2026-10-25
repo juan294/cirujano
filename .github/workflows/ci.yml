@@ -47,3 +47,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: sudo apt-get update && sudo apt-get install --yes cloud-image-utils qemu-system-x86
       - run: pnpm run verify:cloud-init-boot
+        env:
+          # The renderer resolves the latest actions/runner release; the job token avoids the
+          # unauthenticated rate limit shared by hosted runner addresses.
+          GITHUB_TOKEN: ${{ github.token }}

@@ -3,8 +3,6 @@ set -euo pipefail
 
 readonly image_url=https://cloud-images.ubuntu.com/noble/20260911/noble-server-cloudimg-amd64.img
 readonly image_sha256=612b2c0cc1bc413a6cb8c38fd611794caf0f2b436c50013d8b3794db12ad7354
-readonly runner_version=2.338.1
-readonly runner_sha256=08e9ccb3604d2462c24b5e33604dc30810296ca15cc65f23cffd4317eb144c37
 readonly overlay_size=16G
 readonly qemu_cpu_model=qemu64
 readonly qemu_cpus=${CIRUJANO_QEMU_CPUS:-8}
@@ -54,8 +52,6 @@ pnpm --filter @cirujano/runner run build >/dev/null
 CIRUJANO_HOST_PRIVATE_KEY_PATH="$host_key" \
 CIRUJANO_HOST_PUBLIC_KEY_PATH="$host_key.pub" \
 CIRUJANO_LOGIN_PUBLIC_KEY_PATH="$login_key.pub" \
-CIRUJANO_ACTIONS_RUNNER_VERSION="$runner_version" \
-CIRUJANO_ACTIONS_RUNNER_SHA256="$runner_sha256" \
   node "$repository_root/scripts/render-runner-cloud-init.mjs" "$temporary_directory/user-data"
 printf '%s\n' 'instance-id: cirujano-cloud-init-boot' 'local-hostname: cirujano-boot' >"$temporary_directory/meta-data"
 

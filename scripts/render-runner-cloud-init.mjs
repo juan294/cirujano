@@ -7,6 +7,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { GUEST_FILE_NAMES, renderCloudInit } from '../packages/runner/dist/adapters/cloud-init.js';
+import { resolveActionsRunnerRelease } from './resolve-actions-runner-release.mjs';
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const outputPath = process.argv[2] === undefined ? undefined : resolve(process.argv[2]);
@@ -15,6 +16,8 @@ if (outputPath === undefined || process.argv.length !== 3) {
   process.exit(2);
 }
 
+// Machine-owned unless CIRUJANO_ACTIONS_RUNNER_VERSION and CIRUJANO_ACTIONS_RUNNER_SHA256 pin a release.
+const runnerRelease = await resolveActionsRunnerRelease();
 const temporaryDirectory = mkdtempSync(join(tmpdir(), 'cirujano-cloud-init-'));
 try {
   const suppliedKeyPaths = [
@@ -38,8 +41,8 @@ try {
     readFileSync(join(guestDirectory, name), 'utf8'),
   ]));
   const rendered = renderCloudInit({
-    runnerVersion: process.env.CIRUJANO_ACTIONS_RUNNER_VERSION ?? '2.338.1',
-    runnerSha256: process.env.CIRUJANO_ACTIONS_RUNNER_SHA256 ?? 'a'.repeat(64),
+    runnerVersion: runnerRelease.version,
+    runnerSha256: runnerRelease.sha256,
     sshHostPrivateKey: readFileSync(hostPrivateKeyPath, 'utf8'),
     sshHostPublicKey: readFileSync(hostPublicKeyPath, 'utf8').trim(),
     sshLoginPublicKey: readFileSync(loginPublicKeyPath, 'utf8').trim(),

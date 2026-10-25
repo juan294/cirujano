@@ -44,8 +44,7 @@ SSH_KEYGEN_PATH="${CIRUJANO_SSH_KEYGEN_PATH:-/usr/bin/ssh-keygen}"
 NODE_PATH="${CIRUJANO_NODE_PATH:-$(command -v node)}"
 WAIT_SECONDS="${CIRUJANO_INSTALL_WAIT_SECONDS:-300}"
 POLL_SECONDS="${CIRUJANO_INSTALL_POLL_SECONDS:-5}"
-RUNNER_VERSION="${CIRUJANO_ACTIONS_RUNNER_VERSION:-2.338.1}"
-RUNNER_SHA256="${CIRUJANO_ACTIONS_RUNNER_SHA256:-08e9ccb3604d2462c24b5e33604dc30810296ca15cc65f23cffd4317eb144c37}"
+RELEASE_RESOLVER="$SCRIPT_DIR/resolve-actions-runner-release.mjs"
 
 if [ "$MODE" = "--remove" ]; then
   "$LAUNCHCTL_PATH" bootout "$DOMAIN/$LABEL" 2>/dev/null || true
@@ -97,6 +96,17 @@ if [ ! -r "$CONTROLLER_KEY_PATH" ]; then
   "$SSH_KEYGEN_PATH" -q -t ed25519 -N '' -C 'cirujano-controller' -f "$CONTROLLER_KEY_PATH"
 fi
 chmod 600 "$CONTROLLER_KEY_PATH"
+
+# The Actions runner release is machine-owned: the latest actions/runner release and GitHub's published
+# archive digest, resolved now and recorded in actions-runner.env. Re-run the installer to refresh it.
+# CIRUJANO_ACTIONS_RUNNER_VERSION plus CIRUJANO_ACTIONS_RUNNER_SHA256 pin one deliberately.
+RELEASE_ENV="$("$NODE_PATH" "$RELEASE_RESOLVER")" || {
+  echo "runner: could not resolve the Actions runner release; pin CIRUJANO_ACTIONS_RUNNER_VERSION and CIRUJANO_ACTIONS_RUNNER_SHA256 to install offline" >&2
+  exit 1
+}
+RUNNER_VERSION="$(printf '%s\n' "$RELEASE_ENV" | sed -n 's/^CIRUJANO_ACTIONS_RUNNER_VERSION=//p')"
+RUNNER_SHA256="$(printf '%s\n' "$RELEASE_ENV" | sed -n 's/^CIRUJANO_ACTIONS_RUNNER_SHA256=//p')"
+[ -n "$RUNNER_VERSION" ] && [ -n "$RUNNER_SHA256" ] || { echo "runner: release resolver returned no version" >&2; exit 1; }
 
 WRAPPER_TEMP="$WRAPPER.$$.tmp"
 CLI_TEMP="$CLI_PATH.$$.tmp"
