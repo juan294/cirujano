@@ -37,7 +37,7 @@ jobs:
           permission-contents: write
           permission-pull-requests: write
       - name: Verify and repair failed CI
-        uses: juan294/sutura@fdb34a4386f8e7460391c9a35c0b2f467c1a715e # fleet reliability candidate
+        uses: juan294/sutura@ba7f5431348254f623b7337195d2590a28522324 # compatibility candidate
         with:
           github-token: ${{ steps.sutura-app-token.outputs.token }}
           run-id: ${{ github.event.workflow_run.id }}
