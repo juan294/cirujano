@@ -604,7 +604,8 @@ export class GitHubAdapter {
     if (response.status >= 200 && response.status < 300) this.#throttledResponses = 0;
     if (method === 'GET' && response.status === 200) this.#remember(key, endpoint, response);
     if (method !== 'GET' && (response.status >= 200 && response.status < 300 || method === 'DELETE' && response.status === 404)) {
-      const runnerList = endpoint.replace(/\/actions\/runners\/.*$/u, '/actions/runners');
+      const runnerSuffix = endpoint.indexOf('/actions/runners/');
+      const runnerList = runnerSuffix === -1 ? endpoint : `${endpoint.slice(0, runnerSuffix)}/actions/runners`;
       for (const [cacheKey, entry] of this.#cache) if (entry.endpoint === runnerList) this.#forget(cacheKey);
     }
     return response;

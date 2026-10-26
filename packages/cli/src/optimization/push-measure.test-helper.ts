@@ -51,8 +51,9 @@ export async function pushMeasurementFixture() {
   const refs = new Map<string, string>([['cirujano/base', p.baseSha], ['cirujano/skip-validated-push', f.candidateSha]]), opened: Record<string, unknown>[] = [], posts: unknown[] = [];
   const respond = (endpoint: string): unknown => {
     if (endpoint === prefix) return { id: p.repositoryId, full_name: repository, fork: false, private: false };
-    const contents = new RegExp(`^${prefix}/contents/${workflow.replace(/[./]/g, '\\$&')}\\?ref=([a-f0-9]{40})$`).exec(endpoint);
-    if (contents) { const text = workflows.get(contents[1]!)!; return { type: 'file', path: workflow, encoding: 'base64', content: Buffer.from(text).toString('base64'), sha: gitBlobSha(text), size: Buffer.byteLength(text) }; }
+    const contentsPrefix = `${prefix}/contents/${workflow}?ref=`;
+    const contentsRef = endpoint.startsWith(contentsPrefix) ? endpoint.slice(contentsPrefix.length) : '';
+    if (/^[a-f0-9]{40}$/u.test(contentsRef)) { const text = workflows.get(contentsRef)!; return { type: 'file', path: workflow, encoding: 'base64', content: Buffer.from(text).toString('base64'), sha: gitBlobSha(text), size: Buffer.byteLength(text) }; }
     const pushRun = /\/actions\/runs\/(\d+)\/attempts\/1(\/jobs\?per_page=100&page=1)?$/.exec(endpoint), entry = pushRun ? entries.find(row => row.pushRunId === Number(pushRun[1])) : undefined;
     if (pushRun && entry) return pushRun[2] ? { total_count: pushJobs.get(entry.pushRunId)!.length, jobs: pushJobs.get(entry.pushRunId)!.map(row => job(entry.pushRunId, entry.headSha, row)) } : { id: entry.pushRunId, run_attempt: 1, head_sha: entry.headSha, path: workflow, event: 'push', head_branch: branch, status: 'completed', repository: { id: p.repositoryId, full_name: repository }, head_repository: { id: p.repositoryId, full_name: repository, fork: false } };
     const prRun = /\/actions\/runs\/(\d+)(\/attempts\/1\/jobs\?per_page=100&page=1)?$/.exec(endpoint), prRunId = Number(prRun?.[1]);

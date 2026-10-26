@@ -419,6 +419,22 @@ describe('GitHub conditional reads and quota guard', () => {
     advance(60_000); await adapter.listRunners('trusted', 'private');
     expect(calls[2]!.some((arg) => arg.startsWith('If-None-Match:'))).toBe(false);
   });
+  it('invalidates only the mutated repository runner list', async () => {
+    const runners = { total_count: 0, runners: [] };
+    const { adapter, calls } = fixture([
+      reply(200, runners, { etag: '"first"' }), reply(200, runners, { etag: '"second"' }),
+      reply(201, { token: 'secret', expires_at: '2026-10-01T00:00:00Z' }),
+      reply(304), reply(200, runners),
+    ]);
+    await adapter.listRunners('trusted', 'first');
+    await adapter.listRunners('trusted', 'second');
+    await adapter.createRegistrationToken('trusted', 'first');
+    expect((await adapter.listRunners('trusted', 'second')).complete).toBe(true);
+    expect(calls[3]).toContain('If-None-Match: "second"');
+    await adapter.listRunners('trusted', 'first');
+    expect(calls[4]!.some((arg) => arg.startsWith('If-None-Match:'))).toBe(false);
+  });
+
   it('does not mark changing pagination totals complete during mixed revalidation', async () => {
     const first = { total_count: 2, workflow_runs: [run()] };
     const { adapter } = fixture([
