@@ -332,6 +332,23 @@ function differingFields(left: TelemetryJob, right: TelemetryJob): Array<keyof T
     .sort();
 }
 
+/** Fill missing timing only; keep identity, known timestamps and original visibility. */
+function completedJobTiming(earlier: TelemetryJob, later: TelemetryJob): TelemetryJob | null {
+  if (earlier.measurementStatus !== 'incomplete' || later.measurementStatus !== 'measured') return null;
+  if (earlier.startedAt !== null && earlier.startedAt !== later.startedAt) return null;
+  if (earlier.completedAt !== null && earlier.completedAt !== later.completedAt) return null;
+  const normalize = (visibility: RepositoryVisibility) => normalizeTelemetryJob(
+    { fullName: earlier.repository, visibility, archived: false },
+    { ...earlier, id: earlier.runId, attempt: earlier.runAttempt },
+    { ...earlier, id: earlier.jobId, name: earlier.jobName, startedAt: later.startedAt, completedAt: later.completedAt },
+  );
+  const completed = normalize(later.visibility);
+  // Re-derive timing and cost from source fields; no changed identity, conclusion,
+  // runner attribution or inconsistent derived values may ride along with completion.
+  if (differingFields(completed, later).length !== 0) return null;
+  return earlier.visibility === later.visibility ? completed : normalize(earlier.visibility);
+}
+
 function runKey(repository: string, runId: number, attempt: number): string {
   return `${repository}:${runId}:${attempt}`;
 }
@@ -388,6 +405,11 @@ export function aggregateTelemetry(
       if (JSON.stringify(existing) === JSON.stringify(job)) continue;
       const differing = differingFields(existing, job);
       if (differing.length === 0) continue;
+      const completed = completedJobTiming(existing, job);
+      if (completed !== null) {
+        byKey.set(job.key, completed);
+        continue;
+      }
       // A repository whose visibility changed reprices its earlier jobs. The
       // first observation records the visibility the job ran under, so keep it.
       if (differing.includes('visibility') && differing.every((field) => VISIBILITY_DRIFT_FIELDS.has(field))) continue;

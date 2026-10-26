@@ -7,12 +7,15 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   aggregateTelemetry,
   collectTelemetry,
+  normalizeTelemetryJob,
   renderTelemetryMarkdown,
   writeTelemetrySnapshot,
   type GitHubTelemetrySource,
   type TelemetryJobInput,
   type TelemetrySnapshot,
 } from './telemetry.js';
+
+import { buildStoreReport } from './telemetry-store.js';
 
 const NOW = Date.parse('2026-09-13T12:00:00Z');
 
@@ -183,6 +186,47 @@ describe('fleet telemetry', () => {
     expect(first.runs[0]).toMatchObject({ key: 'juan294/app:1:1', jobsObserved: 1, reusable: false });
     expect(second.runs[0]).toMatchObject({ key: 'juan294/app:1:1', jobsObserved: 1, reusable: true });
     expect(second.jobs[0]).toMatchObject({ measurementStatus: 'measured', billableMinutes: 2 });
+    const store = await mkdtemp(join(tmpdir(), 'cirujano-timing-recovery-'));
+    await writeTelemetrySnapshot(store, first);
+    await writeTelemetrySnapshot(store, { ...second, collectedAt: new Date(NOW + 86_400_000).toISOString() });
+    expect(await buildStoreReport({ storePath: store, since: '2026-09-13' })).toMatchObject({
+      jobs: 1, incompleteJobs: 0, githubHostedMinutes: 2, githubHostedListCostUsd: 0.012,
+    });
+  });
+
+  it.each(['startedAt', 'completedAt'] as const)('merges missing %s without depending on input order or mutating snapshots (BE-M1)', (missing) => {
+    const [first, complete] = timingCompletion(missing);
+    const original = JSON.stringify([first, complete]);
+    const expected = { jobs: 1, incompleteJobs: 0, githubHostedMinutes: 2, githubHostedListCostUsd: 0.012 };
+    expect(aggregateTelemetry([first, complete, complete], 0)).toMatchObject(expected);
+    expect(aggregateTelemetry([complete, first], 0)).toMatchObject(expected);
+    expect(JSON.stringify([first, complete])).toBe(original);
+  });
+
+  it.each(['public', 'private'] as const)('preserves original %s pricing when timing completes after a visibility change (BE-M1)', (visibility) => {
+    const [first, complete] = timingCompletion('completedAt', visibility);
+    expect(aggregateTelemetry([complete, first], 0)).toMatchObject({
+      jobs: 1, incompleteJobs: 0, githubHostedMinutes: 2,
+      githubHostedListCostUsd: visibility === 'public' ? 0 : 0.012,
+    });
+  });
+
+  it.each([
+    { conclusion: 'failure' }, { runnerName: 'different runner' }, { labels: ['windows-2025'] },
+    { runAttempt: 2 }, { startedAt: '2026-09-13T10:00:01Z' }, { billableMinutes: 999 },
+    { actualGithubListCostUsd: 999 }, { completedAt: '2026-09-13T09:00:00Z' },
+  ])('rejects conflicting completion evidence %j (BE-M1)', (change) => {
+    const [first, complete] = timingCompletion('completedAt');
+    Object.assign(complete.jobs[0]!, change);
+    expect(() => aggregateTelemetry([first, complete], 0)).toThrow('conflicting duplicate telemetry job');
+  });
+
+  it('continues rejecting divergent completed timing (BE-M1)', () => {
+    const [, complete] = timingCompletion('completedAt');
+    const changed = structuredClone(complete);
+    changed.collectedAt = new Date(NOW + 120_000).toISOString();
+    changed.jobs[0]!.completedAt = '2026-09-13T10:02:01Z';
+    expect(() => aggregateTelemetry([complete, changed], 0)).toThrow('conflicting duplicate telemetry job');
   });
 
   it('deduplicates overlapping snapshots and rejects conflicting evidence', () => {
@@ -348,4 +392,15 @@ function telemetryJob(overrides: Partial<TelemetrySnapshot['jobs'][number]>): Te
     actualGithubListCostUsd: 0.012, counterfactualHostedCostUsd: 0.012,
     ...overrides,
   };
+}
+
+/** Real normalized records keep derived billing fields tied to source timing. */
+function timingCompletion(missing: 'startedAt' | 'completedAt', visibility?: 'public' | 'private'): [TelemetrySnapshot, TelemetrySnapshot] {
+  const repository = { fullName: 'juan294/app', visibility: visibility ?? 'private', archived: false };
+  const run = { id: 1, attempt: 1, workflowName: 'CI', event: 'push', createdAt: '2026-09-13T09:59:00Z', conclusion: 'success' };
+  const raw = job(1, ['ubuntu-24.04'], 'GitHub Actions 1');
+  const first = snapshot([normalizeTelemetryJob(repository, run, { ...raw, [missing]: null })]);
+  const complete = snapshot([normalizeTelemetryJob({ ...repository, visibility: visibility === undefined ? 'private' : visibility === 'public' ? 'private' : 'public' }, run, raw)]);
+  complete.collectedAt = new Date(NOW + 60_000).toISOString();
+  return [first, complete];
 }
