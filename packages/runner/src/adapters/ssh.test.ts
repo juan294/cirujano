@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
 
 import { buildSshInvocation, classifySshReadinessFailure, knownHostLine, sshAttemptTiming, verifySshPublicKeyFingerprint } from './ssh.js';
@@ -64,6 +65,39 @@ describe('SSH identity and invocation (R08)', () => {
     ['unknown', 255, 'ssh failed for an unknown reason'],
   ] as const)('classifies %s SSH output as fatal', (reason, exitCode, stderr) => {
     expect(classifySshReadinessFailure({ exitCode, timedOut: false, stderr })).toEqual({ transient: false, reason });
+  });
+
+  it.each([
+    ['Warning: IDENTITY FILE /private/key NOT ACCESSIBLE', 'identity-file'],
+    ['Identity file first\nWarning: Identity file second not accessible', 'identity-file'],
+    ['Identity file first\n not accessible', 'unknown'],
+    ['Identity file first\r not accessible', 'unknown'],
+    ['Identity file first\u2028 not accessible', 'unknown'],
+    ['Identity file first\u2029 not accessible', 'unknown'],
+    ['not accessible before Identity file /private/key', 'unknown'],
+  ])('keeps identity-file matching case-insensitive, ordered and on one line: %s', (stderr, reason) => {
+    expect(classifySshReadinessFailure({ exitCode: 255, timedOut: false, stderr }))
+      .toEqual({ transient: false, reason });
+  });
+
+  it('classifies repeated prefixes within the SSH output limit without losing a valid suffix', () => {
+    const stderr = 'Identity file '.repeat(4_096);
+    expect(Buffer.byteLength(stderr)).toBeLessThan(64 * 1024);
+    expect(classifySshReadinessFailure({ exitCode: 255, timedOut: false, stderr }))
+      .toEqual({ transient: false, reason: 'unknown' });
+    expect(classifySshReadinessFailure({ exitCode: 255, timedOut: false, stderr: `${stderr}key not accessible` }))
+      .toEqual({ transient: false, reason: 'identity-file' });
+  });
+
+  it('handles repeated identity-file prefixes within a bounded subprocess deadline', () => {
+    const source = new URL('./ssh.ts', import.meta.url).href;
+    const script = `import { classifySshReadinessFailure } from ${JSON.stringify(source)};
+      const stderr = 'Identity file '.repeat(120_000);
+      process.stdout.write(JSON.stringify(classifySshReadinessFailure({ exitCode: 255, timedOut: false, stderr })));`;
+    const stdout = execFileSync(process.execPath, ['--experimental-strip-types', '--input-type=module', '--eval', script], {
+      encoding: 'utf8', timeout: 3_000,
+    });
+    expect(JSON.parse(stdout)).toEqual({ transient: false, reason: 'unknown' });
   });
 
   it('does not classify a process timeout as a transient SSH result', () => {

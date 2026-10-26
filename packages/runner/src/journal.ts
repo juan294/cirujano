@@ -106,7 +106,8 @@ export async function acquireControllerLock(stateDirectory: string): Promise<Con
   const database = new DatabaseSync(databasePath);
   try {
     await chmod(databasePath, 0o600);
-    database.exec('PRAGMA busy_timeout = 0; BEGIN EXCLUSIVE');
+    // Reserve the single writer without rejecting transient opener/read locks.
+    database.exec('PRAGMA busy_timeout = 0; BEGIN IMMEDIATE');
   } catch (error) {
     database.close();
     if (typeof error === 'object' && error !== null && 'errcode' in error

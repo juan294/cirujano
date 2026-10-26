@@ -82,9 +82,10 @@ describe('exclusive controller lock (R10)', () => {
       children.push(...contenders);
       await Promise.all(contenders.map((child) => waitForText(child, 'ready')));
       const outcomes = contenders.map((child) => waitForAcquisition(child));
+      const errors = contenders.map((child) => { const chunks: string[] = []; child.stderr.on('data', (chunk: Buffer) => chunks.push(chunk.toString())); return chunks; });
       for (const child of contenders) child.stdin.write('acquire\n');
       const acquired = await Promise.all(outcomes);
-      expect(acquired.filter(Boolean), `crash-recovery round ${round}`).toHaveLength(1);
+      expect(acquired.filter(Boolean), `crash-recovery round ${round}: ${JSON.stringify(errors)}`).toHaveLength(1);
 
       const holder = contenders[acquired.indexOf(true)]!;
       const rejected = startLockProcess(directory, 23);
@@ -102,6 +103,25 @@ describe('exclusive controller lock (R10)', () => {
       expect(await waitForExit(next)).toBe(0);
     }
   }, 30_000);
+
+  it('does not mistake a database reader for a controller lock holder', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'cirujano-lock-reader-'));
+    const { DatabaseSync } = await import('node:sqlite');
+    const reader = new DatabaseSync(join(directory, '.controller-lock.sqlite'));
+    reader.exec('BEGIN; SELECT name FROM sqlite_master');
+    try {
+      const lock = await acquireControllerLock(directory);
+      try {
+        const contender = startLockProcess(directory, 23);
+        children.push(contender);
+        expect(await waitForExit(contender)).toBe(23);
+      } finally {
+        await lock.release();
+      }
+    } finally {
+      reader.close();
+    }
+  });
 
   it('keeps a live legacy socket holder exclusive and releases a failed acquisition', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'cirujano-legacy-lock-'));
@@ -159,7 +179,8 @@ function startLockProcess(directory: string, conflictExit: number, barrier = fal
         process.on('SIGTERM', async () => { await lock.release(); process.exit(0); });
         process.stdout.write('locked\\n');
         setInterval(() => {}, 1000);
-      } catch {
+      } catch (error) {
+        process.stderr.write(error.stack + '\\n');
         process.stdout.write('conflict\\n');
         process.exit(${conflictExit});
       }

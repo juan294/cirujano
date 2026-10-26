@@ -99,7 +99,10 @@ export function classifySshReadinessFailure(result: SshProcessResult): SshReadin
   const message = result.stderr;
   if (/REMOTE HOST IDENTIFICATION HAS CHANGED|Host key verification failed/iu.test(message)) return { transient: false, reason: 'host-key' };
   if (/Permission denied/iu.test(message)) return { transient: false, reason: 'authentication' };
-  if (/Identity file .* not accessible/iu.test(message)) return { transient: false, reason: 'identity-file' };
+  if (message.split(/[\r\n\u2028\u2029]/u).some((line) => {
+    const prefix = /Identity file /iu.exec(line);
+    return prefix !== null && / not accessible/iu.test(line.slice(prefix.index + prefix[0].length));
+  })) return { transient: false, reason: 'identity-file' };
   if (/Bad configuration option|command-line line \d+:/iu.test(message)) return { transient: false, reason: 'configuration' };
   if (/^(?:kex_exchange_identification: read: Connection reset by peer|banner exchange: Connection to \S+ port \d+: Connection reset by peer)$/imu.test(message)) return { transient: true, reason: 'pre-banner-reset' };
   if (/^ssh: connect to host \S+ port \d+: Connection refused\.?$/imu.test(message)) return { transient: true, reason: 'connection-refused' };
