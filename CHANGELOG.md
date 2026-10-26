@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-10-26
+
 ### Added
 
 - Bootstrap the repository from the cc-rpi blueprint with the same layout, CI, CodeQL, dependency review, and rules as Sutura.
@@ -31,3 +33,10 @@
 - Repair runner bootstrap, registration, drain/restart recovery, provider-capacity backoff and GitHub polling headroom.
 - Correct retry-attempt attribution, skipped-job measurement and transient telemetry reads.
 - Repair Sandbox payload/install handling, image provenance, operation polling and hosted evidence parsing.
+
+### Compatibility
+
+- First release; no previously published version requires migration. APIs and configuration may change before 1.0.
+- Node 22.13 or newer is required. Local development uses Node 24 and pnpm 11.
+- Runner workloads must be trusted: jobs have root-equivalent guest privileges. The controller must remain online to enforce its own deadlines independently of guest reports.
+- Paid provider operations and pull-request publication require explicit permits. Measured results apply to the recorded workload and do not guarantee savings for other repositories.

@@ -1,7 +1,7 @@
 # E2E Pro Release Verification Playbook — Cross-Project Implementation Template
 
-> Cirujano adoption (2026-09-08): Wave A is adopted as the release gate. Waves B to H are
-> not adopted yet; the project has no release. Re-evaluate by risk before the first tag.
+> Cirujano adoption (2026-10-26): Wave A is the release gate for 0.1.0. Waves B to H
+> remain unadopted; bounded release review and smoke evidence are recorded per candidate.
 > The Project Adaptation Profile below carries verified values; no release-report command exists yet.
 
 > Template version: 1.0

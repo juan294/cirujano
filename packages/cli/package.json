@@ -1,6 +1,6 @@
 {
   "name": "cirujano",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "Verified CI cost surgery for GitHub Actions.",
   "type": "module",
   "license": "MIT",
