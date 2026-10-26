@@ -24,6 +24,7 @@
 
 ### Fixed
 
+- Avoid false controller-lock conflicts from concurrent database readers while preserving single-controller ownership.
 - Keep SSH diagnostic classification linear for repeated prefixes and simplify literal GitHub endpoint matching.
 - Serialize concurrent controller crash recovery with an OS-backed lock and preserve exclusion through release.
 - Enforce controller-owned runtime deadlines and accounting when guest evidence is missing or changed, including bounded recovery of expired pending starts.
