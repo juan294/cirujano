@@ -81,6 +81,14 @@ port=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); p
 printf '[127.0.0.1]:%s %s\n' "$port" "$(cut -d ' ' -f 1-2 "$host_key.pub")" >"$known_hosts"
 chmod 0600 "$known_hosts"
 
+# KVM when the host exposes it (GitHub's hosted Ubuntu runners do, behind a root-only
+# device node); software emulation is the fallback. QEMU's accel=kvm:tcg already degrades
+# on its own, so this only removes the permission barrier and records what actually ran.
+if [[ -e /dev/kvm && ! -w /dev/kvm ]] && sudo -n true 2>/dev/null; then
+  sudo -n chmod 0666 /dev/kvm 2>/dev/null || true
+fi
+if [[ -w /dev/kvm ]]; then accelerator=kvm; else accelerator=tcg; fi
+
 started_at=$(date +%s)
 started_at_iso=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 "$qemu_system" \
@@ -145,7 +153,17 @@ if ! printf '1\n%s\n%s\n60000\n60000\n0\n' "$grant_started_at_ms" "$grant_deadli
 fi
 
 # Phase 3: provisioning completes while the grant is live. Poll the status
-# instead of blocking on it so a guest poweroff is reported as such.
+# instead of blocking on it so a guest poweroff is reported as such. A missed
+# deadline names the phase timings and the guest's cloud-init progress, so the
+# slow step is measured instead of guessed.
+report_provisioning_timeout() {
+  printf 'provisioning did not complete within the armed window\n' >&2
+  printf 'accelerator: %s; ssh ready after: %ss; provisioning deadline missed %ss after arming (limit %ss)\n' \
+    "$accelerator" "$((ssh_ready_at - started_at))" "$(( $(date +%s) - armed_at ))" "$((armed_window_s - 120))" >&2
+  head -c 4096 "$cloud_init_output" >&2
+  printf 'guest cloud-init progress:\n' >&2
+  ssh "${ssh_args[@]}" runner@127.0.0.1 'cloud-init status --long 2>&1; sudo -n tail -n 40 /var/log/cloud-init-output.log 2>&1' 2>&1 | head -c 8192 >&2 || true
+}
 provisioning_deadline=$((armed_at + armed_window_s - 120))
 cloud_init_output="$temporary_directory/cloud-init.txt"
 while true; do
@@ -160,7 +178,7 @@ while true; do
     head -c 4096 "$cloud_init_output" >&2
     exit 1
   fi
-  (( $(date +%s) < provisioning_deadline )) || { printf 'provisioning did not complete within the armed window\n' >&2; head -c 4096 "$cloud_init_output" >&2; exit 1; }
+  (( $(date +%s) < provisioning_deadline )) || { report_provisioning_timeout; exit 1; }
   sleep 15
 done
 provisioned_at=$(date +%s)
@@ -193,7 +211,7 @@ grep -Eq 'Powering Off|reboot: Power down|poweroff.target' "$serial_log" || { pr
 printf 'image: %s\n' "$image_url"
 printf 'image sha256: %s\n' "$actual_image_sha256"
 printf 'qemu: %s\n' "$("$qemu_system" --version | head -1)"
-printf 'acceleration: kvm:tcg\n'
+printf 'acceleration: %s (requested kvm:tcg)\n' "$accelerator"
 printf 'cpu model: %s (%s vCPUs)\n' "$qemu_cpu_model" "$qemu_cpus"
 printf 'overlay cache: unsafe (ephemeral test disk)\n'
 printf 'host fingerprint: %s\n' "$(ssh-keygen -lf "$host_key.pub" -E sha256 | awk '{print $2}')"

@@ -42,4 +42,23 @@ describe('cloud-init boot harness', () => {
     expect(harness).toContain('(( armed_elapsed >= armed_window_s && armed_elapsed <= armed_window_s + 120 ))');
     expect(harness).toContain("grep -Eq 'Powering Off|reboot: Power down|poweroff.target' \"$serial_log\"");
   });
+
+  it('uses KVM when the host exposes it and reports the accelerator that actually ran', () => {
+    // GitHub's hosted Ubuntu runners expose /dev/kvm behind a root-only node; software emulation
+    // is the fallback, not the target. QEMU's accel=kvm:tcg already degrades on its own.
+    expect(harness).toContain('-machine accel=kvm:tcg');
+    expect(harness).toContain('if [[ -e /dev/kvm && ! -w /dev/kvm ]] && sudo -n true 2>/dev/null; then');
+    expect(harness).toContain('sudo -n chmod 0666 /dev/kvm');
+    expect(harness).toContain('if [[ -w /dev/kvm ]]; then accelerator=kvm; else accelerator=tcg; fi');
+    expect(harness).toContain("printf 'acceleration: %s (requested kvm:tcg)\\n' \"$accelerator\"");
+    expect(harness).not.toContain("printf 'acceleration: kvm:tcg\\n'");
+  });
+
+  it('names the slow phase when provisioning misses the armed deadline', () => {
+    expect(harness).toContain('report_provisioning_timeout() {');
+    expect(harness).toContain("|| { report_provisioning_timeout; exit 1; }");
+    expect(harness).toContain("provisioning deadline missed %ss after arming (limit %ss)");
+    expect(harness).toContain("'cloud-init status --long 2>&1; sudo -n tail -n 40 /var/log/cloud-init-output.log 2>&1'");
+    expect(harness.indexOf('report_provisioning_timeout() {')).toBeLessThan(harness.indexOf('provisioning_deadline=$((armed_at + armed_window_s - 120))'));
+  });
 });
