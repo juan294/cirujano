@@ -79,6 +79,14 @@ export function parseGithubJobs(payload: unknown): JobTiming[] {
   if (!Array.isArray(jobs)) {
     throw new BillingInputError('GitHub jobs payload field `jobs` must be an array.');
   }
+  // Paginated consumers may supply an aggregate without total_count. A raw
+  // API page that declares it must contain the complete declared inventory.
+  if ('total_count' in payload) {
+    const total = payload.total_count;
+    if (typeof total !== 'number' || !Number.isSafeInteger(total) || total < 0 || total !== jobs.length) {
+      throw new BillingInputError('GitHub jobs payload `total_count` must equal the complete jobs array length; collect all pages before estimating.');
+    }
+  }
   return jobs.map((entry, index) => {
     if (typeof entry !== 'object' || entry === null) {
       throw new BillingInputError(`GitHub job at index ${index} is not an object.`);

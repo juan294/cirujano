@@ -52,6 +52,19 @@ describe('runCli', () => {
     expect(io.err.join('')).toMatch(/no string `name`/);
   });
 
+  it('rejects a partial jobs page without printing a misleading total', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'cirujano-cli-partial-'));
+    const jobsPath = join(dir, 'jobs.json');
+    await writeFile(jobsPath, JSON.stringify({
+      total_count: 31,
+      jobs: [{ name: 'checks', started_at: '2026-10-26T00:00:00Z', completed_at: '2026-10-26T00:01:00Z' }],
+    }));
+    const io = captureIo();
+    expect(await runCli(['estimate', '--jobs', jobsPath, '--format', 'json'], io)).toBe(1);
+    expect(io.out).toEqual([]);
+    expect(io.err.join('')).toMatch(/total_count/);
+  });
+
   it('dispatches every runner action through the injected command service and preserves its exit code', async () => {
     const received: unknown[] = [];
     const service: RunnerCommandService = {

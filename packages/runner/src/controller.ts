@@ -103,11 +103,12 @@ export async function tickController(options: TickOptions): Promise<TickResult> 
     assertStateInvariants(prior);
     const authorizationProblem = pendingAuthorizationProblem(prior.pendingEffect, options.input);
     if (authorizationProblem !== null) {
-      // Expiry cannot authorize a queued register mutation. Once that effect's own
-      // deadline has passed, clear its intent under the matching recovery permit
-      // so observation-driven stop and delete can continue.
+      // Expiry cannot authorize another start or registration. A dispatched start
+      // is safe to retire only after a complete read confirms the owned VM running
+      // with no provider operation left in flight. Recovery can then stop it.
       if (authorizationProblem === 'pending authorization is expired'
-        && prior.pendingEffect.effect.type === 'begin-drain'
+        && (['begin-drain', 'register-runner', 'resume-admission'].includes(prior.pendingEffect.effect.type)
+          || canRetireRunningStart(prior.pendingEffect, options.input))
         && prior.pendingEffect.authorization.recoveryAllowed
         && options.input.permit?.recoveryAllowed === true
         && pendingEffectIsStale(prior.pendingEffect, options.input)) {
@@ -172,13 +173,16 @@ export async function tickController(options: TickOptions): Promise<TickResult> 
     const grantDeadlineMs = reconciledEffect.type === 'start-vm' || reconciledEffect.type === 'adopt-vm'
       ? reconciledEffect.deadlineMs
       : reconciledEffect.type === 'create-vm' || reconciledEffect.type === 'delete-vm' ? null : prior.lifecycle.grantDeadlineMs;
+    const grantStartedAtMs = reconciledEffect.type === 'start-vm'
+      ? prior.pendingEffect.createdAtMs
+      : reconciledEffect.type === 'create-vm' || reconciledEffect.type === 'delete-vm' ? null : prior.lifecycle.grantStartedAtMs ?? null;
     // A start that reconciled got its capacity, and a deleted VM has nothing left to start: either
     // ends any capacity wait.
     const lifecycleBase = reconciledEffect.type === 'start-vm' || reconciledEffect.type === 'delete-vm'
       ? withoutCapacityWait(prior.lifecycle) : prior.lifecycle;
     const reconciled: ControllerState = {
       ...prior,
-      lifecycle: { ...lifecycleBase, state: reconciledState, outstandingIntent: null, grantDeadlineMs },
+      lifecycle: { ...lifecycleBase, state: reconciledState, outstandingIntent: null, grantDeadlineMs, grantStartedAtMs },
       pendingEffect: null,
       readbacks: [...prior.readbacks, reconciliation.readback].slice(-100),
     };
@@ -230,7 +234,7 @@ async function recordAndExecuteDecision(
   const state: ControllerState = {
     schemaVersion: 1,
     identity: options.input.identity,
-    lifecycle: applyDecision(lifecycle, decision.effect, decision.state),
+    lifecycle: applyDecision(lifecycle, decision.effect, decision.state, options.input.nowMs),
     pendingEffect: pending,
     readbacks,
   };
@@ -307,7 +311,7 @@ function parseIdentity(input: unknown): PermitIdentity {
 function parseLifecycleJournal(input: unknown): LifecycleJournal {
   // grantDeadlineMs is optional on read so journals written before it existed still parse.
   // capacityWait is written only while a provider capacity wait is in force.
-  const root = strictObject(input, ['state', 'startCount', 'cumulativeRuntimeMs', 'cumulativeCostUsd', 'outstandingIntent', 'idleObservations'], 'controller state lifecycle', ['grantDeadlineMs', 'capacityWait']);
+  const root = strictObject(input, ['state', 'startCount', 'cumulativeRuntimeMs', 'cumulativeCostUsd', 'outstandingIntent', 'idleObservations'], 'controller state lifecycle', ['grantDeadlineMs', 'grantStartedAtMs', 'capacityWait']);
   const states: readonly LifecycleState[] = ['absent', 'stopped', 'starting', 'ready', 'busy', 'draining', 'stopping', 'blocked'];
   if (typeof root['state'] !== 'string' || !states.includes(root['state'] as LifecycleState)) throw new Error('controller state lifecycle state is invalid');
   if (!Number.isInteger(root['startCount']) || (root['startCount'] as number) < 0) throw new Error('controller state startCount is invalid');
@@ -317,6 +321,9 @@ function parseLifecycleJournal(input: unknown): LifecycleJournal {
   if (!Array.isArray(root['idleObservations'])) throw new Error('controller state idleObservations must be an array');
   const grantDeadlineMs = root['grantDeadlineMs'] ?? null;
   if (grantDeadlineMs !== null && (typeof grantDeadlineMs !== 'number' || !Number.isFinite(grantDeadlineMs))) throw new Error('controller state grantDeadlineMs is invalid');
+  const grantStartedAtMs = root['grantStartedAtMs'] ?? null;
+  if (grantStartedAtMs !== null && (typeof grantStartedAtMs !== 'number' || !Number.isFinite(grantStartedAtMs)
+    || grantDeadlineMs === null || grantStartedAtMs >= Number(grantDeadlineMs))) throw new Error('controller state grantStartedAtMs is invalid');
   const idleObservations = root['idleObservations'].map((entry) => {
     const observation = strictObject(entry, ['observedAtMs', 'complete', 'generation'], 'idle observation');
     if (typeof observation['observedAtMs'] !== 'number' || !Number.isFinite(observation['observedAtMs'])) throw new Error('idle observation time is invalid');
@@ -337,6 +344,7 @@ function parseLifecycleJournal(input: unknown): LifecycleJournal {
     outstandingIntent,
     idleObservations: idleObservations.slice(-100),
     grantDeadlineMs: grantDeadlineMs as number | null,
+    ...(grantStartedAtMs === null ? {} : { grantStartedAtMs: grantStartedAtMs as number }),
     ...(root['capacityWait'] === undefined ? {} : { capacityWait: parseCapacityWait(root['capacityWait']) }),
   };
 }
@@ -448,12 +456,14 @@ function finiteNumber(value: unknown, name: string): void {
   if (typeof value !== 'number' || !Number.isFinite(value)) throw new Error(`${name} is invalid`);
 }
 
-function applyDecision(journal: LifecycleJournal, effect: LifecycleEffect, state: LifecycleState): LifecycleJournal {
+function applyDecision(journal: LifecycleJournal, effect: LifecycleEffect, state: LifecycleState, nowMs: number): LifecycleJournal {
   if (effect.type === 'create-vm' || effect.type === 'start-vm') {
     return {
       ...journal,
       state,
       startCount: effect.type === 'start-vm' ? effect.generation : journal.startCount,
+      grantDeadlineMs: effect.type === 'start-vm' ? effect.deadlineMs : null,
+      grantStartedAtMs: effect.type === 'start-vm' ? nowMs : null,
       outstandingIntent: { type: effect.type, generation: effect.generation, status: 'pending', deadlineMs: effect.deadlineMs },
     };
   }
@@ -588,7 +598,7 @@ function authorizationFor(effect: Exclude<LifecycleEffect, { type: 'none' }>, in
   if (permit === null) throw new Error('mutation decision has no authorizing permit');
   const operation = requiredPermitOperation(effect);
   if (!permit.operations.includes(operation)) throw new Error(`permit does not authorize ${operation}`);
-  const effectDeadlineMs = explicitEffectDeadline(effect) ?? input.guest.grant?.deadlineMs ?? null;
+  const effectDeadlineMs = explicitEffectDeadline(effect) ?? input.journal.grantDeadlineMs ?? input.guest.grant?.deadlineMs ?? null;
   return {
     permitId: permit.permitId,
     configHash: permit.configHash,
@@ -645,6 +655,13 @@ function refusedStartLeftOwnedStoppedVm(pending: PendingEffect, input: Lifecycle
   return pending.effect.type === 'start-vm'
     && input.provider.complete && input.provider.ownership === 'owned' && input.provider.ownedMatches === 1
     && input.provider.vmStatus === 'stopped' && input.provider.outstandingOperation === null;
+}
+
+function canRetireRunningStart(pending: PendingEffect, input: LifecycleInput): boolean {
+  return pending.effect.type === 'start-vm' && pending.stage === 'emitting'
+    && pending.effect.generation === input.journal.startCount
+    && input.provider.complete && input.provider.ownership === 'owned' && input.provider.ownedMatches === 1
+    && input.provider.vmStatus === 'running' && input.provider.outstandingOperation === null;
 }
 
 function canRetireStoppedStart(pending: PendingEffect, input: LifecycleInput): boolean {
@@ -718,6 +735,7 @@ async function waitForCapacity(
     lifecycle: {
       ...state.lifecycle, startCount,
       state: refusedEffect === 'create-vm' ? 'absent' : 'stopped', outstandingIntent: null, capacityWait,
+      grantDeadlineMs: null, grantStartedAtMs: null,
     },
     pendingEffect: null,
   };

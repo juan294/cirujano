@@ -310,13 +310,43 @@ describe('drain safety (R03)', () => {
 });
 
 describe('deadline and admission budget (R04)', () => {
+  it.each(['future', 'unavailable'] as const)('enforces the journal deadline with %s guest evidence (SE-H1)', (kind) => {
+    const current = input({
+      nowMs: NOW + 5_400_000,
+      provider: { complete: true, vmStatus: 'running', ownership: 'owned', ownedMatches: 1, outstandingOperation: null },
+      queue: { complete: false, eligibleQueuedJobs: 0, ownedBusy: true, observedAtMs: NOW },
+      permit: { ...permit, expiresAtMs: NOW + 1 },
+      journal: { ...input().journal, state: 'busy', startCount: 1, grantDeadlineMs: NOW + 5_400_000 },
+      guest: { complete: kind === 'future', status: kind === 'future' ? 'busy' : 'unknown', admissionEnabled: null, runnerActive: null, workerActive: null,
+        grant: kind === 'future' ? { generation: 1, startedAtMs: NOW + 5_400_000, deadlineMs: NOW + 9_000_000 } : null },
+    });
+    expect(decideLifecycle(current)).toMatchObject({ state: 'stopping', effect: { type: 'stop-vm', emergency: true } });
+    for (const changedPermit of [null, { ...permit, recoveryAllowed: false }, { ...permit, operations: ['register'] as const }]) {
+      expect(decideLifecycle({ ...current, permit: changedPermit }).effect.type).toBe('none');
+    }
+    for (const ownership of ['foreign', 'ambiguous', 'unknown'] as const) {
+      expect(decideLifecycle({ ...current, provider: { ...current.provider, ownership } }).effect.type).toBe('none');
+    }
+  });
+
+  it('does not use a stale guest deadline to interrupt the current generation (SE-H1)', () => {
+    const current = input({
+      provider: { complete: true, vmStatus: 'running', ownership: 'owned', ownedMatches: 1, outstandingOperation: null },
+      queue: { complete: true, eligibleQueuedJobs: 0, ownedBusy: true, observedAtMs: NOW },
+      journal: { ...input().journal, state: 'busy', startCount: 2, grantDeadlineMs: NOW + 5_400_000 },
+      guest: { complete: true, status: 'busy', admissionEnabled: true, runnerActive: true, workerActive: true,
+        grant: { generation: 1, startedAtMs: NOW - 5_400_001, deadlineMs: NOW - 1 } },
+    });
+    expect(decideLifecycle(current).effect.type).toBe('none');
+  });
+
   it('emits an emergency stop at the immutable lifetime deadline', () => {
     const result = decideLifecycle(input({
       nowMs: NOW + 5_400_000,
       provider: { complete: false, vmStatus: 'unknown', ownership: 'owned', ownedMatches: 1, outstandingOperation: null },
       permit: { ...permit, expiresAtMs: NOW + 1 },
       guest: { complete: false, status: 'unknown', admissionEnabled: null, runnerActive: null, workerActive: null, grant: { generation: 1, startedAtMs: NOW, deadlineMs: NOW + 5_400_000 } },
-      journal: { ...input().journal, state: 'busy', startCount: 1 },
+      journal: { ...input().journal, state: 'busy', startCount: 1, grantDeadlineMs: NOW + 5_400_000 },
     }));
     expect(result).toMatchObject({ state: 'stopping', effect: { type: 'stop-vm', emergency: true } });
   });
@@ -327,7 +357,7 @@ describe('deadline and admission budget (R04)', () => {
       permit: { ...permit, schemaVersion: 2 as never },
       provider: { complete: false, vmStatus: 'unknown', ownership: 'owned', ownedMatches: 1, outstandingOperation: null },
       guest: { complete: false, status: 'unknown', admissionEnabled: null, runnerActive: null, workerActive: null, grant: { generation: 1, startedAtMs: NOW, deadlineMs: NOW + 5_400_000 } },
-      journal: { ...input().journal, state: 'busy', startCount: 1 },
+      journal: { ...input().journal, state: 'busy', startCount: 1, grantDeadlineMs: NOW + 5_400_000 },
     }));
     expect(result.effect.type).toBe('none');
     expect(result.state).toBe('blocked');
@@ -338,7 +368,7 @@ describe('deadline and admission budget (R04)', () => {
       nowMs: NOW + 5_400_000,
       provider: { complete: false, vmStatus: 'unknown' as const, ownership: 'owned' as const, ownedMatches: 1, outstandingOperation: null },
       guest: { complete: false, status: 'unknown' as const, admissionEnabled: null, runnerActive: null, workerActive: null, grant: { generation: 1, startedAtMs: NOW, deadlineMs: NOW + 5_400_000 } },
-      journal: { ...input().journal, state: 'busy' as const, startCount: 1 },
+      journal: { ...input().journal, state: 'busy' as const, startCount: 1, grantDeadlineMs: NOW + 5_400_000 },
     };
     expect(decideLifecycle(input({ ...emergency, permit: { ...permit, issuedAtMs: NOW + 5_400_001, expiresAtMs: NOW + 9_000_000 } })).effect.type).toBe('none');
     expect(decideLifecycle(input({ ...emergency, permit: { ...permit, expiresAtMs: NOW + 1 } })).effect).toEqual({ type: 'stop-vm', emergency: true });

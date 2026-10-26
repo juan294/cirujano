@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
-import { access, chmod, mkdir, open, readFile, rename, unlink } from 'node:fs/promises';
+import { chmod, mkdir, open, readFile, rename, unlink } from 'node:fs/promises';
 import { createConnection, createServer, type Server } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -98,24 +98,44 @@ export async function acquireControllerLock(stateDirectory: string): Promise<Con
     ? localSocket
     : join(tmpdir(), `cirujano-${createHash('sha256').update(directory).digest('hex').slice(0, 24)}.sock`);
 
+  // SQLite owns the OS file lock until close or process death. Keep this file:
+  // unlinking it would let another process lock a different inode at the same path.
+  // Import only on acquisition so ordinary CLI help/reporting never loads SQLite.
+  const { DatabaseSync } = await import('node:sqlite');
+  const databasePath = join(directory, '.controller-lock.sqlite');
+  const database = new DatabaseSync(databasePath);
+  try {
+    await chmod(databasePath, 0o600);
+    database.exec('PRAGMA busy_timeout = 0; BEGIN EXCLUSIVE');
+  } catch (error) {
+    database.close();
+    if (typeof error === 'object' && error !== null && 'errcode' in error
+      && (error.errcode === 5 || error.errcode === 6)) {
+      throw new ControllerLockError('another controller holds this state lock');
+    }
+    throw error;
+  }
+
+  // Retain the socket to refuse overlap with already-running older controllers.
+  // The file lock serializes stale-socket reclamation for current controllers.
   let server = createServer();
   try {
-    await listen(server, socketPath);
-  } catch (error) {
-    if (!isAddressInUse(error)) throw error;
-    if (await socketIsHeld(socketPath)) throw new ControllerLockError('another controller holds this state lock');
-    await unlink(socketPath).catch((unlinkError: unknown) => {
-      if (!isMissing(unlinkError)) throw unlinkError;
-    });
-    server = createServer();
     try {
       await listen(server, socketPath);
-    } catch (retryError) {
-      if (isAddressInUse(retryError)) throw new ControllerLockError('another controller acquired this state lock');
-      throw retryError;
+    } catch (error) {
+      if (!isAddressInUse(error)) throw error;
+      if (await socketIsHeld(socketPath)) throw new ControllerLockError('another controller holds this state lock');
+      await unlink(socketPath).catch((unlinkError: unknown) => {
+        if (!isMissing(unlinkError)) throw unlinkError;
+      });
+      server = createServer();
+      await listen(server, socketPath);
     }
+    await chmod(socketPath, 0o600);
+  } catch (error) {
+    try { if (server.listening) await closeServer(server); } finally { database.close(); }
+    throw error;
   }
-  await chmod(socketPath, 0o600);
   let released = false;
   const capability: ControllerLock = {
     path: socketPath,
@@ -123,12 +143,17 @@ export async function acquireControllerLock(stateDirectory: string): Promise<Con
       if (released) return;
       released = true;
       heldLocks.delete(capability);
-      await new Promise<void>((resolveClose, reject) => server.close((error) => error ? reject(error) : resolveClose()));
-      await unlink(socketPath).catch((error: unknown) => { if (!isMissing(error)) throw error; });
+      // server.close removes its socket. Never unlink again after another owner
+      // could bind; hold the file lock until socket cleanup has finished.
+      try { await closeServer(server); } finally { database.close(); }
     },
   };
   heldLocks.add(capability);
   return capability;
+}
+
+function closeServer(server: Server): Promise<void> {
+  return new Promise((resolveClose, reject) => server.close((error) => error ? reject(error) : resolveClose()));
 }
 
 function listen(server: Server, path: string): Promise<void> {
@@ -142,12 +167,14 @@ function listen(server: Server, path: string): Promise<void> {
 }
 
 async function socketIsHeld(path: string): Promise<boolean> {
-  try { await access(path); } catch { return false; }
   return new Promise((resolveHeld) => {
     const socket = createConnection(path);
-    const timer = setTimeout(() => { socket.destroy(); resolveHeld(false); }, 250);
+    const timer = setTimeout(() => { socket.destroy(); resolveHeld(true); }, 250);
     socket.once('connect', () => { clearTimeout(timer); socket.destroy(); resolveHeld(true); });
-    socket.once('error', () => { clearTimeout(timer); resolveHeld(false); });
+    socket.once('error', (error: NodeJS.ErrnoException) => {
+      clearTimeout(timer);
+      resolveHeld(error.code !== 'ECONNREFUSED' && error.code !== 'ENOENT');
+    });
   });
 }
 

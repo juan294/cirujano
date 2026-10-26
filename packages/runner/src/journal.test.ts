@@ -1,10 +1,11 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { mkdtemp, readFile, readdir, stat } from 'node:fs/promises';
+import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { CREDENTIAL_SHAPE_PATTERN, appendRedactedEvent, readJournal, redactCredentialShapes, writeJournalAtomic } from './journal.js';
+import { CREDENTIAL_SHAPE_PATTERN, acquireControllerLock, appendRedactedEvent, readJournal, redactCredentialShapes, writeJournalAtomic } from './journal.js';
 
 const children: ChildProcessWithoutNullStreams[] = [];
 afterEach(() => children.splice(0).forEach((child) => child.kill('SIGKILL')));
@@ -67,17 +68,106 @@ describe('exclusive controller lock (R10)', () => {
     restarted.kill('SIGTERM');
     await waitForExit(restarted);
   });
+
+  it('admits exactly one simultaneous crash-recovery contender and preserves exclusion through release', async () => {
+    const directory = join(await mkdtemp(join(tmpdir(), 'cirujano-lock-race-')), 'long-state-path-'.repeat(8));
+    for (let round = 0; round < 12; round += 1) {
+      const crashed = startLockProcess(directory, 23);
+      children.push(crashed);
+      await waitForText(crashed, 'locked');
+      crashed.kill('SIGKILL');
+      await waitForExit(crashed);
+
+      const contenders = Array.from({ length: 4 }, () => startLockProcess(directory, 23, true));
+      children.push(...contenders);
+      await Promise.all(contenders.map((child) => waitForText(child, 'ready')));
+      const outcomes = contenders.map((child) => waitForAcquisition(child));
+      for (const child of contenders) child.stdin.write('acquire\n');
+      const acquired = await Promise.all(outcomes);
+      expect(acquired.filter(Boolean), `crash-recovery round ${round}`).toHaveLength(1);
+
+      const holder = contenders[acquired.indexOf(true)]!;
+      const rejected = startLockProcess(directory, 23);
+      children.push(rejected);
+      expect(await waitForExit(rejected)).toBe(23);
+      holder.kill('SIGTERM');
+      expect(await waitForExit(holder)).toBe(0);
+      const next = startLockProcess(directory, 23);
+      children.push(next);
+      await waitForText(next, 'locked');
+      const stillRejected = startLockProcess(directory, 23);
+      children.push(stillRejected);
+      expect(await waitForExit(stillRejected)).toBe(23);
+      next.kill('SIGTERM');
+      expect(await waitForExit(next)).toBe(0);
+    }
+  }, 30_000);
+
+  it('keeps a live legacy socket holder exclusive and releases a failed acquisition', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'cirujano-legacy-lock-'));
+    const legacy = createServer();
+    await new Promise<void>((resolve) => legacy.listen(join(directory, '.controller.sock'), resolve));
+    try {
+      await expect(acquireControllerLock(directory)).rejects.toThrow('another controller');
+    } finally {
+      await new Promise<void>((resolve, reject) => legacy.close((error) => error ? reject(error) : resolve()));
+    }
+    const lock = await acquireControllerLock(directory);
+    await lock.release();
+  });
+
+  it('does not release a process-held lock when a same-process acquisition fails', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'cirujano-local-lock-'));
+    const lock = await acquireControllerLock(directory);
+    try {
+      await expect(acquireControllerLock(directory)).rejects.toThrow('another controller');
+      const contender = startLockProcess(directory, 23);
+      children.push(contender);
+      expect(await waitForExit(contender)).toBe(23);
+    } finally {
+      await lock.release();
+    }
+    await lock.release();
+    const next = startLockProcess(directory, 23);
+    children.push(next);
+    await waitForText(next, 'locked');
+    next.kill('SIGTERM');
+    expect(await waitForExit(next)).toBe(0);
+  });
 });
 
-function startLockProcess(directory: string, conflictExit: number): ChildProcessWithoutNullStreams {
+function waitForAcquisition(child: ChildProcessWithoutNullStreams): Promise<boolean> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('child acquisition timeout')), 3_000);
+    child.stdout.on('data', (chunk: Buffer) => {
+      const output = chunk.toString();
+      if (output.includes('locked') || output.includes('conflict')) {
+        clearTimeout(timer);
+        resolve(output.includes('locked'));
+      }
+    });
+    child.once('error', (error) => { clearTimeout(timer); reject(error); });
+  });
+}
+
+function startLockProcess(directory: string, conflictExit: number, barrier = false): ChildProcessWithoutNullStreams {
   const source = `
     import { acquireControllerLock } from './src/journal.ts';
-    try {
-      const lock = await acquireControllerLock(${JSON.stringify(directory)});
-      process.stdout.write('locked\\n');
-      process.on('SIGTERM', async () => { await lock.release(); process.exit(0); });
-      setInterval(() => {}, 1000);
-    } catch { process.exit(${conflictExit}); }
+    async function acquire() {
+      try {
+        const lock = await acquireControllerLock(${JSON.stringify(directory)});
+        process.on('SIGTERM', async () => { await lock.release(); process.exit(0); });
+        process.stdout.write('locked\\n');
+        setInterval(() => {}, 1000);
+      } catch {
+        process.stdout.write('conflict\\n');
+        process.exit(${conflictExit});
+      }
+    }
+    if (${String(barrier)}) {
+      process.stdin.once('data', acquire);
+      process.stdout.write('ready\\n');
+    } else await acquire();
   `;
   return spawn(process.execPath, ['--experimental-strip-types', '--input-type=module', '-e', source], {
     cwd: process.cwd(), stdio: ['pipe', 'pipe', 'pipe'],

@@ -82,8 +82,17 @@ export function decideLifecycle(input: LifecycleInput): LifecycleDecision {
   if (!validSnapshotEnums(input)) return blocked('provider or guest snapshot contains an unknown value');
   if (!Number.isInteger(input.provider.ownedMatches) || input.provider.ownedMatches < 0) return blocked('owned resource match count is invalid');
 
-  const grant = input.guest.grant;
-  if (grant !== null && input.nowMs >= grant.deadlineMs) {
+  const deadline = input.journal.grantDeadlineMs;
+  const grant = input.guest.grant === null ? null : {
+    ...input.guest.grant,
+    deadlineMs: deadline === null ? input.guest.grant.deadlineMs : Math.min(deadline, input.guest.grant.deadlineMs),
+  };
+  // Guest status can be forged or unavailable. The local generation deadline stays authoritative.
+  // A stopped/absent VM follows normal cleanup; a replacement start owns its new intent deadline.
+  if (deadline !== null && Number.isFinite(deadline) && input.nowMs >= deadline
+    && input.journal.startCount > 0 && input.journal.outstandingIntent === null
+    && input.provider.ownership === 'owned' && input.provider.ownedMatches === 1
+    && input.provider.vmStatus !== 'stopped' && input.provider.vmStatus !== 'absent') {
     const recovery = validateRecoveryPermit(input.permit, input.identity, input.nowMs);
     return recovery.valid && permits(input.permit, 'stop')
       ? { state: 'stopping', effect: { type: 'stop-vm', emergency: true }, reason: 'immutable start lifetime reached' }

@@ -41,7 +41,28 @@ export async function buildStoreReport(input: {
   if (input.registry !== undefined && input.registry.owner !== snapshots[0]!.owner) {
     throw new Error(`registry owner ${input.registry.owner} does not match telemetry owner ${snapshots[0]!.owner}`);
   }
+  const windowEndMs = input.registry === undefined
+    ? Number.POSITIVE_INFINITY
+    : Date.parse(`${input.registry.measurementWindow.through}T23:59:59.999Z`);
+  const throughMs = snapshots.reduce((latest, snapshot) => Math.max(latest, Math.min(windowEndMs, Date.parse(snapshot.collectedAt))), sinceMs);
+  const intervals = files.filter(({ name }) => !name.startsWith('backfill-'))
+    .map(({ snapshot }) => ({ start: Date.parse(snapshot.windowStart), end: Date.parse(snapshot.collectedAt) }))
+    .sort((left, right) => left.start - right.start);
+  let coveredThrough = sinceMs;
+  for (const interval of intervals) {
+    if (coveredThrough >= throughMs) break;
+    if (interval.end <= coveredThrough) continue;
+    if (interval.start > coveredThrough) {
+      throw coverageGap(coveredThrough, Math.min(interval.start, throughMs));
+    }
+    coveredThrough = Math.max(coveredThrough, interval.end);
+  }
+  if (coveredThrough < throughMs) throw coverageGap(coveredThrough, throughMs);
   return aggregateTelemetry(snapshots, sinceMs, input.registry, input.evidenceById);
+}
+
+function coverageGap(start: number, end: number): Error {
+  return new Error(`telemetry coverage gap from ${new Date(start).toISOString()} to ${new Date(end).toISOString()}`);
 }
 
 export async function readLatestSnapshot(directory: string, date: string): Promise<TelemetrySnapshot | undefined> {

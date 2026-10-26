@@ -18,7 +18,7 @@ export const defaultGitHubPageRunner: GitHubPageRunner = async (command, args, o
 };
 
 export function githubCliPath(environment: NodeJS.ProcessEnv): string {
-  return environment['CIRUJANO_GH_PATH'] ?? '/opt/homebrew/bin/gh';
+  return environment['CIRUJANO_GH_PATH'] ?? 'gh';
 }
 
 /**

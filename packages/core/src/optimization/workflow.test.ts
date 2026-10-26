@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { inspectWorkflow, protectedWorkflowDigest } from './workflow.js';
+import { inspectWorkflow, parseWorkflowSource, protectedWorkflowDigest, record } from './workflow.js';
 import { sha256 } from './canonical.js';
 import { provenance } from './optimization.test-helper.js';
 import type { ActionReceipt } from './contracts.js';
@@ -40,7 +40,18 @@ describe('reviewed workflow refusals',()=>{
   const source=readFileSync(new URL('eligible.yml',directory),'utf8');
   it('returns no-change for both real current Cirujano CI jobs',()=>{
     const cached=readFileSync(new URL('../../../../.github/workflows/ci.yml',import.meta.url),'utf8');
-    for(const jobId of ['checks','ubuntu_24_04']) expect(inspectWorkflow(cached,{provenance:{...provenance,jobId,workflowHash:sha256(cached)},receipt,rootLockfile:true,timedBaseline:false,requiredChecks:[],verificationProfilePresent:false}).reason).toBe('already-cached');
+    const jobs = record(parseWorkflowSource(cached).jobs);
+    for (const jobId of ['checks', 'ubuntu_24_04']) {
+      const steps = record(jobs[jobId]).steps;
+      expect(Array.isArray(steps)).toBe(true);
+      const setupIndexes = (steps as unknown[]).flatMap((step, index) => {
+        const uses = record(step).uses;
+        return typeof uses === 'string' && uses.startsWith('actions/setup-node@') ? [index] : [];
+      });
+      expect(setupIndexes).toHaveLength(1);
+      expect(inspectWorkflow(cached, { provenance: { ...provenance, jobId, stepIndex: setupIndexes[0]!, workflowHash: sha256(cached) }, receipt, rootLockfile: true, timedBaseline: false, requiredChecks: [], verificationProfilePresent: false }))
+        .toMatchObject({ status: 'no-change', reason: 'already-cached', operations: [] });
+    }
   });
   it('recognizes existing official setup-node caching before mutable runtime eligibility',()=>{
     const cached=source.replace(receipt.commitSha,'v7').replace('22.20.0','22').replace('node-version: 22','node-version: 22\n          cache: pnpm');

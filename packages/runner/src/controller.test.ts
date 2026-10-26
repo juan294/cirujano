@@ -91,6 +91,7 @@ describe('tickController intent recovery (R10/R12)', () => {
     const state = await readJournal<{ identity: unknown; lifecycle: { startCount: number }; readbacks: unknown[] }>(journalPath);
     expect(state.identity).toEqual(startInput().identity);
     expect(state.lifecycle.startCount).toBe(1);
+    expect(state.lifecycle).toMatchObject({ grantStartedAtMs: NOW, grantDeadlineMs: NOW + 5_400_000 });
     expect(state.readbacks).toEqual([{ vmStatus: 'starting' }]);
   });
 
@@ -515,6 +516,39 @@ function waitForChildText(child: ReturnType<typeof spawn>, expected: string): Pr
 }
 
 describe('stale pending effect recovery (D-11)', () => {
+  it.each(['running', 'stopped', 'in-flight', 'foreign', 'incomplete', 'revoked', 'new-generation'] as const)('recovers an expired dispatched start only with owned terminal running evidence: %s (SE-H1)', async (scenario) => {
+    const directory = await mkdtemp(join(tmpdir(), 'cirujano-start-expiry-'));
+    const journalPath = join(directory, 'state.json');
+    const eventPath = join(directory, 'events.jsonl');
+    const lock = await acquireControllerLock(directory);
+    try {
+      await tickController({ lock, journalPath, eventPath, input: startInput(),
+        executeEffect: async () => ({ operationId: 'started' }), reconcileEffect: async () => ({ resolved: false }) });
+      const seeded = parseControllerState(await readJournal(journalPath));
+      const expired = startInput();
+      expired.nowMs = NOW + 7_200_001;
+      expired.journal = seeded.lifecycle;
+      if (scenario === 'new-generation') expired.journal = { ...expired.journal, startCount: seeded.lifecycle.startCount + 1 };
+      expired.provider = { complete: scenario !== 'incomplete', ownership: scenario === 'foreign' ? 'foreign' : 'owned', ownedMatches: 1,
+        vmStatus: scenario === 'stopped' ? 'stopped' : 'running', outstandingOperation: scenario === 'in-flight' ? 'started' : null };
+      if (scenario === 'revoked') expired.permit = { ...expired.permit!, recoveryAllowed: false };
+      const writes: string[] = [];
+      const options = { lock, journalPath, eventPath, input: expired,
+        executeEffect: async (effect: { type: string }) => { writes.push(effect.type); return { resolved: true }; },
+        reconcileEffect: async () => ({ resolved: false }) };
+      const result = await tickController(options);
+      expect(result.status).toBe(scenario === 'running' ? 'abandoned' : 'blocked');
+      expect(writes).toEqual([]);
+      if (scenario === 'running') {
+        expired.journal = parseControllerState(await readJournal(journalPath)).lifecycle;
+        expect((await tickController(options)).decision?.effect).toMatchObject({ type: 'stop-vm', emergency: true });
+        expect(writes).toEqual(['stop-vm']);
+      }
+    } finally {
+      await lock.release();
+    }
+  });
+
   it('abandons a pending effect whose deadline passed so the lifecycle can still stop the VM', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'cirujano-controller-stale-'));
     const journalPath = join(directory, 'state.json');
@@ -551,19 +585,19 @@ describe('stale pending effect recovery (D-11)', () => {
     expect(await readFile(eventPath, 'utf8')).toContain('effect-abandoned');
   });
 
-  it('clears a stale drain after permit expiry only with recovery authority', async () => {
+  it.each([['drain', drainInput], ['registration', registrationInput]] as const)('clears a stale %s after permit expiry only with recovery authority (SE-H1)', async (_kind, makeInput) => {
     const directory = await mkdtemp(join(tmpdir(), 'cirujano-controller-permit-expiry-'));
     const journalPath = join(directory, 'state.json');
     const eventPath = join(directory, 'events.jsonl');
     const seedLock = await acquireControllerLock(directory);
     await expect(tickController({
-      lock: seedLock, journalPath, eventPath, input: drainInput(),
+      lock: seedLock, journalPath, eventPath, input: makeInput(),
       executeEffect: async () => { throw new Error('ambiguous provider'); },
       reconcileEffect: async () => ({ resolved: false }),
     })).rejects.toThrow('ambiguous provider');
     await seedLock.release();
 
-    const expired = drainInput();
+    const expired = makeInput();
     expired.nowMs = NOW + 7_200_001;
     expired.queue.observedAtMs = expired.nowMs;
     const expiredLock = await acquireControllerLock(directory);

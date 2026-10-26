@@ -185,8 +185,10 @@ export interface LifecycleJournal {
   cumulativeCostUsd: number;
   outstandingIntent: MutationIntent | null;
   idleObservations: readonly IdleObservation[];
-  /** Immutable deadline of the current generation's start grant, persisted when the start reconciles. */
+  /** Immutable deadline of the current generation's start grant, persisted before start IO. */
   grantDeadlineMs: number | null;
+  /** Controller start-intent time; absent on legacy journals, never derived from guest status. */
+  grantStartedAtMs?: number | null;
   /** Present only while a provider capacity refusal holds queued work back. */
   capacityWait?: CapacityWait;
 }

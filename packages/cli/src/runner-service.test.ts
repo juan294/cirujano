@@ -18,12 +18,48 @@ beforeAll(async () => {
 });
 
 describe('production runner command composition (R11/R12)', () => {
+  it('accounts from controller timestamps despite forged or missing guest time (SE-H1)', () => {
+    const observation = {
+      nowMs: 10_000,
+      lifecycle: { state: 'busy', startCount: 2, cumulativeRuntimeMs: 500, cumulativeCostUsd: 0, outstandingIntent: null, idleObservations: [], grantDeadlineMs: 20_000, grantStartedAtMs: 8_000 },
+      providerPresent: true, providerRunning: true, lifetimeMs: 12_000, queueComplete: false, ownedBusy: true,
+      guest: { complete: false, status: 'unknown', generation: null, startedAtMs: null, networkEgressBytes: null },
+      accounting: { diskStartedAtMs: 9_000, diskRetainedMs: 0, runtimeBaselineMs: 500, generation: 1, networkEgressBytes: 0 },
+      rates: validRunnerConfig.rates, diskSizeGiB: 80,
+    } as const;
+    const first = advanceObservedLifecycle(observation);
+    expect(first.lifecycle.cumulativeRuntimeMs).toBe(2_500);
+    expect(first.accounting.generation).toBe(2);
+    const forged = advanceObservedLifecycle({ ...observation, nowMs: 11_000, lifecycle: first.lifecycle, accounting: first.accounting,
+      guest: { ...observation.guest, generation: 99 } });
+    expect(forged.lifecycle.cumulativeRuntimeMs).toBe(3_500);
+    expect(forged.accounting.generation).toBe(2);
+    const repeated = advanceObservedLifecycle({ ...observation, nowMs: 11_000, lifecycle: forged.lifecycle, accounting: forged.accounting });
+    expect(repeated.lifecycle.cumulativeRuntimeMs).toBe(3_500);
+    const stopped = advanceObservedLifecycle({ ...observation, nowMs: 12_000, providerRunning: false, lifecycle: repeated.lifecycle, accounting: repeated.accounting });
+    expect(stopped.lifecycle.cumulativeRuntimeMs).toBe(3_500);
+  });
+
+  it('uses a conservative lifetime bound for legacy journals without inventing start evidence (SE-H1)', () => {
+    const legacy = {
+      nowMs: 10_000,
+      lifecycle: { state: 'busy', startCount: 1, cumulativeRuntimeMs: 0, cumulativeCostUsd: 0, outstandingIntent: null, idleObservations: [], grantDeadlineMs: 20_000 },
+      providerPresent: true, providerRunning: true, lifetimeMs: 15_000, queueComplete: false, ownedBusy: true,
+      guest: { complete: false, status: 'unknown', generation: null, startedAtMs: null, networkEgressBytes: null },
+      accounting: { diskStartedAtMs: 9_000, diskRetainedMs: 0, runtimeBaselineMs: 0, generation: null, networkEgressBytes: 0 },
+      rates: validRunnerConfig.rates, diskSizeGiB: 80,
+    } as const;
+    const result = advanceObservedLifecycle(legacy);
+    expect(result.lifecycle.cumulativeRuntimeMs).toBe(5_000);
+    expect(result.lifecycle).not.toHaveProperty('grantStartedAtMs');
+  });
+
   it('derives generation-bound idle evidence and monotonic full-rate accounting from readbacks', () => {
     const nowMs = 10_000;
     const observation = {
       nowMs,
-      lifecycle: { state: 'draining', startCount: 2, cumulativeRuntimeMs: 500, cumulativeCostUsd: 0.01, outstandingIntent: null, idleObservations: [], grantDeadlineMs: null },
-      providerPresent: true,
+      lifecycle: { state: 'draining', startCount: 2, cumulativeRuntimeMs: 500, cumulativeCostUsd: 0.01, outstandingIntent: null, idleObservations: [], grantDeadlineMs: 20_000, grantStartedAtMs: 8_000 },
+      providerPresent: true, providerRunning: true, lifetimeMs: 12_000,
       queueComplete: true,
       ownedBusy: false,
       guest: { complete: true, status: 'drained', generation: 2, startedAtMs: 8_000, networkEgressBytes: 1_073_741_824 },
@@ -48,9 +84,9 @@ describe('production runner command composition (R11/R12)', () => {
     const full = Array.from({ length: 100 }, (_, index) => ({ observedAtMs: index + 1, complete: true, generation: 2 }));
     const result = advanceObservedLifecycle({
       nowMs: 10_000,
-      lifecycle: { state: 'draining', startCount: 2, cumulativeRuntimeMs: 0, cumulativeCostUsd: 0, outstandingIntent: null, idleObservations: full, grantDeadlineMs: null },
-      providerPresent: true, queueComplete: true, ownedBusy: false,
-      guest: { complete: true, status: 'drained', generation: 2, startedAtMs: 8_000, networkEgressBytes: 0 },
+      lifecycle: { state: 'draining', startCount: 2, cumulativeRuntimeMs: 0, cumulativeCostUsd: 0, outstandingIntent: null, idleObservations: full, grantDeadlineMs: 20_000, grantStartedAtMs: 8_000 },
+      providerPresent: true, providerRunning: true, lifetimeMs: 12_000, queueComplete: true, ownedBusy: false,
+      guest: { complete: true, status: 'drained', generation: 2, networkEgressBytes: 0 },
       accounting: { diskStartedAtMs: 1_000, diskRetainedMs: 0, runtimeBaselineMs: 0, generation: 2, networkEgressBytes: 0 },
       rates: validRunnerConfig.rates, diskSizeGiB: 80,
     });
@@ -60,9 +96,9 @@ describe('production runner command composition (R11/R12)', () => {
   });
   it('marks a generation leaving idle once, so a resumed drain restarts its grace', () => {
     const base = {
-      lifecycle: { state: 'draining', startCount: 2, cumulativeRuntimeMs: 0, cumulativeCostUsd: 0, outstandingIntent: null, grantDeadlineMs: null,
+      lifecycle: { state: 'draining', startCount: 2, cumulativeRuntimeMs: 0, cumulativeCostUsd: 0, outstandingIntent: null, grantDeadlineMs: 20_000, grantStartedAtMs: 8_000,
         idleObservations: [{ observedAtMs: 1_000, complete: true, generation: 2 }] },
-      providerPresent: true, queueComplete: true,
+      providerPresent: true, providerRunning: true, lifetimeMs: 12_000, queueComplete: true,
       accounting: { diskStartedAtMs: 1_000, diskRetainedMs: 0, runtimeBaselineMs: 0, generation: 2, networkEgressBytes: 0 },
       rates: validRunnerConfig.rates, diskSizeGiB: 80,
     } as const;

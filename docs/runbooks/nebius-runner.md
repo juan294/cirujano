@@ -155,11 +155,15 @@ Per-enrollment layout under `~/.local/share/cirujano/runner/` (mode `0700`):
   `lib` segment into a workload's absolute-path coverage globs, P2
   2026-09-17), decided 2026-09-16 after the first P1 runs failed on a
   missing `psql`. Sudo adds no privilege the job did not already have: the
-  runner user is root-equivalent through its `docker` group membership. Known
-  gap (pre-existing, tracked in the fleet migration notes): the controller's
-  emergency stop trusts the guest-reported grant deadline, so a root job can
-  outlive `lifetimeMs`; the permit expiry still blocks new starts and the
-  owner's own project bears the cost until the VM is stopped by hand.
+  runner user is root-equivalent through its `docker` group membership. The online
+  controller enforces its locally persisted generation deadline even when guest
+  status is unavailable or changed, under the permit's recovery/stop authority.
+  Runtime accounting uses the controller's recorded start-intent time. Legacy
+  journals without that timestamp use deadline minus configured maximum lifetime
+  as a conservative bound (shortened grants can be overcounted); a journal with
+  neither timestamp reserves a full lifetime, never a guest-supplied start time.
+  This does not provide independent shutdown while the controller is offline:
+  a root job can disable the guest watchdog, leaving owner recovery necessary.
   Regenerating a config changes its
   hash; the controller then refuses the old journals, so archive a dry-run
   state directory before restarting and never regenerate under a live permit.

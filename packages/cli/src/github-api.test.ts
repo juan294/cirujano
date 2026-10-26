@@ -1,6 +1,16 @@
 import { describe, expect, it } from 'vitest';
 
-import { githubPages } from './github-api.js';
+import { githubCliPath, githubPages } from './github-api.js';
+
+describe('interactive GitHub CLI discovery', () => {
+  it('uses PATH when no executable override is configured', () => {
+    expect(githubCliPath({ PATH: '/usr/local/bin:/usr/bin' })).toBe('gh');
+  });
+
+  it('preserves an explicit executable override', () => {
+    expect(githubCliPath({ CIRUJANO_GH_PATH: '/trusted/bin/gh', PATH: '/untrusted/bin' })).toBe('/trusted/bin/gh');
+  });
+});
 
 describe('GitHub paginated reads', () => {
   it('retries a transient TLS handshake timeout from gh once', async () => {

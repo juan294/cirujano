@@ -88,9 +88,11 @@ interface ObservedLifecycleInput {
   nowMs: number;
   lifecycle: LifecycleJournal;
   providerPresent: boolean;
+  providerRunning: boolean;
+  lifetimeMs: number;
   queueComplete: boolean;
   ownedBusy: boolean | null;
-  guest: { complete: boolean; status: string; generation: number | null; startedAtMs: number | null; networkEgressBytes: number | null };
+  guest: { complete: boolean; status: string; generation: number | null; networkEgressBytes: number | null };
   accounting: ObservedAccounting;
   rates: CostRates;
   diskSizeGiB: number;
@@ -103,17 +105,21 @@ export function advanceObservedLifecycle(input: ObservedLifecycleInput): { lifec
     accounting.diskRetainedMs += Math.max(0, input.nowMs - accounting.diskStartedAtMs);
     accounting.diskStartedAtMs = input.providerPresent ? input.nowMs : null;
   }
-  if (input.guest.generation !== null && input.guest.startedAtMs !== null) {
-    if (accounting.generation !== input.guest.generation) {
-      const firstObservedGeneration = accounting.generation === null && accounting.networkEgressBytes === 0;
-      accounting.generation = input.guest.generation;
-      accounting.runtimeBaselineMs = input.lifecycle.cumulativeRuntimeMs;
-      accounting.networkBaselineBytes = accounting.networkEgressBytes;
-      accounting.networkGenerationStartBytes = firstObservedGeneration ? 0 : input.guest.networkEgressBytes ?? 0;
-    }
+  const generation = input.lifecycle.startCount;
+  if (input.providerRunning && generation > 0 && accounting.generation !== generation) {
+    const firstObservedGeneration = accounting.generation === null && accounting.networkEgressBytes === 0;
+    accounting.generation = generation;
+    accounting.runtimeBaselineMs = input.lifecycle.cumulativeRuntimeMs;
+    accounting.networkBaselineBytes = accounting.networkEgressBytes;
+    accounting.networkGenerationStartBytes = firstObservedGeneration ? 0 : input.guest.networkEgressBytes ?? 0;
   }
-  const runtimeMs = accounting.generation === input.guest.generation && input.guest.startedAtMs !== null
-    ? Math.max(input.lifecycle.cumulativeRuntimeMs, accounting.runtimeBaselineMs + Math.max(0, input.nowMs - input.guest.startedAtMs))
+  // Older journals lack the exact start time. The deadline minus maximum lifetime is an
+  // earlier-or-equal start bound, so shortened grants overcount conservatively; never persist
+  // that bound as observed start evidence. With neither timestamp, reserve one full lifetime.
+  const startedAtMs = input.lifecycle.grantStartedAtMs
+    ?? (input.lifecycle.grantDeadlineMs === null ? null : input.lifecycle.grantDeadlineMs - input.lifetimeMs);
+  const runtimeMs = input.providerRunning && generation > 0 && accounting.generation === generation
+    ? Math.max(input.lifecycle.cumulativeRuntimeMs, accounting.runtimeBaselineMs + (startedAtMs === null ? input.lifetimeMs : Math.max(0, input.nowMs - startedAtMs)))
     : input.lifecycle.cumulativeRuntimeMs;
   if (input.guest.networkEgressBytes !== null) {
     const generationBytes = Math.max(0, input.guest.networkEgressBytes - (accounting.networkGenerationStartBytes ?? 0));
@@ -513,10 +519,12 @@ async function observe(context: RuntimeContext): Promise<LifecycleInput> {
   const accounting = await readAccounting(context, state, provider, nowMs);
   const advanced = advanceObservedLifecycle({
     nowMs, lifecycle: journal, providerPresent: provider.ownership === 'owned',
+    providerRunning: provider.ownership === 'owned' && provider.vmStatus !== 'absent' && provider.vmStatus !== 'stopped',
+    lifetimeMs: context.config.timing.lifetimeMs,
     queueComplete: queue.complete, ownedBusy: queue.ownedBusy,
     guest: {
       complete: guest.complete, status: guest.status, generation: guest.grant?.generation ?? null,
-      startedAtMs: guest.grant?.startedAtMs ?? null, networkEgressBytes: guest.networkEgressBytes ?? null,
+      networkEgressBytes: guest.networkEgressBytes ?? null,
     },
     accounting, rates: context.config.rates, diskSizeGiB: context.config.nebius.diskSizeGiB,
   });

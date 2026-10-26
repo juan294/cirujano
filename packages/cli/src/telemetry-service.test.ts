@@ -5,10 +5,77 @@ import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 
 import { createTelemetryCommandService } from './telemetry-service.js';
-import { readLatestSnapshot, readSnapshots } from './telemetry-store.js';
+import { buildStoreReport, readLatestSnapshot, readSnapshots } from './telemetry-store.js';
 import { collectTelemetry, type GitHubTelemetrySource, type TelemetrySnapshot } from './telemetry.js';
 
 const io = { stdout: () => undefined, stderr: () => undefined };
+
+describe('telemetry report interval coverage', () => {
+  async function snapshot(store: string, name: string, collectedAt: string, lookbackHours = 24) {
+    const value = await collectTelemetry({
+      owner: 'juan294', lookbackHours, nowMs: Date.parse(collectedAt),
+      source: { listRepositories: async () => [], listRuns: async () => [], listJobs: async () => [] },
+    });
+    await writeFile(join(store, name), JSON.stringify(value));
+  }
+
+  it.each(['json', 'markdown'] as const)('rejects an interior observation gap before emitting %s', async (format) => {
+    const storePath = await mkdtemp(join(tmpdir(), 'cirujano-coverage-gap-'));
+    await snapshot(storePath, '2026-10-02.json', '2026-10-02T00:00:00Z');
+    await snapshot(storePath, '2026-10-20.json', '2026-10-20T00:00:00Z');
+    const output: string[] = [];
+    await expect(createTelemetryCommandService().run(
+      { command: 'telemetry', action: 'report', storePath, since: '2026-10-01', format },
+      { stdout: (text) => { output.push(text); }, stderr: () => undefined },
+    )).rejects.toThrow('coverage gap from 2026-10-02T00:00:00.000Z to 2026-10-19T00:00:00.000Z');
+    expect(output).toEqual([]);
+  });
+
+  it.each([24, 36])('accepts adjacent or overlapping %i-hour empty observations', async (lookbackHours) => {
+    const storePath = await mkdtemp(join(tmpdir(), 'cirujano-coverage-continuous-'));
+    await snapshot(storePath, '2026-09-01.json', '2026-09-01T00:00:00Z');
+    for (const day of ['02', '03', '04']) {
+      await snapshot(storePath, `2026-10-${day}.json`, `2026-10-${day}T00:00:00Z`, lookbackHours);
+    }
+    expect(await buildStoreReport({ storePath, since: '2026-10-01' }))
+      .toMatchObject({ through: '2026-10-04T00:00:00.000Z', jobs: 0, incompleteJobs: 0 });
+  });
+
+  it('does not let a partial backfill bridge a gap between daily observations', async () => {
+    const storePath = await mkdtemp(join(tmpdir(), 'cirujano-backfill-gap-'));
+    await snapshot(storePath, '2026-10-02.json', '2026-10-02T00:00:00Z');
+    await snapshot(storePath, 'backfill-2026-10-03.json', '2026-10-03T00:00:00Z');
+    await snapshot(storePath, '2026-10-04.json', '2026-10-04T00:00:00Z');
+    await expect(buildStoreReport({ storePath, since: '2026-10-01' })).rejects.toThrow(
+      'coverage gap from 2026-10-02T00:00:00.000Z to 2026-10-03T00:00:00.000Z',
+    );
+  });
+
+  it('rejects a backfill extending the report past daily observation coverage', async () => {
+    const storePath = await mkdtemp(join(tmpdir(), 'cirujano-backfill-tail-'));
+    await snapshot(storePath, '2026-10-02.json', '2026-10-02T00:00:00Z');
+    await snapshot(storePath, 'backfill-2026-10-04.json', '2026-10-04T00:00:00Z');
+    await expect(buildStoreReport({ storePath, since: '2026-10-01' })).rejects.toThrow(
+      'coverage gap from 2026-10-02T00:00:00.000Z to 2026-10-04T00:00:00.000Z',
+    );
+  });
+
+  it('bounds required coverage by the fleet measurement window, not later snapshots', async () => {
+    const storePath = await mkdtemp(join(tmpdir(), 'cirujano-fleet-coverage-'));
+    await snapshot(storePath, '2026-10-02.json', '2026-10-02T00:00:00Z');
+    await snapshot(storePath, '2026-10-20.json', '2026-10-20T00:00:00Z');
+    const registry = {
+      schemaVersion: 1 as const, owner: 'juan294', exclusions: [], enrollments: [],
+      measurementWindow: { since: '2026-10-01', through: '2026-10-01' },
+    };
+    expect(await buildStoreReport({ storePath, since: '2026-10-01', registry }))
+      .toMatchObject({ through: '2026-10-01T23:59:59.999Z', jobs: 0 });
+    registry.measurementWindow.through = '2026-10-05';
+    await expect(buildStoreReport({ storePath, since: '2026-10-01', registry })).rejects.toThrow(
+      'coverage gap from 2026-10-02T00:00:00.000Z to 2026-10-05T23:59:59.999Z',
+    );
+  });
+});
 
 describe('telemetry command service', () => {
   const firstAttempt = { id: 1, run_attempt: 1, name: 'CI', event: 'push', created_at: '2026-09-13T09:45:00Z', conclusion: 'failure' };

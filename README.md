@@ -138,7 +138,8 @@ git clone https://github.com/juan294/cirujano.git
 cd cirujano
 pnpm install
 pnpm run build
-gh api repos/OWNER/REPO/actions/runs/RUN_ID/jobs > jobs.json
+gh api --paginate --slurp 'repos/OWNER/REPO/actions/runs/RUN_ID/jobs?per_page=100' \
+  --jq '{total_count: .[0].total_count, jobs: [.[].jobs[]]}' > jobs.json
 node packages/cli/dist/bin.js estimate --jobs jobs.json
 ```
 
@@ -168,7 +169,7 @@ and savings table, including active repositories with zero jobs. See
 
 ## Contributor setup
 
-Requires Node 22 or newer and pnpm 11.
+Requires Node 22.13 or newer and pnpm 11.
 
 ```bash
 pnpm install
