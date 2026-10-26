@@ -1,0 +1,12 @@
+name: Report
+on:
+  workflow_run:
+    workflows: [Nightly]
+    types: [completed]
+permissions:
+  contents: read
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo report

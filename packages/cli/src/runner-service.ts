@@ -1,0 +1,1179 @@
+import { createHash } from 'node:crypto';
+import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
+
+import {
+  GitHubAdapter,
+  GitHubResponseError,
+  GUEST_FILE_NAMES,
+  GUEST_UP_STATES,
+  NebiusCli,
+  ProviderCapacityError,
+  RUNNER_SCHEMA_VERSION,
+  acquireControllerLock,
+  appendRedactedEvent,
+  buildQueueSnapshot,
+  buildRunnerReport,
+  buildSshInvocation,
+  classifyCapacityRefusal,
+  classifySshReadinessFailure,
+  classifyOwnedRunners,
+  decideDelete,
+  decideStop,
+  parseControllerState,
+  parseInstancePage,
+  parseOperationPage,
+  parseMutationOperationId,
+  parsePermit,
+  redactCredentialShapes,
+  parseRunnerReportInput,
+  parseRunnerConfig,
+  readJournal,
+  runnerConfigHash,
+  renderCloudInit,
+  renderCreateRequest,
+  knownHostLine,
+  runInterruptRecovery,
+  runProcess,
+  sshAttemptTiming,
+  tickController,
+  validateCleanupPermit,
+  validatePermit,
+  verifySshPublicKeyFingerprint,
+  writeJournalAtomic,
+  type CapacityRefusal,
+  type ControllerState,
+  type ExpectedNebiusResource,
+  type LifecycleEffect,
+  type LifecycleInput,
+  type NebiusInstance,
+  type NebiusOperation,
+  type PendingEffect,
+  type Permit,
+  type PermitIdentity,
+  type RunnerConfig,
+  type WorkflowJob,
+  type GuestFileName,
+  type LifecycleJournal,
+  type CostRates,
+  type SshReadinessClassification,
+  type SubprocessResult,
+} from '@cirujano/runner';
+
+import type { CliIo, RunnerCommandService } from './cli.js';
+
+const DEFAULT_GH_PATH = '/opt/homebrew/bin/gh';
+const DEFAULT_POLL_LIMIT = 10_000;
+// GitHub and Nebius reads through their CLIs take 10-15 s each under launchd on macOS (keyring and
+// token access), so the per-call read timeout never drops below two minutes.
+const CLI_READ_TIMEOUT_FLOOR_MS = 120_000;
+// A project's instance listing is ~33 KiB per VM, so the process runner's 64 KiB default truncated
+// the JSON as soon as a second enrolled VM existed and every controller sharing the project went
+// blind. Paginated run and job listings can be larger still.
+const CLI_OUTPUT_LIMIT_BYTES = 64 * 1024 * 1024;
+const THIRTY_DAY_MONTH_MS = 30 * 24 * 3_600_000;
+
+export interface ObservedAccounting {
+  diskStartedAtMs: number | null;
+  diskRetainedMs: number;
+  runtimeBaselineMs: number;
+  generation: number | null;
+  networkEgressBytes: number;
+  networkBaselineBytes?: number;
+  networkGenerationStartBytes?: number;
+}
+
+interface ObservedLifecycleInput {
+  nowMs: number;
+  lifecycle: LifecycleJournal;
+  providerPresent: boolean;
+  providerRunning: boolean;
+  lifetimeMs: number;
+  queueComplete: boolean;
+  ownedBusy: boolean | null;
+  guest: { complete: boolean; status: string; generation: number | null; networkEgressBytes: number | null };
+  accounting: ObservedAccounting;
+  rates: CostRates;
+  diskSizeGiB: number;
+}
+
+export function advanceObservedLifecycle(input: ObservedLifecycleInput): { lifecycle: LifecycleJournal; accounting: ObservedAccounting } {
+  const accounting = { ...input.accounting };
+  if (input.providerPresent && accounting.diskStartedAtMs === null) accounting.diskStartedAtMs = input.nowMs;
+  if (accounting.diskStartedAtMs !== null) {
+    accounting.diskRetainedMs += Math.max(0, input.nowMs - accounting.diskStartedAtMs);
+    accounting.diskStartedAtMs = input.providerPresent ? input.nowMs : null;
+  }
+  const generation = input.lifecycle.startCount;
+  if (input.providerRunning && generation > 0 && accounting.generation !== generation) {
+    const firstObservedGeneration = accounting.generation === null && accounting.networkEgressBytes === 0;
+    accounting.generation = generation;
+    accounting.runtimeBaselineMs = input.lifecycle.cumulativeRuntimeMs;
+    accounting.networkBaselineBytes = accounting.networkEgressBytes;
+    accounting.networkGenerationStartBytes = firstObservedGeneration ? 0 : input.guest.networkEgressBytes ?? 0;
+  }
+  // Older journals lack the exact start time. The deadline minus maximum lifetime is an
+  // earlier-or-equal start bound, so shortened grants overcount conservatively; never persist
+  // that bound as observed start evidence. With neither timestamp, reserve one full lifetime.
+  const startedAtMs = input.lifecycle.grantStartedAtMs
+    ?? (input.lifecycle.grantDeadlineMs === null ? null : input.lifecycle.grantDeadlineMs - input.lifetimeMs);
+  const runtimeMs = input.providerRunning && generation > 0 && accounting.generation === generation
+    ? Math.max(input.lifecycle.cumulativeRuntimeMs, accounting.runtimeBaselineMs + (startedAtMs === null ? input.lifetimeMs : Math.max(0, input.nowMs - startedAtMs)))
+    : input.lifecycle.cumulativeRuntimeMs;
+  if (input.guest.networkEgressBytes !== null) {
+    const generationBytes = Math.max(0, input.guest.networkEgressBytes - (accounting.networkGenerationStartBytes ?? 0));
+    accounting.networkEgressBytes = Math.max(accounting.networkEgressBytes, (accounting.networkBaselineBytes ?? 0) + generationBytes);
+  }
+  const computeUsd = (runtimeMs / 3_600_000) * input.rates.computeUsdPerHour;
+  const diskUsd = (accounting.diskRetainedMs / THIRTY_DAY_MONTH_MS) * input.diskSizeGiB * input.rates.diskUsdPerGibMonth;
+  const networkUsd = (accounting.networkEgressBytes / 1_073_741_824) * input.rates.networkEgressUsdPerGib;
+  const cumulativeCostUsd = Math.max(input.lifecycle.cumulativeCostUsd, roundMoney(computeUsd + diskUsd + networkUsd));
+  const currentGeneration = input.queueComplete && input.ownedBusy !== null && input.guest.complete
+    && input.guest.generation !== null && input.guest.generation === input.lifecycle.startCount;
+  const idle = currentGeneration && input.ownedBusy === false && input.guest.status === 'drained';
+  // A generation seen working again after idle evidence gets one incomplete marker, so a resumed
+  // drain earns its own idle grace. The controller merge keeps the latest 100 entries.
+  const previous = input.lifecycle.idleObservations.at(-1);
+  const interrupted = currentGeneration && !idle && previous?.generation === input.guest.generation && previous.complete;
+  const idleObservations = (idle || interrupted) && previous?.observedAtMs !== input.nowMs
+    ? [...input.lifecycle.idleObservations, { observedAtMs: input.nowMs, complete: idle, generation: input.guest.generation! }]
+    : input.lifecycle.idleObservations;
+  const lifecycle = { ...input.lifecycle, cumulativeRuntimeMs: runtimeMs, cumulativeCostUsd, idleObservations };
+  return { lifecycle, accounting };
+}
+
+interface RuntimeContext {
+  config: RunnerConfig;
+  permit: Permit | null;
+  identity: PermitIdentity;
+  github: GitHubAdapter;
+  nebius: NebiusCli;
+  owner: string;
+  repository: string;
+  stateDirectory: string;
+  journalPath: string;
+  eventPath: string;
+  accountingPath: string;
+  directActionPath: string;
+  activeJobPath: string;
+  assignmentPath: string;
+  helperDiagnosticsPath: string;
+  environment: NodeJS.ProcessEnv;
+}
+
+export function createRunnerCommandService(environment: NodeJS.ProcessEnv = process.env): RunnerCommandService {
+  return {
+    async run(args, io) {
+      if (args.action === 'report') return report(args.statePath, io);
+      const context = await createContext(args.configPath, 'permitPath' in args ? args.permitPath : undefined, environment);
+      if (args.action === 'inspect') return inspect(context, args.format, io);
+      if (args.action === 'watch') return watch(context, args.dryRun, io);
+      return mutateOwned(context, args.action, io);
+    },
+  };
+}
+
+async function createContext(configPath: string, permitPath: string | undefined, environment: NodeJS.ProcessEnv): Promise<RuntimeContext> {
+  const rawConfig = await readFile(configPath, 'utf8');
+  const config = parseRunnerConfig(JSON.parse(rawConfig) as unknown);
+  const permit = permitPath === undefined ? null : parsePermit(JSON.parse(await readFile(permitPath, 'utf8')) as unknown);
+  const configHash = runnerConfigHash(config);
+  const candidateDigest = environment['CIRUJANO_CANDIDATE_DIGEST'] ?? await executableDigest();
+  const identity: PermitIdentity = {
+    configHash,
+    candidateDigest,
+    repositoryId: config.repository.id,
+    projectId: config.nebius.projectId,
+    controllerId: config.ownership.controllerId,
+    resourcePrefix: config.ownership.resourcePrefix,
+  };
+  const ghPath = absolutePath(environment['CIRUJANO_GH_PATH'] ?? DEFAULT_GH_PATH, 'GitHub CLI');
+  const nebiusPath = absolutePath(environment['CIRUJANO_NEBIUS_PATH'] ?? join(homedir(), '.nebius/bin/nebius'), 'Nebius CLI');
+  const github = new GitHubAdapter({
+    async run(command, args, options) {
+      const result = await runProcess({ command, args, timeoutMs: options.timeoutMs, maxOutputBytes: CLI_OUTPUT_LIMIT_BYTES, env: environment });
+      return { exitCode: result.exitCode ?? 1, stdout: result.stdout, stderr: result.stderr };
+    },
+  }, { ghPath, timeoutMs: Math.max(config.timing.pollIntervalMs, CLI_READ_TIMEOUT_FLOOR_MS) });
+  const nebius = new NebiusCli({
+    binaryPath: nebiusPath,
+    profile: config.nebius.profile,
+    readTimeoutMs: CLI_READ_TIMEOUT_FLOOR_MS,
+    projectId: config.nebius.projectId,
+    execute: async (command) => {
+      const result = await runProcess({
+        command: command.file, args: command.args, timeoutMs: command.timeoutMs, maxOutputBytes: CLI_OUTPUT_LIMIT_BYTES,
+        ...(command.stdin === undefined ? {} : { stdin: command.stdin }), env: environment,
+      });
+      return { exitCode: result.exitCode ?? 1, stdout: result.stdout, stderr: result.stderr, timedOut: result.timedOut };
+    },
+  });
+  const [owner, repository] = config.repository.nameWithOwner.split('/');
+  if (owner === undefined || repository === undefined) throw new Error('configured repository identity is invalid');
+  const stateDirectory = resolve(dirname(configPath));
+  return {
+    config, permit, identity, github, nebius, owner, repository, stateDirectory,
+    journalPath: join(stateDirectory, 'controller-state.json'),
+    eventPath: join(stateDirectory, 'events.jsonl'),
+    accountingPath: join(stateDirectory, 'accounting-state.json'), environment,
+    directActionPath: join(stateDirectory, 'direct-action-state.json'),
+    activeJobPath: join(stateDirectory, 'active-job-state.json'),
+    assignmentPath: join(stateDirectory, 'assignments.json'),
+    helperDiagnosticsPath: join(stateDirectory, 'helper-diagnostics.jsonl'),
+  };
+}
+
+async function inspect(context: RuntimeContext, format: 'json' | 'text', io: CliIo): Promise<0 | 1> {
+  const [repository, provider] = await Promise.all([readRepository(context), observeProvider(context)]);
+  const result = {
+    schemaVersion: RUNNER_SCHEMA_VERSION,
+    command: 'runner inspect',
+    repository,
+    provider: { complete: provider.complete, ownedMatches: provider.ownedMatches, state: provider.vmStatus },
+    intendedResource: {
+      name: `${context.config.ownership.resourcePrefix}-vm`, projectId: context.config.nebius.projectId,
+      platform: context.config.nebius.platform, preset: context.config.nebius.preset,
+      diskType: context.config.nebius.diskType, diskSizeGiB: context.config.nebius.diskSizeGiB,
+    },
+    rates: context.config.rates,
+    identity: context.identity,
+  };
+  if (format === 'json') io.stdout(`${JSON.stringify(result)}\n`);
+  else io.stdout(`${repository.nameWithOwner}: ${provider.vmStatus} (${provider.ownedMatches} owned VM)\n`);
+  return provider.complete ? 0 : 1;
+}
+
+async function watch(context: RuntimeContext, dryRun: boolean, io: CliIo): Promise<0 | 1> {
+  const lock = await acquireControllerLock(context.stateDirectory);
+  let interrupted = false;
+  let wake: (() => void) | null = null;
+  const onInterrupt = () => { interrupted = true; wake?.(); };
+  process.once('SIGINT', onInterrupt);
+  try {
+    for (let count = 0; count < DEFAULT_POLL_LIMIT; count += 1) {
+      const input = await observe(context);
+      const result = await tickController({
+        lock, journalPath: context.journalPath, eventPath: context.eventPath, input, dryRun,
+        executeEffect: (effect) => executeEffect(context, effect),
+        reconcileEffect: (effect) => reconcileEffect(context, effect),
+      });
+      io.stdout(`${JSON.stringify({ schemaVersion: 1, type: 'tick', status: result.status, decision: result.decision, queue: input.queue, githubReadHold: context.github.readHold() })}\n`);
+      if (interrupted) {
+        const recovery = await interruptRecovery(context);
+        io.stdout(`${JSON.stringify({ schemaVersion: 1, type: 'interrupt-recovery', ...recovery })}\n`);
+        return recovery.completed ? 0 : 1;
+      }
+      if (context.environment['CIRUJANO_RUNNER_ONCE'] === '1') return result.status === 'blocked' ? 1 : 0;
+      await new Promise<void>((resolveDelay) => {
+        const timer = setTimeout(resolveDelay, context.config.timing.pollIntervalMs);
+        wake = () => { clearTimeout(timer); resolveDelay(); };
+      });
+      wake = null;
+    }
+    throw new Error('runner watch exceeded its bounded poll limit');
+  } finally {
+    process.off('SIGINT', onInterrupt);
+    await lock.release();
+  }
+}
+
+async function mutateOwned(context: RuntimeContext, action: 'stop' | 'cleanup', io: CliIo): Promise<0 | 1> {
+  const lock = await acquireControllerLock(context.stateDirectory);
+  try {
+    let priorDirect = await readDirectAction(context);
+    if (priorDirect !== null && priorDirect.action === action && priorDirect.stage === 'resolved') {
+      requireRecoveryPermit(context, action === 'stop' ? 'stop' : 'delete');
+      // A resolved record is only an answer while the provider still agrees with it; a later
+      // generation may have started the VM again since.
+      const current = exactOwnedInstance(await listInstances(context), expectedResource(context));
+      const stillResolved = current === null || (action === 'stop' && current.id === priorDirect.instanceId && current.state === 'stopped');
+      if (stillResolved) {
+        io.stdout(`${JSON.stringify({ schemaVersion: 1, command: `runner ${action}`, status: 'done', providerState: current?.state ?? 'absent' })}\n`);
+        return 0;
+      }
+      priorDirect = null;
+    }
+    if (priorDirect !== null && priorDirect.action === action && priorDirect.stage === 'emitting') {
+      requireRecoveryPermit(context, action === 'stop' ? 'stop' : 'delete');
+      return recoverDirectEmission(context, action, priorDirect, io);
+    }
+    if (priorDirect !== null && priorDirect.action === action && priorDirect.stage === 'intent') requireRecoveryPermit(context, action === 'stop' ? 'stop' : 'delete');
+    else requirePermit(context, action === 'stop' ? 'stop' : 'delete');
+    const observed = await observe(context);
+    if (!observed.provider.complete || !observed.queue.complete || observed.queue.ownedBusy === null) throw new Error('direct action requires complete provider and queue observations');
+    if (observed.queue.ownedBusy || observed.guest.workerActive === true || observed.guest.status === 'busy') throw new Error('owned job is active; direct action cannot interrupt work');
+    const instances = await listInstances(context);
+    const expected = expectedResource(context);
+    const instance = exactOwnedInstance(instances, expected);
+    const runners = await context.github.listRunners(context.owner, context.repository);
+    if (!runners.complete) throw new Error(runners.reason ?? 'GitHub runner observation is incomplete');
+    const ownership = classifyOwnedRunners(runners.items, {
+      expectedName: expectedRunnerName(context, await priorState(context)), ownershipLabel: context.config.runnerLabel,
+    });
+    if (ownership.runner?.busy === true) throw new Error('owned runner is busy; drain cannot interrupt active work');
+    if (instance === null) {
+      await writeJournalAtomic(context.directActionPath, { schemaVersion: 1, identity: context.identity, action, stage: 'resolved', observedAtMs: Date.now(), providerState: 'absent' });
+      io.stdout(`${JSON.stringify({ schemaVersion: 1, command: `runner ${action}`, status: 'done' })}\n`);
+      return 0;
+    }
+    const decision = action === 'stop' ? decideStop(instance, expected) : decideDelete(instance, expected);
+    if (decision.action === 'block') throw new Error(decision.reason);
+    if (decision.action === 'wait') {
+      io.stdout(`${JSON.stringify({ schemaVersion: 1, command: `runner ${action}`, status: 'pending' })}\n`);
+      return 1;
+    }
+    await writeJournalAtomic(context.directActionPath, { schemaVersion: 1, identity: context.identity, action, stage: 'intent', observedAtMs: Date.now(), instanceId: instance.id });
+    await directBoundary(context, 'direct-prepared');
+    await writeJournalAtomic(context.directActionPath, { schemaVersion: 1, identity: context.identity, action, stage: 'emitting', observedAtMs: Date.now(), instanceId: instance.id });
+    await directBoundary(context, 'direct-emitting');
+    if (action === 'stop' && instance !== null && instance.state === 'running') {
+      const state = await priorState(context);
+      await runGuest(context, instance, '/opt/cirujano/drain', `${Math.max(1, state?.lifecycle.startCount ?? 1)}\n`);
+    }
+    if (ownership.ownership === 'owned') await context.github.removeOwnedRunner(context.owner, context.repository, ownership);
+    else if (ownership.ownership !== 'absent') throw new Error(`runner ownership is ${ownership.ownership}`);
+
+    let operationId: string | undefined;
+    if (decision.action === 'stop') operationId = (await emitControllerStop(context, decision.instanceId, 'Nebius stop')).operationId;
+    if (decision.action === 'delete') operationId = (await operation(await context.nebius.delete(decision.instanceId), 'Nebius delete')).operationId;
+    await directBoundary(context, 'direct-provider-io');
+    await writeJournalAtomic(context.directActionPath, { schemaVersion: 1, identity: context.identity, action, stage: 'emitting', observedAtMs: Date.now(), instanceId: instance.id, ...(operationId === undefined ? {} : { operationId }) });
+    const terminal = await waitForTerminalProvider(context, action, instance.id);
+    await writeJournalAtomic(context.directActionPath, { schemaVersion: 1, identity: context.identity, action, stage: terminal.complete ? 'resolved' : 'emitting', observedAtMs: Date.now(), instanceId: instance.id, providerState: terminal.state, ...(operationId === undefined ? {} : { operationId }) });
+    await directBoundary(context, 'direct-terminal');
+    io.stdout(`${JSON.stringify({ schemaVersion: 1, command: `runner ${action}`, status: terminal.complete ? 'done' : 'pending', providerState: terminal.state })}\n`);
+    return terminal.complete ? 0 : 1;
+  } finally {
+    await lock.release();
+  }
+}
+
+async function recoverDirectEmission(
+  context: RuntimeContext,
+  action: 'stop' | 'cleanup',
+  prior: { instanceId: string; operationId?: unknown; recoveryRetryEmitted?: unknown; [key: string]: unknown },
+  io: CliIo,
+): Promise<0 | 1> {
+  let current = prior;
+  const block = async (reason: string, providerState: string): Promise<1> => {
+    await writeJournalAtomic(context.directActionPath, { ...current, stage: 'emitting', observedAtMs: Date.now(), providerState, blockedReason: reason });
+    io.stdout(`${JSON.stringify({ schemaVersion: 1, command: `runner ${action}`, status: 'blocked', providerState, reason })}\n`);
+    return 1;
+  };
+  try {
+    const instances = await listInstances(context);
+    const instance = exactOwnedInstance(instances, expectedResource(context));
+    const terminalState = action === 'cleanup' && instance === null ? 'absent'
+      : action === 'stop' && (instance === null || instance.state === 'stopped') ? instance?.state ?? 'absent'
+        : null;
+    if (terminalState !== null) {
+      await writeJournalAtomic(context.directActionPath, { ...prior, stage: 'resolved', observedAtMs: Date.now(), providerState: terminalState });
+      io.stdout(`${JSON.stringify({ schemaVersion: 1, command: `runner ${action}`, status: 'done', providerState: terminalState })}\n`);
+      return 0;
+    }
+    if (instance === null) return block('exact owned instance readback is inconclusive', 'unknown');
+    const operations = await listOperations(context);
+    const operationId = typeof prior.operationId === 'string' ? prior.operationId : null;
+    const related = operationId === null
+      ? operations.filter((item) => item.resourceId === prior.instanceId)
+      : operations.filter((item) => item.id === operationId && (item.resourceId === null || item.resourceId === prior.instanceId));
+    // Only unfinished operations can still move the VM; finished ones on the same instance are
+    // history (earlier starts and stops), not the ambiguous emission.
+    const inFlight = related.filter((item) => item.state === 'PENDING' || item.state === 'RUNNING');
+    if (inFlight.length > 0) {
+      return block(`provider operation ${inFlight.map((item) => `${item.id}:${item.state}`).join(',')} is still pending and has not produced terminal resource state`, instance.state);
+    }
+    if (instance.state === 'stopping') return block('provider is still stopping the instance; retry after it reaches a terminal state', instance.state);
+    if (operationId !== null && related.length === 0) return block(`journaled provider operation ${operationId} is absent from the complete operation snapshot`, instance.state);
+    if (prior.recoveryRetryEmitted === true) return block('recovery retry was already emitted and cannot be repeated', instance.state);
+    const observed = await observe(context);
+    if (!observed.provider.complete || !observed.queue.complete || observed.queue.ownedBusy !== false
+      || observed.guest.workerActive === true || observed.guest.status === 'busy') {
+      return block('recovery retry requires complete idle provider, queue, runner and guest readbacks', instance.state);
+    }
+    const state = await priorState(context);
+    if (action === 'stop' && instance.state === 'running') {
+      await runGuest(context, instance, '/opt/cirujano/drain', `${Math.max(1, state?.lifecycle.startCount ?? 1)}\n`);
+      const verified = await observe(context);
+      if (!verified.queue.complete || verified.queue.ownedBusy !== false || !verified.guest.complete
+        || verified.guest.status !== 'drained' || verified.guest.admissionEnabled !== false || verified.guest.workerActive !== false) {
+        return block('guest and assignment readbacks did not prove drained idle recovery', instance.state);
+      }
+    }
+    const runners = await context.github.listRunners(context.owner, context.repository);
+    if (!runners.complete) return block(runners.reason ?? 'GitHub runner recovery readback is incomplete', instance.state);
+    const ownership = classifyOwnedRunners(runners.items, {
+      expectedName: expectedRunnerName(context, state), ownershipLabel: context.config.runnerLabel,
+    });
+    if (ownership.runner?.busy === true) return block('owned runner is busy during recovery', instance.state);
+    if (ownership.ownership === 'owned') await context.github.removeOwnedRunner(context.owner, context.repository, ownership);
+    else if (ownership.ownership !== 'absent') return block(`runner ownership is ${ownership.ownership} during recovery`, instance.state);
+    const remaining = await context.github.listRunners(context.owner, context.repository);
+    if (!remaining.complete) return block(remaining.reason ?? 'final GitHub runner recovery readback is incomplete', instance.state);
+    const finalOwnership = classifyOwnedRunners(remaining.items, {
+      expectedName: expectedRunnerName(context, state), ownershipLabel: context.config.runnerLabel,
+    });
+    if (finalOwnership.ownership !== 'absent') return block(`owned runner remains ${finalOwnership.ownership} before provider recovery`, instance.state);
+    const retrying = { ...prior, stage: 'emitting', observedAtMs: Date.now(), providerState: instance.state, recoveryRetryEmitted: true };
+    current = retrying;
+    await writeJournalAtomic(context.directActionPath, retrying);
+    const result = action === 'stop'
+      ? await emitControllerStop(context, prior.instanceId, 'Nebius recovery stop')
+      : await operation(await context.nebius.delete(prior.instanceId), 'Nebius recovery delete');
+    await writeJournalAtomic(context.directActionPath, { ...retrying, observedAtMs: Date.now(), ...result });
+    const terminal = await waitForTerminalProvider(context, action, prior.instanceId);
+    if (!terminal.complete) return block('recovery retry did not reach terminal provider state', terminal.state);
+    await writeJournalAtomic(context.directActionPath, { ...retrying, ...result, stage: 'resolved', observedAtMs: Date.now(), providerState: terminal.state });
+    io.stdout(`${JSON.stringify({ schemaVersion: 1, command: `runner ${action}`, status: 'done', providerState: terminal.state })}\n`);
+    return 0;
+  } catch (error) {
+    return block(error instanceof Error ? error.message : String(error), 'unknown');
+  }
+}
+
+async function report(statePath: string, io: CliIo): Promise<0 | 1> {
+  const input = parseRunnerReportInput(await readJournal<unknown>(statePath));
+  const value = buildRunnerReport(input);
+  io.stdout(`${JSON.stringify(value)}\n`);
+  return value.complete ? 0 : 1;
+}
+
+async function observe(context: RuntimeContext): Promise<LifecycleInput> {
+  const nowMs = Date.now();
+  const [repositoryObservation, provider, runs, runners, state] = await Promise.all([
+    readRepository(context).then(
+      (repository) => ({ repository, reason: null }),
+      (error: unknown) => {
+        if (!(error instanceof GitHubResponseError)) throw error;
+        return { repository: null, reason: 'repository observation is incomplete: ' + error.message };
+      },
+    ), observeProvider(context), context.github.listActiveRuns(context.owner, context.repository),
+    context.github.listRunners(context.owner, context.repository), priorState(context),
+  ]);
+  const jobs: WorkflowJob[] = [];
+  let jobsComplete = runs.complete && repositoryObservation.repository !== null;
+  let jobsReason = repositoryObservation.reason ?? runs.reason;
+  let retryAfterMs = runs.retryAfterMs;
+  if (runs.complete && repositoryObservation.repository !== null) {
+    for (const run of runs.items) {
+      const page = await context.github.listJobs(context.owner, context.repository, run.id, run.runAttempt);
+      if (!page.complete) {
+        jobsComplete = false;
+        jobsReason = page.reason;
+        retryAfterMs = page.retryAfterMs;
+        break;
+      }
+      jobs.push(...page.items);
+    }
+  }
+  const knownAssignments = await readAssignments(context);
+  for (const known of knownAssignments.filter((entry) => entry.conclusion === null && repositoryObservation.repository !== null)) {
+    if (jobs.some((job) => job.key === `${known.runId}:${known.runAttempt}:${known.jobId}`)) continue;
+    const page = await context.github.listJobs(context.owner, context.repository, known.runId, known.runAttempt);
+    if (!page.complete) {
+      jobsComplete = false;
+      jobsReason = page.reason ?? 'known assignment lookup is incomplete';
+      retryAfterMs = page.retryAfterMs;
+      break;
+    }
+    const exact = page.items.find((job) => job.id === known.jobId);
+    if (exact === undefined) {
+      jobsComplete = false;
+      jobsReason = `known assignment ${known.runId}:${known.runAttempt}:${known.jobId} disappeared`;
+      break;
+    }
+    jobs.push(exact);
+  }
+  const deduplicatedJobs = [...new Map(jobs.map((job) => [job.key, job])).values()];
+  const assignments = mergeAssignments(knownAssignments, deduplicatedJobs, expectedRunnerName(context, state));
+  if (JSON.stringify(assignments) !== JSON.stringify(knownAssignments)) {
+    await writeJournalAtomic(context.assignmentPath, { schemaVersion: 1, identity: context.identity, assignments });
+  }
+  let queue = buildQueueSnapshot({
+    repository: repositoryObservation.repository,
+    ...(repositoryObservation.reason === null ? {} : { repositoryReason: repositoryObservation.reason }),
+    expectedRepository: context.config.repository, runs,
+    jobs: collection(jobsComplete, deduplicatedJobs, jobsReason, retryAfterMs), runners,
+    workflowIds: context.config.workflowIds, allowedBranch: context.config.allowedBranch, admission: context.config.admission,
+    eligibleJobNames: context.config.eligibleJobNames, runnerLabel: context.config.runnerLabel,
+    expectedRunnerName: expectedRunnerName(context, state), observedAtMs: nowMs,
+  });
+  const githubReadHold = context.github.readHold();
+  if (githubReadHold !== null) {
+    queue = { ...queue, complete: false, eligibleQueuedJobs: 0, reason: githubReadHold.reason, retryAfterMs: githubReadHold.retryAfterMs };
+  }
+  let journal = state?.lifecycle ?? {
+    state: provider.vmStatus === 'absent' ? 'absent' as const : provider.vmStatus === 'stopped' ? 'stopped' as const : 'blocked' as const,
+    startCount: 0, cumulativeRuntimeMs: 0, cumulativeCostUsd: 0, outstandingIntent: null, idleObservations: [], grantDeadlineMs: null,
+  };
+  const guest = await observeGuest(context, provider);
+  const preservedBusy = await readActiveJobMarker(context) || assignments.some((entry) => entry.conclusion === null);
+  const runnerOwnership = classifyOwnedRunners(runners.items, { expectedName: expectedRunnerName(context, state), ownershipLabel: context.config.runnerLabel });
+  const conclusivelyIdle = queue.complete && queue.ownedBusy === false && guest.complete && guest.workerActive === false
+    && runnerOwnership.ownership !== 'ambiguous' && runnerOwnership.ownership !== 'foreign'
+    && runnerOwnership.runner?.busy !== true;
+  const activeJobKnown = queue.ownedBusy === true || (preservedBusy && !conclusivelyIdle);
+  if (activeJobKnown !== preservedBusy) await writeJournalAtomic(context.activeJobPath, { schemaVersion: 1, identity: context.identity, activeJobKnown, observedAtMs: nowMs });
+  if (activeJobKnown) queue = { ...queue, ownedBusy: true };
+  const accounting = await readAccounting(context, state, provider, nowMs);
+  const advanced = advanceObservedLifecycle({
+    nowMs, lifecycle: journal, providerPresent: provider.ownership === 'owned',
+    providerRunning: provider.ownership === 'owned' && provider.vmStatus !== 'absent' && provider.vmStatus !== 'stopped',
+    lifetimeMs: context.config.timing.lifetimeMs,
+    queueComplete: queue.complete, ownedBusy: queue.ownedBusy,
+    guest: {
+      complete: guest.complete, status: guest.status, generation: guest.grant?.generation ?? null,
+      networkEgressBytes: guest.networkEgressBytes ?? null,
+    },
+    accounting, rates: context.config.rates, diskSizeGiB: context.config.nebius.diskSizeGiB,
+  });
+  journal = advanced.lifecycle;
+  await writeJournalAtomic(context.accountingPath, { schemaVersion: 1, identity: context.identity, ...advanced.accounting });
+  return {
+    nowMs, config: context.config, identity: context.identity, permit: context.permit,
+    provider, queue, guest, journal,
+    projectedStartCostUsd: projectedStartCost(context),
+  };
+}
+
+async function observeProvider(context: RuntimeContext): Promise<LifecycleInput['provider']> {
+  try {
+    const instances = await listInstances(context);
+    const expected = expectedResource(context);
+    const exact = instances.filter((instance) => instanceMatches(instance, expected));
+    const related = instances.filter((instance) => instance.name === expected.name
+      || instance.labels['cirujano-controller'] === expected.labels['cirujano-controller']
+      || instance.labels['cirujano-config'] === expected.labels['cirujano-config']);
+    if (exact.length > 1) return { complete: true, vmStatus: 'unknown', ownership: 'ambiguous', ownedMatches: exact.length, outstandingOperation: null };
+    if (exact.length === 0 && related.length > 0) return { complete: true, vmStatus: 'unknown', ownership: 'foreign', ownedMatches: 0, outstandingOperation: null };
+    if (exact.length === 0) return { complete: true, vmStatus: 'absent', ownership: 'absent', ownedMatches: 0, outstandingOperation: null };
+    const instance = exact[0]!;
+    return {
+      complete: true, vmStatus: instance.state, ownership: 'owned', ownedMatches: 1, outstandingOperation: null,
+      ...(instance.publicIp === null ? {} : { network: { vmId: instance.id, ipAddress: instance.publicIp } }),
+    };
+  } catch {
+    return { complete: false, vmStatus: 'unknown', ownership: 'unknown', ownedMatches: 0, outstandingOperation: null };
+  }
+}
+
+async function listInstances(context: RuntimeContext): Promise<NebiusInstance[]> {
+  const instances: NebiusInstance[] = [];
+  let pageToken: string | undefined;
+  for (let page = 0; page < 10_000; page += 1) {
+    const result = await context.nebius.listInstances(pageToken);
+    await requireSuccessful(result, 'Nebius instance list');
+    const parsed = parseInstancePage(result.stdout);
+    instances.push(...parsed.items);
+    if (parsed.nextPageToken === null) return instances;
+    pageToken = parsed.nextPageToken;
+  }
+  throw new Error('Nebius instance pagination exceeded its bound');
+}
+
+async function listOperations(context: RuntimeContext): Promise<NebiusOperation[]> {
+  const operations: NebiusOperation[] = [];
+  let pageToken: string | undefined;
+  for (let page = 0; page < 10_000; page += 1) {
+    const result = await context.nebius.listOperationsByParent(pageToken);
+    await requireSuccessful(result, 'Nebius operation list');
+    const parsed = parseOperationPage(result.stdout);
+    operations.push(...parsed.items);
+    if (parsed.nextPageToken === null) return operations;
+    pageToken = parsed.nextPageToken;
+  }
+  throw new Error('Nebius operation pagination exceeded its bound');
+}
+
+async function readRepository(context: RuntimeContext) {
+  const repository = await context.github.repository(context.owner, context.repository);
+  if (repository.id !== context.config.repository.id || repository.nameWithOwner !== context.config.repository.nameWithOwner) {
+    throw new Error('live repository identity does not match configuration');
+  }
+  return repository;
+}
+
+async function executeEffect(context: RuntimeContext, effect: Exclude<LifecycleEffect, { type: 'none' }>): Promise<{ operationId?: string; resolved?: boolean }> {
+  if (effect.type === 'adopt-vm') return {};
+  const instances = await listInstances(context);
+  const instance = exactOwnedInstance(instances, expectedResource(context));
+  if (effect.type === 'create-vm') {
+    requirePermit(context, 'create');
+    const request = renderCreateRequest(
+      context.config,
+      context.identity.configHash,
+      await cloudInit(context),
+    );
+    return operation(refuseOnCapacity(await context.nebius.create(request), 'Nebius create'), 'Nebius create');
+  }
+  if (instance === null) throw new Error(`${effect.type} requires one owned VM`);
+  if (effect.type === 'start-vm') return operation(refuseOnCapacity(await context.nebius.start(instance.id), 'Nebius start'), 'Nebius start');
+  if (effect.type === 'stop-vm') return operation(await context.nebius.stop(instance.id), 'Nebius stop');
+  const state = await priorState(context);
+  const generation = Math.max(1, state?.lifecycle.startCount ?? 1);
+  if (effect.type === 'delete-vm') {
+    // Both an expired generation and ordinary idle cleanup delete only an owned, stopped VM.
+    const cleanupAuthority = validateCleanupPermit(context.permit, context.identity, Date.now());
+    if (!cleanupAuthority.valid) throw new Error(cleanupAuthority.reason);
+    if (instance.state !== 'stopped') throw new Error(`delete-vm requires a stopped VM, found ${instance.state}`);
+    await removeOwnedRegistration(context, state, 'before delete', { refuseBusy: true });
+    return operation(await context.nebius.delete(instance.id), 'Nebius delete');
+  }
+  if (effect.type === 'register-runner') {
+    requirePermit(context, 'register');
+    const token = await context.github.createRegistrationToken(context.owner, context.repository);
+    const secret = token.consume();
+    if (secret.includes('\n') || secret.includes('\r')) throw new Error('registration token contains a line break');
+    await runGuest(context, instance, '/opt/cirujano/register-runner', [
+      context.config.repository.nameWithOwner, expectedRunnerName(context, state), context.config.runnerLabel,
+      String(generation), secret,
+    ].join('\n') + '\n', [secret]);
+    // The guest helper returns only after GitHub accepts the registration and
+    // launches the ephemeral listener. It can finish a short job and remove its
+    // registration before the next controller poll, so retain this receipt.
+    return { resolved: true };
+  }
+  if (effect.type === 'begin-drain') {
+    await runGuest(context, instance, '/opt/cirujano/drain', `${generation}\n`);
+    await removeOwnedRegistration(context, state, 'after drain', { refuseBusy: false });
+    return {};
+  }
+  if (effect.type === 'resume-admission') {
+    await runGuest(context, instance, '/opt/cirujano/resume-admission', '');
+    return {};
+  }
+  return {};
+}
+
+/** Removes the owned GitHub runner registration, tolerating its absence and refusing any other ownership. */
+async function removeOwnedRegistration(context: RuntimeContext, state: ControllerState | null, phase: string, options: { refuseBusy: boolean }): Promise<void> {
+  const runners = await context.github.listRunners(context.owner, context.repository);
+  if (!runners.complete) throw new Error(runners.reason ?? `GitHub runner observation is incomplete ${phase}`);
+  const ownership = classifyOwnedRunners(runners.items, { expectedName: expectedRunnerName(context, state), ownershipLabel: context.config.runnerLabel });
+  if (options.refuseBusy && ownership.runner?.busy === true) throw new Error(`owned runner reports busy ${phase}; refusing to continue`);
+  if (ownership.ownership === 'owned') await context.github.removeOwnedRunner(context.owner, context.repository, ownership);
+  else if (ownership.ownership !== 'absent') throw new Error(`runner ownership is ${ownership.ownership} ${phase}`);
+}
+
+async function reconcileEffect(context: RuntimeContext, pending: PendingEffect): Promise<{ resolved: boolean; retireStoppedStart?: boolean; capacityRefusal?: CapacityRefusal; readback?: unknown }> {
+  const provider = await observeProvider(context);
+  if (pending.effect.type === 'register-runner' && provider.complete
+    && provider.vmStatus === 'absent' && provider.ownership === 'absent' && provider.ownedMatches === 0) {
+    // A direct, authorized cleanup can remove a VM while an older registration
+    // effect is pending. Both owned resources must be absent before a fresh
+    // generation may be admitted; never infer this from VM absence alone.
+    const runners = await context.github.listRunners(context.owner, context.repository);
+    if (!runners.complete) return { resolved: false, readback: provider };
+    const state = await priorState(context);
+    const ownership = classifyOwnedRunners(runners.items, { expectedName: expectedRunnerName(context, state), ownershipLabel: context.config.runnerLabel });
+    return { resolved: ownership.ownership === 'absent', readback: { provider, runnerOwnership: ownership.ownership } };
+  }
+  if (pending.effect.type === 'start-vm' && provider.vmStatus === 'running') {
+    const instance = exactOwnedInstance(await listInstances(context), expectedResource(context));
+    if (instance === null) return { resolved: false, readback: provider };
+    const generation = pending.effect.generation;
+    // A start is only reconciled once the guest enforces the grant it was given: a lost grant
+    // write leaves the previous generation's deadline in force and idle grace unreachable.
+    const armed = await observeGuest(context, provider);
+    if (armed.grant?.generation === generation) return { resolved: true, readback: { provider, guest: armed } };
+    const bootDeadlineMs = pending.createdAtMs + context.config.timing.bootTimeoutMs;
+    try {
+      await runGuest(context, instance, '/opt/cirujano/arm-grant', [
+        String(generation), String(Date.now()), String(pending.effect.deadlineMs),
+        String(context.config.timing.maxJobMs), String(context.config.timing.shutdownMarginMs),
+        String(Math.max(0, generation - 1)),
+      ].join('\n') + '\n');
+    } catch (error) {
+      if (!(error instanceof SshInvocationError)) throw error;
+      const { classification } = error;
+      // Exit 4: the watchdog held the grant lock; the next tick arms again.
+      if (!error.result.timedOut && error.result.exitCode === 4 && Date.now() < bootDeadlineMs) {
+        return { resolved: false, readback: { provider, grantLockBusy: true } };
+      }
+      if (classification.transient && Date.now() < bootDeadlineMs) {
+        return {
+          resolved: false,
+          readback: { provider, sshReadiness: { ...classification, bootDeadlineMs } },
+        };
+      }
+      if (classification.transient) throw new Error(`ssh readiness failed: boot deadline expired (${classification.reason})`, { cause: error });
+      throw new Error(`ssh readiness failed: ${classification.reason}`, { cause: error });
+    }
+    const guest = await observeGuest(context, provider);
+    return { resolved: guest.grant?.generation === generation, readback: { provider, guest } };
+  }
+  if (pending.effect.type === 'start-vm' && provider.complete && provider.ownership === 'owned'
+    && provider.ownedMatches === 1 && provider.vmStatus === 'stopped' && pending.operationId !== undefined) {
+    const instance = exactOwnedInstance(await listInstances(context), expectedResource(context));
+    if (instance === null || instance.state !== 'stopped') return { resolved: false, readback: provider };
+    const operations = await listOperations(context);
+    const start = operations.find((item) => item.id === pending.operationId
+      && (item.resourceId === null || item.resourceId === instance.id));
+    const inFlight = operations.some((item) => (item.resourceId === instance.id || item.resourceId === null)
+      && (item.state === 'PENDING' || item.state === 'RUNNING'));
+    // Nebius allocates the public IPv4 address at start, so an exhausted address quota fails the
+    // start operation (gRPC RESOURCE_EXHAUSTED) and leaves the VM stopped.
+    const capacityRefusal = start?.capacityRefusal;
+    return {
+      resolved: false,
+      retireStoppedStart: start !== undefined && !inFlight
+        && (start.state === 'SUCCEEDED' || start.state === 'FAILED' || start.state === 'CANCELLED'),
+      ...(capacityRefusal === undefined ? {} : { capacityRefusal }),
+      readback: { provider, startOperation: start?.state ?? 'missing', inFlight, ...(capacityRefusal === undefined ? {} : { capacityRefusal }) },
+    };
+  }
+  if (pending.effect.type === 'create-vm' && pending.operationId !== undefined && provider.complete
+    && provider.vmStatus === 'absent' && provider.ownership === 'absent' && provider.ownedMatches === 0) {
+    // An unreadable operation list only keeps today's pending behaviour; it never clears the intent.
+    const create = await listOperations(context).then(
+      (operations) => operations.find((item) => item.id === pending.operationId),
+      () => undefined,
+    );
+    if (create?.state === 'FAILED' && create.capacityRefusal !== undefined) {
+      return { resolved: false, capacityRefusal: create.capacityRefusal, readback: { provider, createOperation: create.state, capacityRefusal: create.capacityRefusal } };
+    }
+    return { resolved: false, readback: { provider, createOperation: create?.state ?? 'missing' } };
+  }
+  if (pending.effect.type === 'register-runner' || pending.effect.type === 'begin-drain' || pending.effect.type === 'resume-admission') {
+    const guest = await observeGuest(context, provider);
+    if (pending.effect.type === 'register-runner') {
+      const runners = await context.github.listRunners(context.owner, context.repository);
+      if (!runners.complete) return { resolved: false, readback: { provider, guest } };
+      const state = await priorState(context);
+      const ownership = classifyOwnedRunners(runners.items, { expectedName: expectedRunnerName(context, state), ownershipLabel: context.config.runnerLabel });
+      return { resolved: ownership.ownership === 'owned' && guest.runnerActive === true, readback: { provider, guest, runnerOwnership: ownership.ownership } };
+    }
+    if (pending.effect.type === 'begin-drain') return { resolved: guest.status === 'drained' && guest.runnerActive === false && guest.workerActive === false, readback: { provider, guest } };
+    return { resolved: guest.admissionEnabled === true, readback: { provider, guest } };
+  }
+  const resolved = pending.effect.type === 'start-vm' ? false
+    : pending.effect.type === 'stop-vm' ? provider.vmStatus === 'stopped'
+      : pending.effect.type === 'create-vm' ? provider.ownership === 'owned'
+        : pending.effect.type === 'delete-vm' ? provider.complete && provider.vmStatus === 'absent' && provider.ownership === 'absent'
+          : true;
+  return { resolved, readback: provider };
+}
+
+async function interruptRecovery(context: RuntimeContext) {
+  const instances = await listInstances(context);
+  const instance = exactOwnedInstance(instances, expectedResource(context));
+  const unresolvedResources = instance === null ? [] : [instance.id];
+  try {
+    return await runInterruptRecovery({
+      timeoutMs: context.config.timing.bootTimeoutMs,
+      unresolvedResources,
+      recover: async (signal) => {
+        if (instance === null || instance.state === 'stopped') return;
+        if (signal.aborted) throw new Error('interrupt recovery aborted');
+        requireRecoveryPermit(context, 'stop');
+        const state = await priorState(context);
+        await runGuest(context, instance, '/opt/cirujano/drain', `${Math.max(1, state?.lifecycle.startCount ?? 1)}\n`);
+        const observed = await observe(context);
+        const runners = await context.github.listRunners(context.owner, context.repository);
+        if (!runners.complete) throw new Error(runners.reason ?? 'interrupt runner readback is incomplete');
+        const ownership = classifyOwnedRunners(runners.items, { expectedName: expectedRunnerName(context, state), ownershipLabel: context.config.runnerLabel });
+        if (!observed.queue.complete || observed.queue.ownedBusy !== false || observed.guest.complete !== true
+          || observed.guest.status !== 'drained' || observed.guest.admissionEnabled !== false
+          || observed.guest.workerActive !== false || observed.guest.runnerActive !== false || ownership.runner?.busy === true) {
+          throw new Error('interrupt recovery cannot stop while exact assignment or guest evidence is incomplete or active');
+        }
+        if (ownership.ownership === 'owned') await context.github.removeOwnedRunner(context.owner, context.repository, ownership);
+        else if (ownership.ownership !== 'absent') throw new Error(`interrupt runner ownership is ${ownership.ownership}`);
+        await writeJournalAtomic(context.directActionPath, { schemaVersion: 1, identity: context.identity, action: 'stop', stage: 'intent', observedAtMs: Date.now(), instanceId: instance.id, source: 'SIGINT' });
+        await writeJournalAtomic(context.directActionPath, { schemaVersion: 1, identity: context.identity, action: 'stop', stage: 'emitting', observedAtMs: Date.now(), instanceId: instance.id, source: 'SIGINT' });
+        const result = await emitControllerStop(context, instance.id, 'Nebius interrupt stop');
+        await writeJournalAtomic(context.directActionPath, { schemaVersion: 1, identity: context.identity, action: 'stop', stage: 'emitting', observedAtMs: Date.now(), instanceId: instance.id, source: 'SIGINT', ...result });
+        const terminal = await waitForTerminalProvider(context, 'stop', instance.id, signal);
+        if (!terminal.complete) throw new Error(`interrupt recovery has unresolved VM ${instance.id} in ${terminal.state}`);
+        await writeJournalAtomic(context.directActionPath, { schemaVersion: 1, identity: context.identity, action: 'stop', stage: 'resolved', observedAtMs: Date.now(), instanceId: instance.id, source: 'SIGINT', providerState: terminal.state, ...result });
+      },
+    });
+  } catch (error) {
+    return { completed: false as const, unresolvedResources, reason: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+async function waitForTerminalProvider(context: RuntimeContext, action: 'stop' | 'cleanup', instanceId: string, signal?: AbortSignal): Promise<{ complete: boolean; state: string }> {
+  const deadline = Date.now() + context.config.timing.bootTimeoutMs;
+  do {
+    if (signal?.aborted === true) return { complete: false, state: 'aborted' };
+    const instances = await listInstances(context);
+    const current = instances.find((item) => item.id === instanceId);
+    if (action === 'cleanup' && current === undefined) return { complete: true, state: 'absent' };
+    if (action === 'stop' && current?.state === 'stopped') return { complete: true, state: 'stopped' };
+    if (context.environment['CIRUJANO_RUNNER_ONCE'] === '1') return { complete: false, state: current?.state ?? 'absent' };
+    await new Promise<void>((resolveWait) => setTimeout(resolveWait, Math.min(context.config.timing.pollIntervalMs, 1_000)));
+  } while (Date.now() < deadline);
+  return { complete: false, state: 'timeout' };
+}
+
+async function directBoundary(context: RuntimeContext, name: string): Promise<void> {
+  const markerPath = context.environment['CIRUJANO_FIXTURE_BOUNDARY_PATH'];
+  if (markerPath === undefined) return;
+  if (context.environment['CIRUJANO_GH_PATH'] === undefined || context.environment['CIRUJANO_NEBIUS_PATH'] === undefined) throw new Error('fixture boundary requires injected process endpoints');
+  const absoluteMarker = absolutePath(markerPath, 'fixture boundary marker');
+  await writeFile(absoluteMarker, `${name}\n`, { flag: 'a', mode: 0o600 });
+  if (context.environment['CIRUJANO_FIXTURE_PAUSE_BOUNDARY'] === name) await new Promise<void>(() => undefined);
+}
+
+function requirePermit(context: RuntimeContext, operation: Permit['operations'][number]): Permit {
+  const validation = validatePermit(context.permit, context.identity, Date.now());
+  if (!validation.valid) throw new Error(validation.reason);
+  if (!context.permit!.operations.includes(operation)) throw new Error(`permit does not authorize ${operation}`);
+  return context.permit!;
+}
+
+function requireRecoveryPermit(context: RuntimeContext, operation: Permit['operations'][number]): Permit {
+  if (context.permit === null) throw new Error('approval permit is absent');
+  const validation = validatePermit(context.permit, context.identity, context.permit.issuedAtMs);
+  if (!validation.valid) throw new Error(validation.reason);
+  if (Date.now() < context.permit.issuedAtMs) throw new Error('permit is not active yet');
+  if (!context.permit.recoveryAllowed) throw new Error('permit does not authorize recovery');
+  if (!context.permit.operations.includes(operation)) throw new Error(`permit does not authorize ${operation} recovery`);
+  return context.permit;
+}
+
+function expectedResource(context: RuntimeContext): ExpectedNebiusResource {
+  return {
+    parentId: context.config.nebius.projectId,
+    name: `${context.config.ownership.resourcePrefix}-vm`,
+    labels: { 'cirujano-controller': context.config.ownership.controllerId, 'cirujano-config': context.identity.configHash },
+    nebius: context.config.nebius,
+  };
+}
+
+function exactOwnedInstance(instances: readonly NebiusInstance[], expected: ExpectedNebiusResource): NebiusInstance | null {
+  const matches = instances.filter((instance) => instanceMatches(instance, expected));
+  if (matches.length > 1) throw new Error(`found ${matches.length} matching owned VMs`);
+  if (matches.length === 0 && instances.some((instance) => instance.name === expected.name
+    || instance.labels['cirujano-controller'] === expected.labels['cirujano-controller']
+    || instance.labels['cirujano-config'] === expected.labels['cirujano-config'])) {
+    throw new Error('found a related VM whose immutable identity does not match');
+  }
+  return matches[0] ?? null;
+}
+
+async function cloudInit(context: RuntimeContext): Promise<string> {
+  const guestDirectory = requiredAbsoluteEnvironment(context.environment, 'CIRUJANO_GUEST_DIR');
+  const hostPrivateKeyPath = requiredAbsoluteEnvironment(context.environment, 'CIRUJANO_HOST_PRIVATE_KEY_PATH');
+  const loginPublicKeyPath = requiredAbsoluteEnvironment(context.environment, 'CIRUJANO_LOGIN_PUBLIC_KEY_PATH');
+  const runnerVersion = requiredEnvironment(context.environment, 'CIRUJANO_ACTIONS_RUNNER_VERSION');
+  const runnerSha256 = requiredEnvironment(context.environment, 'CIRUJANO_ACTIONS_RUNNER_SHA256');
+  const entries = await Promise.all(GUEST_FILE_NAMES.map(async (name) => [name, await readFile(join(guestDirectory, name), 'utf8')] as const));
+  return renderCloudInit({
+    runnerVersion,
+    runnerSha256,
+    sshHostPrivateKey: await readFile(hostPrivateKeyPath, 'utf8'),
+    sshHostPublicKey: context.config.ssh.publicKey,
+    sshLoginPublicKey: (await readFile(loginPublicKeyPath, 'utf8')).trim(),
+    guestFiles: Object.fromEntries(entries) as Record<GuestFileName, string>,
+  });
+}
+
+function instanceMatches(instance: NebiusInstance, expected: ExpectedNebiusResource): boolean {
+  return instance.parentId === expected.parentId && instance.name === expected.name
+    && Object.entries(expected.labels).every(([key, value]) => instance.labels[key] === value)
+    && Object.keys(instance.labels).length === Object.keys(expected.labels).length
+    && instance.recoveryPolicy === 'FAIL' && instance.platform === expected.nebius.platform
+    && instance.preset === expected.nebius.preset && instance.subnetId === expected.nebius.subnetId
+    && instance.diskType === expected.nebius.diskType.replaceAll('-', '_').toUpperCase()
+    && instance.diskSizeGiB === expected.nebius.diskSizeGiB && instance.imageId === expected.nebius.imageId;
+}
+
+type ExtendedGuestSnapshot = LifecycleInput['guest'] & { networkEgressBytes?: number };
+
+async function observeGuest(context: RuntimeContext, provider: LifecycleInput['provider']): Promise<ExtendedGuestSnapshot> {
+  const status = provider.vmStatus;
+  if (status === 'absent' || status === 'stopped') {
+    return { complete: true, status: 'offline', admissionEnabled: false, runnerActive: false, workerActive: false, grant: null };
+  }
+  if (provider.ownership !== 'owned' || provider.network === undefined) {
+    return { complete: false, status: status === 'starting' ? 'booting' : 'unknown', admissionEnabled: null, runnerActive: null, workerActive: null, grant: null };
+  }
+  try {
+    // The status probe runs every tick and its failure is already visible as an incomplete
+    // snapshot, so it never persists helper diagnostics.
+    const output = await runGuest(context, {
+      id: provider.network.vmId, publicIp: provider.network.ipAddress,
+    }, '/opt/cirujano/status', '', [], { persistFailure: false });
+    return parseGuestSnapshot(output);
+  } catch {
+    return { complete: false, status: status === 'starting' ? 'booting' : 'unknown', admissionEnabled: null, runnerActive: null, workerActive: null, grant: null };
+  }
+}
+
+async function runGuest(
+  context: RuntimeContext,
+  instance: Pick<NebiusInstance, 'id' | 'publicIp'>,
+  helper: string,
+  stdin: string,
+  secrets: readonly string[] = [],
+  options: { persistFailure: boolean } = { persistFailure: true },
+): Promise<string> {
+  if (instance.publicIp === null) throw new Error(`VM ${instance.id} has no public IP`);
+  const identityFile = requiredAbsoluteEnvironment(context.environment, 'CIRUJANO_SSH_KEY_PATH');
+  const sshPath = absolutePath(context.environment['CIRUJANO_SSH_PATH'] ?? '/usr/bin/ssh', 'SSH executable');
+  const knownHostsFile = join(context.stateDirectory, 'known_hosts');
+  const attemptTiming = sshAttemptTiming(context.config.timing.pollIntervalMs);
+  verifySshPublicKeyFingerprint(context.config.ssh.publicKey, context.config.ssh.fingerprint);
+  await mkdir(context.stateDirectory, { recursive: true, mode: 0o700 });
+  await writeFile(knownHostsFile, `${knownHostLine(instance.publicIp, 22, context.config.ssh.publicKey)}\n`, { mode: 0o600 });
+  await chmod(knownHostsFile, 0o600);
+  const invocation = buildSshInvocation({
+    sshPath, host: instance.publicIp, port: 22, user: 'runner', identityFile, knownHostsFile,
+    helper, stdin, timeoutSeconds: attemptTiming.connectTimeoutSeconds,
+  });
+  const result = await runProcess({
+    command: invocation.command, args: invocation.args,
+    ...(invocation.stdin === undefined ? {} : { stdin: invocation.stdin }),
+    timeoutMs: attemptTiming.processTimeoutMs, env: context.environment, secrets,
+  });
+  if (result.timedOut || result.exitCode !== 0) {
+    const error = new SshInvocationError(helper, result);
+    // Transient SSH readiness is expected during boot and already journaled as a readback;
+    // everything else is a helper or fatal transport failure whose output would otherwise be lost.
+    if (options.persistFailure && !error.classification.transient) await persistHelperFailure(context, error, secrets);
+    throw error;
+  }
+  return result.stdout;
+}
+
+const HELPER_OUTPUT_TAIL_BYTES = 4096;
+
+// Scrub before truncating so a credential straddling the cut cannot leak its suffix.
+function outputTail(text: string): string {
+  const bytes = Buffer.from(redactCredentialShapes(text));
+  return bytes.length <= HELPER_OUTPUT_TAIL_BYTES
+    ? bytes.toString('utf8')
+    : `[truncated]${bytes.subarray(-HELPER_OUTPUT_TAIL_BYTES).toString('utf8')}`;
+}
+
+async function persistHelperFailure(context: RuntimeContext, error: SshInvocationError, secrets: readonly string[]): Promise<void> {
+  try {
+    // runProcess already substituted these secrets; passing them again is belt and braces.
+    await appendRedactedEvent(context.helperDiagnosticsPath, {
+      schemaVersion: 1, type: 'helper-failure', observedAtMs: Date.now(), helper: error.helper,
+      reason: error.classification.reason,
+      exitCode: error.result.exitCode, signal: error.result.signal, timedOut: error.result.timedOut,
+      stderrTail: outputTail(error.result.stderr), stdoutTail: outputTail(error.result.stdout),
+    }, { secrets });
+  } catch {
+    // Diagnostics are best effort; the classified SSH error must still reach the caller.
+  }
+}
+
+class SshInvocationError extends Error {
+  readonly classification: SshReadinessClassification;
+
+  constructor(readonly helper: string, readonly result: SubprocessResult) {
+    const classification = classifySshReadinessFailure(result);
+    super(`${helper} failed: ${classification.reason}`);
+    this.classification = classification;
+  }
+}
+
+function parseGuestSnapshot(value: string): ExtendedGuestSnapshot {
+  const parsed = JSON.parse(value) as unknown;
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) throw new Error('guest status must be an object');
+  const item = parsed as Record<string, unknown>;
+  const allowed = new Set(['complete', 'status', 'admissionEnabled', 'runnerActive', 'workerActive', 'grant', 'watchdogReady', 'sshIdentityVerified', 'registrationReady', 'networkEgressBytes']);
+  if (Object.keys(item).some((key) => !allowed.has(key))) throw new Error('guest status contains an unknown field');
+  const statuses = ['offline', 'booting', 'ready', 'busy', 'draining', 'drained', 'failed', 'unknown'] as const;
+  if (typeof item.complete !== 'boolean' || typeof item.status !== 'string' || !statuses.includes(item.status as typeof statuses[number])) throw new Error('guest status fields are invalid');
+  for (const key of ['admissionEnabled', 'runnerActive', 'workerActive'] as const) if (typeof item[key] !== 'boolean' && item[key] !== null) throw new Error(`guest ${key} is invalid`);
+  let grant = null;
+  if (item.grant !== null) {
+    if (typeof item.grant !== 'object' || Array.isArray(item.grant)) throw new Error('guest grant is invalid');
+    const source = item.grant as Record<string, unknown>;
+    if (!Number.isInteger(source.generation) || !Number.isFinite(source.startedAtMs) || !Number.isFinite(source.deadlineMs)) throw new Error('guest grant fields are invalid');
+    grant = { generation: source.generation as number, startedAtMs: source.startedAtMs as number, deadlineMs: source.deadlineMs as number };
+  }
+  return {
+    complete: item.complete, status: item.status as typeof statuses[number],
+    admissionEnabled: item.admissionEnabled as boolean | null, runnerActive: item.runnerActive as boolean | null,
+    workerActive: item.workerActive as boolean | null, grant,
+    ...(typeof item.watchdogReady === 'boolean' ? { watchdogReady: item.watchdogReady } : {}),
+    ...(typeof item.sshIdentityVerified === 'boolean' ? { sshIdentityVerified: item.sshIdentityVerified } : {}),
+    ...(typeof item.registrationReady === 'boolean' ? { registrationReady: item.registrationReady } : {}),
+    ...(typeof item.networkEgressBytes === 'number' && Number.isFinite(item.networkEgressBytes) && item.networkEgressBytes >= 0 ? { networkEgressBytes: item.networkEgressBytes } : {}),
+  };
+}
+
+async function readAccounting(context: RuntimeContext, state: ControllerState | null, provider: LifecycleInput['provider'], nowMs: number): Promise<ObservedAccounting> {
+  try {
+    const value = await readJournal<Record<string, unknown>>(context.accountingPath);
+    if (value.schemaVersion !== 1 || JSON.stringify(value.identity) !== JSON.stringify(context.identity)) throw new Error('accounting identity does not match');
+    const diskStartedAtMs = value.diskStartedAtMs;
+    const generation = value.generation;
+    for (const key of ['diskRetainedMs', 'runtimeBaselineMs', 'networkEgressBytes'] as const) {
+      if (typeof value[key] !== 'number' || !Number.isFinite(value[key]) || value[key] < 0) throw new Error(`accounting ${key} is invalid`);
+    }
+    if (diskStartedAtMs !== null && (typeof diskStartedAtMs !== 'number' || !Number.isFinite(diskStartedAtMs))) throw new Error('accounting disk timestamp is invalid');
+    if (generation !== null && (!Number.isInteger(generation) || (generation as number) < 1)) throw new Error('accounting generation is invalid');
+    for (const key of ['networkBaselineBytes', 'networkGenerationStartBytes'] as const) if (value[key] !== undefined && (typeof value[key] !== 'number' || !Number.isFinite(value[key]) || value[key] < 0)) throw new Error(`accounting ${key} is invalid`);
+    return { diskStartedAtMs: diskStartedAtMs as number | null, diskRetainedMs: value.diskRetainedMs as number, runtimeBaselineMs: value.runtimeBaselineMs as number, generation: generation as number | null, networkEgressBytes: value.networkEgressBytes as number, ...(value.networkBaselineBytes === undefined ? {} : { networkBaselineBytes: value.networkBaselineBytes as number }), ...(value.networkGenerationStartBytes === undefined ? {} : { networkGenerationStartBytes: value.networkGenerationStartBytes as number }) };
+  } catch (error) {
+    if (!(typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT')) throw error;
+    if (provider.ownership === 'owned' && state === null) throw new Error('owned VM has no durable accounting baseline');
+    const createdAtMs = state?.pendingEffect?.effect.type === 'create-vm' ? state.pendingEffect.createdAtMs : nowMs;
+    return { diskStartedAtMs: provider.ownership === 'owned' ? createdAtMs : null, diskRetainedMs: 0, runtimeBaselineMs: state?.lifecycle.cumulativeRuntimeMs ?? 0, generation: null, networkEgressBytes: 0 };
+  }
+}
+
+async function readActiveJobMarker(context: RuntimeContext): Promise<boolean> {
+  try {
+    const value = await readJournal<Record<string, unknown>>(context.activeJobPath);
+    if (value.schemaVersion !== 1 || JSON.stringify(value.identity) !== JSON.stringify(context.identity) || typeof value.activeJobKnown !== 'boolean') {
+      throw new Error('active-job state is invalid or belongs to another identity');
+    }
+    return value.activeJobKnown;
+  } catch (error) {
+    if (typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT') return false;
+    throw error;
+  }
+}
+
+interface KnownAssignment {
+  runId: number;
+  runAttempt: number;
+  jobId: number;
+  runnerId: number;
+  runnerName: string;
+  conclusion: string | null;
+}
+
+async function readAssignments(context: RuntimeContext): Promise<KnownAssignment[]> {
+  try {
+    const value = await readJournal<Record<string, unknown>>(context.assignmentPath);
+    if (value.schemaVersion !== 1 || JSON.stringify(value.identity) !== JSON.stringify(context.identity) || !Array.isArray(value.assignments)) throw new Error('assignment state is invalid or belongs to another identity');
+    return value.assignments.map((entry, index) => {
+      if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) throw new Error(`assignment ${index} is invalid`);
+      const item = entry as Record<string, unknown>;
+      for (const key of ['runId', 'runAttempt', 'jobId', 'runnerId'] as const) if (!Number.isInteger(item[key]) || (item[key] as number) < 1) throw new Error(`assignment ${index} ${key} is invalid`);
+      if (typeof item.runnerName !== 'string' || item.runnerName.length === 0 || (item.conclusion !== null && typeof item.conclusion !== 'string')) throw new Error(`assignment ${index} identity is invalid`);
+      return item as unknown as KnownAssignment;
+    });
+  } catch (error) {
+    if (typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT') return [];
+    throw error;
+  }
+}
+
+function mergeAssignments(prior: readonly KnownAssignment[], jobs: readonly WorkflowJob[], runnerName: string): KnownAssignment[] {
+  const merged = new Map(prior.map((entry) => [`${entry.runId}:${entry.runAttempt}:${entry.jobId}`, entry]));
+  for (const job of jobs) {
+    const previous = merged.get(job.key);
+    const belongs = job.runnerId !== null && job.runnerName === runnerName;
+    if (!belongs && previous === undefined) continue;
+    const runnerId = job.runnerId ?? previous?.runnerId;
+    const resolvedRunnerName = job.runnerName ?? previous?.runnerName;
+    if (runnerId === undefined || resolvedRunnerName === undefined) continue;
+    merged.set(job.key, { runId: job.runId, runAttempt: job.runAttempt, jobId: job.id, runnerId, runnerName: resolvedRunnerName, conclusion: job.status === 'completed' ? job.conclusion ?? 'unknown' : null });
+  }
+  return [...merged.values()];
+}
+
+async function readDirectAction(context: RuntimeContext): Promise<{ action: 'stop' | 'cleanup'; stage: 'intent' | 'emitting' | 'resolved'; instanceId: string; [key: string]: unknown } | null> {
+  try {
+    const value = await readJournal<Record<string, unknown>>(context.directActionPath);
+    if (value.schemaVersion !== 1 || JSON.stringify(value.identity) !== JSON.stringify(context.identity)) throw new Error('direct action identity does not match');
+    if ((value.action !== 'stop' && value.action !== 'cleanup') || !['intent', 'emitting', 'resolved'].includes(String(value.stage))) throw new Error('direct action state is invalid');
+    if (typeof value.instanceId !== 'string' || value.instanceId.length === 0) {
+      if (value.stage === 'resolved' && value.providerState === 'absent') return null;
+      throw new Error('direct action instance identity is invalid');
+    }
+    return value as { action: 'stop' | 'cleanup'; stage: 'intent' | 'emitting' | 'resolved'; instanceId: string; [key: string]: unknown };
+  } catch (error) {
+    if (typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT') return null;
+    throw error;
+  }
+}
+
+// A stop the controller itself emits (direct action, recovery retry or SIGINT recovery)
+// is recorded at emission, so the lifecycle guard can tell it from a guest that powered
+// itself off. Finding a VM already stopped records nothing: that stop was not ours.
+async function emitControllerStop(context: RuntimeContext, instanceId: string, label: string): Promise<{ operationId?: string }> {
+  const result = operation(await context.nebius.stop(instanceId), label);
+  const state = await priorState(context);
+  if (state !== null && GUEST_UP_STATES.includes(state.lifecycle.state)) {
+    await writeJournalAtomic(context.journalPath, { ...state, lifecycle: { ...state.lifecycle, state: 'stopping' } });
+  }
+  return result;
+}
+
+async function priorState(context: RuntimeContext): Promise<ControllerState | null> {
+  try { return parseControllerState(await readJournal<unknown>(context.journalPath)); }
+  catch (error) {
+    if (typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT') return null;
+    throw error;
+  }
+}
+
+function expectedRunnerName(context: RuntimeContext, state: ControllerState | null): string {
+  return `${context.config.ownership.resourcePrefix}-g${Math.max(1, state?.lifecycle.startCount ?? 1)}`;
+}
+
+function projectedStartCost(context: RuntimeContext): number {
+  const rawNetworkLimit = context.environment['CIRUJANO_NETWORK_EGRESS_LIMIT_GIB'];
+  if (rawNetworkLimit === undefined) return Number.POSITIVE_INFINITY;
+  const networkLimitGiB = Number(rawNetworkLimit);
+  if (!Number.isFinite(networkLimitGiB) || networkLimitGiB < 0) return Number.POSITIVE_INFINITY;
+  const config = context.config;
+  const compute = (config.timing.lifetimeMs / 3_600_000) * config.rates.computeUsdPerHour;
+  const disk = (config.timing.lifetimeMs / THIRTY_DAY_MONTH_MS) * config.nebius.diskSizeGiB * config.rates.diskUsdPerGibMonth;
+  return compute + disk + networkLimitGiB * config.rates.networkEgressUsdPerGib;
+}
+
+function roundMoney(value: number): number {
+  return Math.round((value + Number.EPSILON) * 1_000_000) / 1_000_000;
+}
+
+function collection<T>(complete: boolean, items: readonly T[], reason?: string, retryAfterMs?: number) {
+  return {
+    complete, items,
+    ...(reason === undefined ? {} : { reason }),
+    ...(retryAfterMs === undefined ? {} : { retryAfterMs }),
+  };
+}
+
+async function requireSuccessful<T extends { exitCode: number; timedOut: boolean; stderr: string }>(result: T, operationName: string): Promise<T> {
+  if (result.timedOut) throw new Error(`${operationName} timed out`);
+  if (result.exitCode !== 0) throw new Error(`${operationName} failed: ${result.stderr}`);
+  return result;
+}
+
+// A mutation the provider rejected outright for exhausted quota becomes a capacity wait; any other
+// failure keeps the ambiguous-intent handling below.
+function refuseOnCapacity<T extends { exitCode: number; timedOut: boolean; stderr: string; stdout: string }>(result: T, name: string): T {
+  if (result.timedOut || result.exitCode === 0) return result;
+  const refusal = classifyCapacityRefusal(`${result.stderr}\n${result.stdout}`);
+  if (refusal === null) return result;
+  throw new ProviderCapacityError(refusal, `${name} refused for exhausted quota${refusal.quotas.length > 0 ? ` (${refusal.quotas.join(',')})` : ''}`);
+}
+
+async function operation(resultValue: { exitCode: number; timedOut: boolean; stderr: string; stdout: string }, name: string): Promise<{ operationId?: string }> {
+  const result = await requireSuccessful(resultValue, name);
+  const operationId = parseMutationOperationId(result.stdout);
+  return operationId === null ? {} : { operationId };
+}
+
+async function executableDigest(): Promise<string> {
+  try { return createHash('sha256').update(await readFile(process.argv[1] ?? '')).digest('hex'); }
+  catch { return createHash('sha256').update('cirujano-runner-development').digest('hex'); }
+}
+
+function absolutePath(value: string, name: string): string {
+  if (!value.startsWith('/')) throw new Error(`${name} path must be absolute`);
+  return value;
+}
+
+function requiredEnvironment(environment: NodeJS.ProcessEnv, name: string): string {
+  const value = environment[name];
+  if (value === undefined || value.length === 0) throw new Error(`${name} is required`);
+  return value;
+}
+
+function requiredAbsoluteEnvironment(environment: NodeJS.ProcessEnv, name: string): string {
+  return absolutePath(requiredEnvironment(environment, name), name);
+}

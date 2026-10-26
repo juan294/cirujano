@@ -1,0 +1,28 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  cirujano_validated_push:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: read
+    outputs:
+      validated: ${{ steps.classify.outputs.validated }}
+    steps:
+      - id: classify
+        run: echo "validated=false" >> "$GITHUB_OUTPUT"
+  test:
+    needs: [cirujano_validated_push]
+    if: ${{ !cancelled() && (needs.cirujano_validated_push.result != 'success' || needs.cirujano_validated_push.outputs.validated != 'true') }}
+    runs-on: ubuntu-latest
+    steps:
+      - run: pnpm test

@@ -1,0 +1,29 @@
+name: Shapes
+on:
+  push:
+    branches:
+      - develop
+  pull_request:
+    branches:
+      - develop
+permissions: read-all
+jobs:
+  # Lint has no dependencies.
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - run: pnpm lint
+  unit:
+    needs:
+      - lint # unit waits for lint
+    if: "${{ github.repository_owner == 'public-example' }}"
+    runs-on: ubuntu-latest
+    steps:
+      - run: pnpm test
+  package:
+    if: >-
+      github.repository != ''
+    needs: [lint, unit]
+    runs-on: ubuntu-latest
+    steps:
+      - run: pnpm pack

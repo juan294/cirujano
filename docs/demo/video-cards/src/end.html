@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>End card</title>
+<link rel="stylesheet" href="base.css">
+<style>
+  .wrap { position: absolute; left: 160px; top: 170px; right: 160px; }
+  .brand { display: flex; align-items: center; gap: 44px; }
+  .brand svg { width: 170px; height: 170px; border-radius: 30px; outline: 3px solid var(--line); }
+  .brand h1 { font-size: 168px; font-weight: 800; letter-spacing: -.02em; }
+  .tagline { font-size: 68px; font-weight: 600; color: var(--accent); margin-top: 44px; }
+  .rows { margin-top: 80px; display: grid; gap: 26px; }
+  .row { display: flex; align-items: center; gap: 30px; font-size: 46px; }
+  .row .k { font-size: 30px; color: var(--muted); width: 190px; text-transform: uppercase; letter-spacing: .08em; }
+  .row code { font-family: var(--mono); background: var(--code); border: 2px solid var(--line); border-radius: 14px; padding: 12px 28px; }
+  .built { position: absolute; left: 160px; bottom: 80px; font-size: 32px; line-height: 1.5; color: var(--muted); }
+</style></head>
+<body>
+  <div class="wrap">
+    <div class="brand">
+      <svg viewBox="0 0 64 64" aria-label="Cirujano"><rect width="64" height="64" fill="#151b23"/><g stroke="#e8edf2" stroke-width="5" stroke-linecap="round"><path d="M14 22 H37"/><path d="M14 32 H33"/><path d="M14 42 H29"/></g><g stroke="#8b97a5" stroke-opacity=".45" stroke-width="5" stroke-linecap="round"><path d="M47 22 H50"/><path d="M43 32 H50"/><path d="M39 42 H50"/></g><path d="M46 11 L30 53" stroke="#ff7a59" stroke-width="3" stroke-linecap="round"/></svg>
+      <h1>Cirujano</h1>
+    </div>
+    <div class="tagline">Keep every check. Cut every wasted dollar.</div>
+    <div class="rows">
+      <div class="row"><span class="k">Code</span><code>github.com/juan294/cirujano</code></div>
+      <div class="row"><span class="k">Proof</span><code>github.com/juan294/cirujano-push-proof/pull/8</code></div>
+    </div>
+  </div>
+  <div class="built">Built on Nebius Token Factory, Token Factory Sandboxes and Nebius AI Cloud with NVIDIA Nemotron.<br>Cirujano proposes, a human decides.</div>
+</body></html>

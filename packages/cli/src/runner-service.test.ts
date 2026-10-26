@@ -1,0 +1,1157 @@
+import { execFile, spawn } from 'node:child_process';
+import { access, chmod, mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { promisify } from 'node:util';
+import { beforeAll, describe, expect, it } from 'vitest';
+import { generateKeyPairSync } from 'node:crypto';
+import { parseRunnerConfig, runnerConfigHash, verifySshPublicKeyFingerprint } from '@cirujano/runner';
+
+import { runCli, type CliIo } from './cli.js';
+import { advanceObservedLifecycle, createRunnerCommandService } from './runner-service.js';
+
+const executeFile = promisify(execFile);
+const packageDirectory = resolve(import.meta.dirname, '..');
+
+beforeAll(async () => {
+  await executeFile(process.execPath, ['scripts/bundle.mjs'], { cwd: packageDirectory });
+});
+
+describe('production runner command composition (R11/R12)', () => {
+  it('accounts from controller timestamps despite forged or missing guest time (SE-H1)', () => {
+    const observation = {
+      nowMs: 10_000,
+      lifecycle: { state: 'busy', startCount: 2, cumulativeRuntimeMs: 500, cumulativeCostUsd: 0, outstandingIntent: null, idleObservations: [], grantDeadlineMs: 20_000, grantStartedAtMs: 8_000 },
+      providerPresent: true, providerRunning: true, lifetimeMs: 12_000, queueComplete: false, ownedBusy: true,
+      guest: { complete: false, status: 'unknown', generation: null, startedAtMs: null, networkEgressBytes: null },
+      accounting: { diskStartedAtMs: 9_000, diskRetainedMs: 0, runtimeBaselineMs: 500, generation: 1, networkEgressBytes: 0 },
+      rates: validRunnerConfig.rates, diskSizeGiB: 80,
+    } as const;
+    const first = advanceObservedLifecycle(observation);
+    expect(first.lifecycle.cumulativeRuntimeMs).toBe(2_500);
+    expect(first.accounting.generation).toBe(2);
+    const forged = advanceObservedLifecycle({ ...observation, nowMs: 11_000, lifecycle: first.lifecycle, accounting: first.accounting,
+      guest: { ...observation.guest, generation: 99 } });
+    expect(forged.lifecycle.cumulativeRuntimeMs).toBe(3_500);
+    expect(forged.accounting.generation).toBe(2);
+    const repeated = advanceObservedLifecycle({ ...observation, nowMs: 11_000, lifecycle: forged.lifecycle, accounting: forged.accounting });
+    expect(repeated.lifecycle.cumulativeRuntimeMs).toBe(3_500);
+    const stopped = advanceObservedLifecycle({ ...observation, nowMs: 12_000, providerRunning: false, lifecycle: repeated.lifecycle, accounting: repeated.accounting });
+    expect(stopped.lifecycle.cumulativeRuntimeMs).toBe(3_500);
+  });
+
+  it('uses a conservative lifetime bound for legacy journals without inventing start evidence (SE-H1)', () => {
+    const legacy = {
+      nowMs: 10_000,
+      lifecycle: { state: 'busy', startCount: 1, cumulativeRuntimeMs: 0, cumulativeCostUsd: 0, outstandingIntent: null, idleObservations: [], grantDeadlineMs: 20_000 },
+      providerPresent: true, providerRunning: true, lifetimeMs: 15_000, queueComplete: false, ownedBusy: true,
+      guest: { complete: false, status: 'unknown', generation: null, startedAtMs: null, networkEgressBytes: null },
+      accounting: { diskStartedAtMs: 9_000, diskRetainedMs: 0, runtimeBaselineMs: 0, generation: null, networkEgressBytes: 0 },
+      rates: validRunnerConfig.rates, diskSizeGiB: 80,
+    } as const;
+    const result = advanceObservedLifecycle(legacy);
+    expect(result.lifecycle.cumulativeRuntimeMs).toBe(5_000);
+    expect(result.lifecycle).not.toHaveProperty('grantStartedAtMs');
+  });
+
+  it('derives generation-bound idle evidence and monotonic full-rate accounting from readbacks', () => {
+    const nowMs = 10_000;
+    const observation = {
+      nowMs,
+      lifecycle: { state: 'draining', startCount: 2, cumulativeRuntimeMs: 500, cumulativeCostUsd: 0.01, outstandingIntent: null, idleObservations: [], grantDeadlineMs: 20_000, grantStartedAtMs: 8_000 },
+      providerPresent: true, providerRunning: true, lifetimeMs: 12_000,
+      queueComplete: true,
+      ownedBusy: false,
+      guest: { complete: true, status: 'drained', generation: 2, startedAtMs: 8_000, networkEgressBytes: 1_073_741_824 },
+      accounting: { diskStartedAtMs: 1_000, diskRetainedMs: 0, runtimeBaselineMs: 500, generation: 2, networkEgressBytes: 0 },
+      rates: validRunnerConfig.rates,
+      diskSizeGiB: 80,
+    } as const;
+    const result = advanceObservedLifecycle(observation);
+    expect(result.lifecycle.idleObservations).toEqual([{ observedAtMs: nowMs, complete: true, generation: 2 }]);
+    expect(result.lifecycle.cumulativeRuntimeMs).toBe(2_500);
+    expect(result.lifecycle.cumulativeCostUsd).toBeGreaterThan(0.05);
+    const repeated = advanceObservedLifecycle({
+      ...observation,
+      nowMs: nowMs + 1_000,
+      lifecycle: result.lifecycle,
+      accounting: result.accounting,
+    });
+    expect(repeated.lifecycle.cumulativeRuntimeMs).toBeGreaterThanOrEqual(result.lifecycle.cumulativeRuntimeMs);
+    expect(repeated.lifecycle.cumulativeCostUsd).toBeGreaterThanOrEqual(result.lifecycle.cumulativeCostUsd);
+  });
+  it('keeps recording idle evidence once the observation window is full', () => {
+    const full = Array.from({ length: 100 }, (_, index) => ({ observedAtMs: index + 1, complete: true, generation: 2 }));
+    const result = advanceObservedLifecycle({
+      nowMs: 10_000,
+      lifecycle: { state: 'draining', startCount: 2, cumulativeRuntimeMs: 0, cumulativeCostUsd: 0, outstandingIntent: null, idleObservations: full, grantDeadlineMs: 20_000, grantStartedAtMs: 8_000 },
+      providerPresent: true, providerRunning: true, lifetimeMs: 12_000, queueComplete: true, ownedBusy: false,
+      guest: { complete: true, status: 'drained', generation: 2, networkEgressBytes: 0 },
+      accounting: { diskStartedAtMs: 1_000, diskRetainedMs: 0, runtimeBaselineMs: 0, generation: 2, networkEgressBytes: 0 },
+      rates: validRunnerConfig.rates, diskSizeGiB: 80,
+    });
+    // The controller merge trims to the latest 100; the observation layer must still append.
+    expect(result.lifecycle.idleObservations).toHaveLength(101);
+    expect(result.lifecycle.idleObservations.at(-1)).toEqual({ observedAtMs: 10_000, complete: true, generation: 2 });
+  });
+  it('marks a generation leaving idle once, so a resumed drain restarts its grace', () => {
+    const base = {
+      lifecycle: { state: 'draining', startCount: 2, cumulativeRuntimeMs: 0, cumulativeCostUsd: 0, outstandingIntent: null, grantDeadlineMs: 20_000, grantStartedAtMs: 8_000,
+        idleObservations: [{ observedAtMs: 1_000, complete: true, generation: 2 }] },
+      providerPresent: true, providerRunning: true, lifetimeMs: 12_000, queueComplete: true,
+      accounting: { diskStartedAtMs: 1_000, diskRetainedMs: 0, runtimeBaselineMs: 0, generation: 2, networkEgressBytes: 0 },
+      rates: validRunnerConfig.rates, diskSizeGiB: 80,
+    } as const;
+    const busy = { complete: true, status: 'busy', generation: 2, startedAtMs: 500, networkEgressBytes: 0 };
+    const interrupted = advanceObservedLifecycle({ ...base, nowMs: 2_000, ownedBusy: true, guest: busy });
+    expect(interrupted.lifecycle.idleObservations.at(-1)).toEqual({ observedAtMs: 2_000, complete: false, generation: 2 });
+    const stillBusy = advanceObservedLifecycle({ ...base, nowMs: 3_000, ownedBusy: true, guest: busy, lifecycle: interrupted.lifecycle, accounting: interrupted.accounting });
+    expect(stillBusy.lifecycle.idleObservations).toHaveLength(2);
+    const unknown = advanceObservedLifecycle({ ...base, nowMs: 2_000, ownedBusy: null, guest: busy });
+    expect(unknown.lifecycle.idleObservations).toHaveLength(1);
+  });
+  it('inspects live repository and provider identity through injected process endpoints', async () => {
+    const fixture = await createFixture();
+    const io = captureIo();
+    const service = createRunnerCommandService(fixture.env);
+    expect(await service.run({ command: 'runner', action: 'inspect', configPath: fixture.configPath, format: 'json' }, io)).toBe(0);
+    expect(JSON.parse(io.out.join(''))).toMatchObject({
+      schemaVersion: 1,
+      command: 'runner inspect',
+      repository: { id: 123, nameWithOwner: 'trusted/private', visibility: 'private' },
+      provider: { ownedMatches: 0, state: 'absent' },
+      rates: { quotedAt: '2026-09-13' },
+    });
+  });
+
+  it('still observes the provider when the project listing exceeds 64 KiB', async () => {
+    // Live 2026-09-17: a second enrolled VM pushed `nebius compute instance list` past the process
+    // runner's 64 KiB default, the truncated JSON failed to parse, and every controller sharing the
+    // project went blind (`resource ownership is unknown`).
+    const fixture = await createFixture();
+    const io = captureIo();
+    const service = createRunnerCommandService({ ...fixture.env, CIRUJANO_FIXTURE_UNRELATED_INSTANCES: '300' });
+    expect(await service.run({ command: 'runner', action: 'inspect', configPath: fixture.configPath, format: 'json' }, io)).toBe(0);
+    expect(JSON.parse(io.out.join(''))).toMatchObject({ provider: { ownedMatches: 0, state: 'absent' } });
+  });
+
+  it('runs one lock-scoped dry-run tick and performs zero provider writes without a permit', async () => {
+    const fixture = await createFixture();
+    const io = captureIo();
+    const service = createRunnerCommandService({ ...fixture.env, CIRUJANO_RUNNER_ONCE: '1' });
+    expect(await service.run({ command: 'runner', action: 'watch', configPath: fixture.configPath, dryRun: true }, io)).toBe(0);
+    const log = await readFile(fixture.logPath, 'utf8');
+    expect(log).not.toMatch(/--method (?:POST|DELETE)| instance (?:create|start|stop|delete)/u);
+    expect(io.out.join('')).toContain('"type":"tick"');
+  });
+
+  it('blocks an authorized start when the conservative network envelope is unbounded', async () => {
+    const fixture = await createLifecycleFixture();
+    await builtTick(fixture);
+    await updateScenario(fixture, (state) => { state.jobs[0]!.status = 'queued'; });
+    const environment: NodeJS.ProcessEnv = { ...fixture.env, CIRUJANO_RUNNER_ONCE: '1' };
+    delete environment.CIRUJANO_NETWORK_EGRESS_LIMIT_GIB;
+    const io = captureIo();
+    expect(await runCli(['runner', 'watch', '--config', fixture.configPath, '--permit', fixture.permitPath], io, createRunnerCommandService(environment))).toBe(1);
+    expect(io.out.join('')).toContain('"status":"blocked"');
+    expect(await readFile(join(fixture.directory, 'commands.log'), 'utf8')).not.toContain('instance create');
+  });
+
+  it('spawns the built CLI against local fixtures for inspect and no-permit dry-run', async () => {
+    const fixture = await createFixture();
+    const executable = join(packageDirectory, 'dist/bin.js');
+    const inspect = await executeFile(process.execPath, [executable, 'runner', 'inspect', '--config', fixture.configPath, '--format', 'json'], {
+      env: fixture.env,
+    });
+    expect(JSON.parse(inspect.stdout)).toMatchObject({ command: 'runner inspect', provider: { state: 'absent' } });
+    const dryRun = await executeFile(process.execPath, [executable, 'runner', 'watch', '--config', fixture.configPath, '--dry-run'], {
+      env: { ...fixture.env, CIRUJANO_RUNNER_ONCE: '1' },
+    });
+    expect(dryRun.stdout).toContain('"type":"tick"');
+    expect(await readFile(fixture.logPath, 'utf8')).not.toMatch(/--method (?:POST|DELETE)| instance (?:create|start|stop|delete)/u);
+  });
+
+  it('runs the launchd wrapper against the built bundle in dry-run and journals a first tick', async () => {
+    const fixture = await createFixture();
+    const stateDirectory = resolve(fixture.configPath, '..');
+    const controllerKeyPath = join(stateDirectory, 'controller_ed25519');
+    await executeFile('/usr/bin/ssh-keygen', ['-q', '-t', 'ed25519', '-N', '', '-f', controllerKeyPath]);
+    await writeFile(join(stateDirectory, 'ssh_host_ed25519_key'), 'fixture host key\n', { mode: 0o600 });
+    await writeFile(join(stateDirectory, 'actions-runner.env'), 'CIRUJANO_ACTIONS_RUNNER_VERSION=2.337.0\nCIRUJANO_ACTIONS_RUNNER_SHA256=' + 'a'.repeat(64) + '\n');
+    const wrapper = resolve(packageDirectory, '../../scripts/run-cirujano-controller.sh');
+    const result = await executeFile(wrapper, [], {
+      env: {
+        ...fixture.env, CIRUJANO_RUNNER_ONCE: '1',
+        CIRUJANO_RUNNER_STATE_DIR: stateDirectory, CIRUJANO_CLI_PATH: join(packageDirectory, 'dist/bin.js'),
+        CIRUJANO_GUEST_DIR: resolve(packageDirectory, '../runner/guest'), CIRUJANO_CONTROLLER_KEY_PATH: controllerKeyPath,
+      },
+    });
+    expect(result.stdout).toContain('observing only');
+    expect(result.stdout).toContain('"type":"tick","status":"idle"');
+    expect(await readFile(join(stateDirectory, 'events.jsonl'), 'utf8')).toContain('"type":"decision"');
+    expect(await readFile(fixture.logPath, 'utf8')).not.toMatch(/instance (?:create|start|stop|delete)/u);
+  });
+
+  it('preserves built CLI estimate exit 0, runtime exit 1 and usage exit 2', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'cirujano-built-exits-'));
+    const jobsPath = join(directory, 'jobs.json');
+    const badPath = join(directory, 'bad.json');
+    await writeFile(jobsPath, JSON.stringify({ jobs: [{ name: 'e2e', started_at: '2026-09-13T10:00:00Z', completed_at: '2026-09-13T10:01:01Z' }] }));
+    await writeFile(badPath, JSON.stringify({ jobs: [{ id: 1 }] }));
+    const executable = join(packageDirectory, 'dist/bin.js');
+    const success = await executeFile(process.execPath, [executable, 'estimate', '--jobs', jobsPath, '--format', 'json']);
+    expect(JSON.parse(success.stdout)).toEqual({ billableMinutes: 2, measuredJobs: 1, skippedJobs: 0 });
+    const runtime = await executeFile(process.execPath, [executable, 'estimate', '--jobs', badPath])
+      .then((value) => ({ code: 0, ...value })).catch((error: { code?: number; stderr?: string }) => ({ code: error.code ?? 1, stderr: error.stderr ?? '' }));
+    expect(runtime.code).toBe(1);
+    expect(runtime.stderr).toContain('bad.json');
+    const usage = await executeFile(process.execPath, [executable, 'estimate'])
+      .then((value) => ({ code: 0, ...value })).catch((error: { code?: number; stderr?: string }) => ({ code: error.code ?? 1, stderr: error.stderr ?? '' }));
+    expect(usage.code).toBe(2);
+    expect(usage.stderr).toContain('estimate requires --jobs');
+  });
+
+  it('observes a running guest through the exact status helper and a private known-hosts file', async () => {
+    const fixture = await createFixture(true);
+    const io = captureIo();
+    const service = createRunnerCommandService({ ...fixture.env, CIRUJANO_RUNNER_ONCE: '1' });
+    await expect(service.run({ command: 'runner', action: 'watch', configPath: fixture.configPath, dryRun: true }, io)).rejects.toThrow(/accounting baseline/);
+    const log = await readFile(fixture.logPath, 'utf8');
+    expect(log).toContain('/opt/cirujano/status');
+    expect(log).toContain('StrictHostKeyChecking=yes');
+  }, 15_000);
+
+  it('runs a registration lifecycle effect using token-on-stdin and exact SSH helper argv', async () => {
+    const fixture = await createFixture(true, true);
+    const io = captureIo();
+    const service = createRunnerCommandService({ ...fixture.env, CIRUJANO_RUNNER_ONCE: '1' });
+    expect(await service.run({ command: 'runner', action: 'watch', configPath: fixture.configPath, permitPath: fixture.permitPath!, dryRun: false }, io)).toBe(0);
+    expect(io.out.join('')).toContain('"status":"mutated"');
+    const log = await readFile(fixture.logPath, 'utf8');
+    expect(log).toContain('/opt/cirujano/register-runner');
+    expect(log).toContain('stdin=trusted/private|cirujano-a-g1|cirujano-pilot-a|1');
+    expect(log).not.toContain('fixture-registration-token');
+  }, 15_000);
+
+  it('journals direct stop and cleanup before provider writes and verifies terminal readback', async () => {
+    const fixture = await createFixture(true, true, true);
+    const service = createRunnerCommandService({ ...fixture.env, CIRUJANO_RUNNER_ONCE: '1' });
+    expect(await service.run({ command: 'runner', action: 'stop', configPath: fixture.configPath, permitPath: fixture.permitPath! }, captureIo())).toBe(0);
+    expect(JSON.parse(await readFile(join(resolve(fixture.configPath, '..'), 'direct-action-state.json'), 'utf8'))).toMatchObject({ action: 'stop', stage: 'resolved', providerState: 'stopped' });
+    expect(await service.run({ command: 'runner', action: 'cleanup', configPath: fixture.configPath, permitPath: fixture.permitPath! }, captureIo())).toBe(0);
+    expect(JSON.parse(await readFile(join(resolve(fixture.configPath, '..'), 'direct-action-state.json'), 'utf8'))).toMatchObject({ action: 'cleanup', stage: 'resolved', providerState: 'absent' });
+  }, 20_000);
+
+  it('does not replay a resolved stop once the provider shows the VM running again', async () => {
+    // 2026-09-23 P2: a later generation restarted the VM, yet runner stop answered done/stopped from the old record.
+    const fixture = await createFixture(true, true, true);
+    const service = createRunnerCommandService({ ...fixture.env, CIRUJANO_RUNNER_ONCE: '1' });
+    expect(await service.run({ command: 'runner', action: 'stop', configPath: fixture.configPath, permitPath: fixture.permitPath! }, captureIo())).toBe(0);
+    await writeFile(fixture.env.CIRUJANO_PROVIDER_STATE_PATH!, 'RUNNING');
+    const io = captureIo();
+    expect(await service.run({ command: 'runner', action: 'stop', configPath: fixture.configPath, permitPath: fixture.permitPath! }, io)).toBe(0);
+    expect((await readFile(fixture.logPath, 'utf8')).split('\n').filter((line) => line.includes('instance stop'))).toHaveLength(2);
+    expect(JSON.parse(await readFile(join(resolve(fixture.configPath, '..'), 'direct-action-state.json'), 'utf8'))).toMatchObject({ action: 'stop', stage: 'resolved', providerState: 'stopped' });
+  });
+
+  it('returns runtime exit 1 for an expired permit without emitting provider mutations', async () => {
+    const fixture = await createFixture(true, true, true);
+    const permit = JSON.parse(await readFile(fixture.permitPath!, 'utf8')) as Record<string, unknown>;
+    permit.expiresAtMs = Date.now() - 1;
+    await writeFile(fixture.permitPath!, JSON.stringify(permit));
+    const io = captureIo();
+    const service = createRunnerCommandService(fixture.env);
+    expect(await runCli(['runner', 'stop', '--config', fixture.configPath, '--permit', fixture.permitPath!], io, service)).toBe(1);
+    expect(io.err.join('')).toMatch(/permit is expired/);
+    expect(await readFile(fixture.logPath, 'utf8').catch(() => '')).not.toContain('instance stop');
+  });
+
+  it.each([
+    ['GitHub authentication failure', { CIRUJANO_FIXTURE_AUTH_FAIL: '1' }],
+    ['GitHub rate limit', { CIRUJANO_FIXTURE_RATE_LIMIT: '1' }],
+    ['guest status loss', { CIRUJANO_FIXTURE_GUEST_LOSS: '1' }],
+  ])('fails closed for %s without a provider mutation', async (_name, environment) => {
+    const fixture = await createFixture(true, true, true);
+    const io = captureIo();
+    const service = createRunnerCommandService({ ...fixture.env, ...environment, CIRUJANO_RUNNER_ONCE: '1' });
+    expect(await runCli(['runner', 'watch', '--config', fixture.configPath, '--permit', fixture.permitPath!], io, service)).toBe(1);
+    expect(await readFile(fixture.logPath, 'utf8')).not.toMatch(/instance (?:create|start|stop|delete)/u);
+  });
+
+  it('blocks creation when the final successful job response reaches the quota reserve', async () => {
+    const fixture = await createFixture(false, true);
+    const io = captureIo();
+    const service = createRunnerCommandService({ ...fixture.env, CIRUJANO_FIXTURE_JOB_RESERVE: '1', CIRUJANO_NETWORK_EGRESS_LIMIT_GIB: '1', CIRUJANO_RUNNER_ONCE: '1' });
+    await runCli(['runner', 'watch', '--config', fixture.configPath, '--permit', fixture.permitPath!, '--dry-run'], io, service);
+    const tick = JSON.parse(io.out.join('').trim()) as { queue: { complete: boolean; eligibleQueuedJobs: number }; githubReadHold: unknown };
+    expect(tick.queue).toMatchObject({ complete: false, eligibleQueuedJobs: 0 });
+    expect(tick.githubReadHold).not.toBeNull();
+    const log = await readFile(fixture.logPath, 'utf8');
+    expect(log).toContain('/attempts/1/jobs');
+    expect(log).not.toMatch(/--method (?:POST|DELETE)| instance (?:create|start|stop|delete)/u);
+  });
+
+  it.each(['reserve', 'rate-limit'] as const)('discloses a GitHub %s hold while preserving busy evidence and accounting', async (mode) => {
+    const fixture = await createFixture(true, true, true);
+    const directory = resolve(fixture.configPath, '..');
+    const state = JSON.parse(await readFile(join(directory, 'controller-state.json'), 'utf8')) as { identity: unknown };
+    await writeFile(join(directory, 'active-job-state.json'), JSON.stringify({ schemaVersion: 1, identity: state.identity, activeJobKnown: true, observedAtMs: Date.now() }));
+    const io = captureIo();
+    const before = Date.now();
+    await writeFile(join(directory, 'accounting-state.json'), JSON.stringify({ schemaVersion: 1, identity: state.identity, diskStartedAtMs: before - 10_000, diskRetainedMs: 100, runtimeBaselineMs: 0, generation: 1, networkEgressBytes: 0 }));
+    const service = createRunnerCommandService({ ...fixture.env, CIRUJANO_FIXTURE_REPOSITORY_HOLD: mode, CIRUJANO_RUNNER_ONCE: '1' });
+    await runCli(['runner', 'watch', '--config', fixture.configPath, '--permit', fixture.permitPath!], io, service);
+    const tick = JSON.parse(io.out.join('').trim()) as { githubReadHold: { reason: string; retryAfterMs: number; retryAtMs: number }; queue: { complete: boolean; eligibleQueuedJobs: number; ownedBusy: boolean; retryAfterMs: number } };
+    expect(tick.githubReadHold).toMatchObject({ reason: expect.any(String) });
+    expect(tick.githubReadHold.retryAfterMs).toBeGreaterThan(0);
+    expect(tick.githubReadHold.retryAtMs).toBeGreaterThan(before);
+    expect(tick.queue).toMatchObject({ complete: false, eligibleQueuedJobs: 0, ownedBusy: true });
+    expect(tick.queue.retryAfterMs).toBeGreaterThan(0);
+    const log = await readFile(fixture.logPath, 'utf8');
+    expect(log).toContain('instance list');
+    expect(log).toContain('/opt/cirujano/status');
+    expect(log).not.toMatch(/--method (?:POST|DELETE)| instance (?:create|start|stop|delete)/u);
+    const accounting = JSON.parse(await readFile(join(directory, 'accounting-state.json'), 'utf8')) as { diskRetainedMs: number };
+    expect(accounting.diskRetainedMs).toBeGreaterThan(100);
+    expect(JSON.parse(await readFile(join(directory, 'active-job-state.json'), 'utf8'))).toMatchObject({ activeJobKnown: true });
+  });
+
+  it.each([
+    ['direct-prepared', 'intent', 0, 1],
+    ['direct-emitting', 'emitting', 0, 1],
+    ['direct-provider-io', 'emitting', 0, 1],
+    ['direct-terminal', 'resolved', 0, 1],
+  ] as const)('recovers an externally killed built direct action at %s without unsafe replay', async (boundary, expectedStage, restartExit, expectedStops) => {
+    const fixture = await createFixture(true, true, true);
+    const markerPath = join(resolve(fixture.configPath, '..'), 'boundaries.log');
+    const executable = join(packageDirectory, 'dist/bin.js');
+    const child = spawn(process.execPath, [executable, 'runner', 'stop', '--config', fixture.configPath, '--permit', fixture.permitPath!], {
+      env: { ...fixture.env, CIRUJANO_FIXTURE_BOUNDARY_PATH: markerPath, CIRUJANO_FIXTURE_PAUSE_BOUNDARY: boundary }, stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    await waitForText(markerPath, boundary);
+    child.kill('SIGKILL');
+    await new Promise<void>((resolveClose) => child.once('close', () => resolveClose()));
+    expect(JSON.parse(await readFile(join(resolve(fixture.configPath, '..'), 'direct-action-state.json'), 'utf8'))).toMatchObject({ stage: expectedStage });
+    const permit = JSON.parse(await readFile(fixture.permitPath!, 'utf8')) as Record<string, unknown>;
+    permit.expiresAtMs = Date.now() - 1;
+    await writeFile(fixture.permitPath!, JSON.stringify(permit));
+    const restart = await executeFile(process.execPath, [executable, 'runner', 'stop', '--config', fixture.configPath, '--permit', fixture.permitPath!], {
+      env: { ...fixture.env, CIRUJANO_RUNNER_ONCE: '1' },
+    }).then((value) => ({ code: 0, ...value })).catch((error: { code?: number; stdout?: string; stderr?: string }) => ({ code: error.code ?? 1, stdout: error.stdout ?? '', stderr: error.stderr ?? '' }));
+    expect(restart.code).toBe(restartExit);
+    const commandLog = await readFile(fixture.logPath, 'utf8');
+    const stopCount = commandLog.split('\n').filter((line) => line.includes('instance stop')).length;
+    expect(stopCount).toBe(expectedStops);
+    if (boundary === 'direct-emitting') {
+      expect(commandLog.indexOf('/opt/cirujano/drain')).toBeLessThan(commandLog.indexOf('--method DELETE'));
+      expect(commandLog.indexOf('--method DELETE')).toBeLessThan(commandLog.indexOf('instance stop'));
+    }
+  }, 15_000);
+
+  it('persists structured blocked evidence when an ambiguous emission has a related provider operation', async () => {
+    const fixture = await createFixture(true, true, true);
+    const markerPath = join(resolve(fixture.configPath, '..'), 'boundaries.log');
+    const executable = join(packageDirectory, 'dist/bin.js');
+    const child = spawn(process.execPath, [executable, 'runner', 'stop', '--config', fixture.configPath, '--permit', fixture.permitPath!], {
+      env: { ...fixture.env, CIRUJANO_FIXTURE_BOUNDARY_PATH: markerPath, CIRUJANO_FIXTURE_PAUSE_BOUNDARY: 'direct-emitting' }, stdio: 'ignore',
+    });
+    await waitForText(markerPath, 'direct-emitting');
+    child.kill('SIGKILL');
+    await new Promise<void>((resolveClose) => child.once('close', () => resolveClose()));
+    const permit = JSON.parse(await readFile(fixture.permitPath!, 'utf8')) as Record<string, unknown>;
+    permit.expiresAtMs = Date.now() - 1;
+    await writeFile(fixture.permitPath!, JSON.stringify(permit));
+    const retry = await executeFile(process.execPath, [executable, 'runner', 'stop', '--config', fixture.configPath, '--permit', fixture.permitPath!], {
+      env: { ...fixture.env, CIRUJANO_FIXTURE_OPERATION_PRESENT: '1', CIRUJANO_RUNNER_ONCE: '1' },
+    }).then((value) => ({ code: 0, ...value })).catch((error: { code?: number; stdout?: string }) => ({ code: error.code ?? 1, stdout: error.stdout ?? '' }));
+    expect(retry.code).toBe(1);
+    expect(retry.stdout).toContain('"status":"blocked"');
+    expect(JSON.parse(await readFile(join(resolve(fixture.configPath, '..'), 'direct-action-state.json'), 'utf8'))).toMatchObject({
+      stage: 'emitting', providerState: 'running', blockedReason: expect.stringContaining('has not produced terminal resource state'),
+    });
+    expect((await readFile(fixture.logPath, 'utf8')).split('\n').filter((line) => line.includes('instance stop'))).toHaveLength(0);
+  }, 15_000);
+
+  it('recovers an ambiguous stop when every related provider operation already finished', async () => {
+    // 2026-09-23 P2: eight hours-old SUCCEEDED operations were treated as in-flight and blocked recovery forever.
+    const fixture = await createFixture(true, true, true);
+    const markerPath = join(resolve(fixture.configPath, '..'), 'boundaries.log');
+    const executable = join(packageDirectory, 'dist/bin.js');
+    const child = spawn(process.execPath, [executable, 'runner', 'stop', '--config', fixture.configPath, '--permit', fixture.permitPath!], {
+      env: { ...fixture.env, CIRUJANO_FIXTURE_BOUNDARY_PATH: markerPath, CIRUJANO_FIXTURE_PAUSE_BOUNDARY: 'direct-emitting' }, stdio: 'ignore',
+    });
+    await waitForText(markerPath, 'direct-emitting');
+    child.kill('SIGKILL');
+    await new Promise<void>((resolveClose) => child.once('close', () => resolveClose()));
+    const retry = await executeFile(process.execPath, [executable, 'runner', 'stop', '--config', fixture.configPath, '--permit', fixture.permitPath!], {
+      env: { ...fixture.env, CIRUJANO_FIXTURE_OPERATION_PRESENT: 'succeeded', CIRUJANO_RUNNER_ONCE: '1' },
+    }).then((value) => ({ code: 0, ...value })).catch((error: { code?: number; stdout?: string }) => ({ code: error.code ?? 1, stdout: error.stdout ?? '' }));
+    expect(retry.stdout).toContain('"status":"done"');
+    expect(retry.code).toBe(0);
+    expect(JSON.parse(await readFile(join(resolve(fixture.configPath, '..'), 'direct-action-state.json'), 'utf8'))).toMatchObject({ stage: 'resolved', providerState: 'stopped', recoveryRetryEmitted: true });
+    expect((await readFile(fixture.logPath, 'utf8')).split('\n').filter((line) => line.includes('instance stop'))).toHaveLength(1);
+  }, 15_000);
+
+  it('drains and emits structured resolved recovery when the built watcher receives SIGINT', async () => {
+    const fixture = await createFixture(true, true, true);
+    const executable = join(packageDirectory, 'dist/bin.js');
+    const child = spawn(process.execPath, [executable, 'runner', 'watch', '--config', fixture.configPath, '--permit', fixture.permitPath!], {
+      env: fixture.env, stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString(); });
+    child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
+    await waitForText(fixture.logPath, '/opt/cirujano/register-runner');
+    child.kill('SIGINT');
+    const code = await Promise.race([
+      new Promise<number | null>((resolveClose) => child.once('close', resolveClose)),
+      new Promise<never>((_resolve, reject) => setTimeout(() => reject(new Error('SIGINT recovery timed out')), 10_000)),
+    ]);
+    expect(code, stderr).toBe(0);
+    expect(stdout).toContain('"type":"interrupt-recovery"');
+    expect(stdout).toContain('"completed":true');
+    const log = await readFile(fixture.logPath, 'utf8');
+    expect(log.indexOf('/opt/cirujano/drain')).toBeLessThan(log.indexOf('instance stop'));
+  }, 15_000);
+
+  it('drives the built CLI through the complete stateful R11 lifecycle and exact report', async () => {
+    const fixture = await createLifecycleFixture();
+    await builtTick(fixture); // idle
+    await updateScenario(fixture, (state) => { state.jobs[0]!.status = 'queued'; });
+    await builtTick(fixture); // create
+    await builtTick(fixture); // reconcile create
+    await builtTick(fixture); // start
+    await builtTick(fixture); // reconcile start and arm grant
+    await builtTick(fixture); // register
+    await builtTick(fixture); // reconcile registration
+    const busy = await builtTick(fixture);
+    expect(busy).toContain('"state":"busy"');
+    await updateScenario(fixture, (state) => { state.jobs[0]!.status = 'completed'; state.jobs[0]!.conclusion = 'success'; state.runnerBusy = false; state.guest = 'ready'; });
+    await builtTick(fixture); // begin drain
+    expect(JSON.parse(await readFile(join(fixture.directory, 'controller-state.json'), 'utf8'))).toMatchObject({ lifecycle: { state: 'draining' } });
+    await updateScenario(fixture, (state) => { state.jobs[1]!.status = 'queued'; });
+    expect((JSON.parse(await readFile(fixture.scenarioPath, 'utf8')) as LifecycleScenario).jobs[1]?.status).toBe('queued');
+    await builtTick(fixture); // reconcile drain
+    expect((JSON.parse(await readFile(fixture.scenarioPath, 'utf8')) as LifecycleScenario).jobs[1]?.status).toBe('queued');
+    await builtTick(fixture); // R03: the queued job fits, so the drained guest resumes admission
+    await builtTick(fixture); // reconcile resume
+    await builtTick(fixture); // register the second assignment on the same generation
+    await builtTick(fixture); // reconcile registration
+    expect((JSON.parse(await readFile(fixture.scenarioPath, 'utf8')) as LifecycleScenario).jobs[1]?.status).toBe('in_progress');
+    const resumedEvents = (await readFile(join(fixture.directory, 'events.jsonl'), 'utf8')).trim().split('\n').map((line) => JSON.parse(line) as { type: string; effect?: string });
+    const resumedEffects = resumedEvents.filter((event) => event.type === 'effect-intent').map((event) => event.effect);
+    expect(resumedEffects.slice(-3)).toEqual(['begin-drain', 'resume-admission', 'register-runner']);
+    expect(resumedEffects.filter((effect) => effect === 'stop-vm' || effect === 'start-vm')).toEqual(['start-vm']);
+    expect(JSON.parse(await readFile(join(fixture.directory, 'controller-state.json'), 'utf8'))).toMatchObject({ lifecycle: { startCount: 1 } });
+    await updateScenario(fixture, (state) => { state.jobs[1]!.status = 'completed'; state.jobs[1]!.conclusion = 'success'; state.runnerBusy = false; state.guest = 'ready'; });
+    await builtTick(fixture); // drain the same generation again
+    await builtTick(fixture); // reconcile drain
+    await builtTick(fixture); // idle observation one
+    await new Promise((resolveWait) => setTimeout(resolveWait, 5));
+    await builtTick(fixture); // stop
+    await builtTick(fixture); // terminal stopped readback
+    const executable = join(packageDirectory, 'dist/bin.js');
+    await executeFile(process.execPath, [executable, 'runner', 'cleanup', '--config', fixture.configPath, '--permit', fixture.permitPath], { env: fixture.env });
+    const assignmentState = JSON.parse(await readFile(join(fixture.directory, 'assignments.json'), 'utf8')) as { assignments: KnownFixtureAssignment[] };
+    expect(assignmentState.assignments).toEqual([
+      { runId: 1001, runAttempt: 1, jobId: 2001, runnerId: 301, runnerName: 'cirujano-a-g1', conclusion: 'success' },
+      { runId: 1002, runAttempt: 1, jobId: 2002, runnerId: 302, runnerName: 'cirujano-a-g1', conclusion: 'success' },
+    ]);
+    const reportPath = join(fixture.directory, 'report-input.json');
+    await writeFile(reportPath, JSON.stringify({
+      candidateDigest: 'fixture-candidate', expectedCandidateDigest: 'fixture-candidate', requiredScenarios: ['R10', 'R11', 'R12', 'R13'],
+      checks: [
+        { scenario: 'R10', status: 'passed', candidateDigest: 'fixture-candidate', evidence: ['built CLI inspect and dry-run tests'] },
+        { scenario: 'R11', status: 'passed', candidateDigest: 'fixture-candidate', evidence: ['stateful built CLI lifecycle'] },
+        { scenario: 'R12', status: 'passed', candidateDigest: 'fixture-candidate', evidence: ['built CLI SIGINT recovery test'] },
+        { scenario: 'R13', status: 'passed', candidateDigest: 'fixture-candidate', evidence: ['exact assignment and terminal readback assertions'] },
+      ],
+      assignments: assignmentState.assignments,
+      cleanup: { complete: true, vmState: 'absent', ownedRunnersRemaining: 0, diskPresent: false, unresolvedResources: [] },
+      finalProviderState: 'absent',
+      cost: { complete: true, currency: 'USD', computeUsd: 0.01, diskUsd: 0.001, networkUsd: 0.001, runnerTotalUsd: 0.012, hostedBaselineUsd: 1 }, diagnostics: [], sensitiveValues: [],
+    }));
+    const report = await executeFile(process.execPath, [executable, 'runner', 'report', '--state', reportPath, '--format', 'json'], { env: fixture.env });
+    expect(JSON.parse(report.stdout)).toMatchObject({ complete: true, assignments: assignmentState.assignments, cleanup: { vmState: 'absent' }, finalProviderState: 'absent' });
+  }, 60_000);
+
+  it('deletes the retained disk after an idle stop even if recovery-authorized permit expires', async () => {
+    const fixture = await createLifecycleFixture('delete-after-stop');
+    await builtTick(fixture); // idle
+    await updateScenario(fixture, (state) => { state.jobs[0]!.status = 'queued'; });
+    for (let tick = 0; tick < 8; tick += 1) await builtTick(fixture); // create, start, register
+    await updateScenario(fixture, (state) => { state.jobs[0]!.status = 'completed'; state.jobs[0]!.conclusion = 'success'; state.runnerBusy = false; state.guest = 'ready'; });
+    await builtTick(fixture); // begin drain
+    await builtTick(fixture); // reconcile drain
+    await builtTick(fixture); // idle observation
+    await new Promise((resolveWait) => setTimeout(resolveWait, 5));
+    await builtTick(fixture); // stop
+    await builtTick(fixture); // reconcile stop
+    const expiredPermit = JSON.parse(await readFile(fixture.permitPath, 'utf8')) as Record<string, unknown>;
+    expiredPermit.expiresAtMs = Date.now() - 1;
+    await writeFile(fixture.permitPath, JSON.stringify(expiredPermit));
+    await builtTick(fixture); // delete
+    await builtTick(fixture); // reconcile delete
+    expect((JSON.parse(await readFile(fixture.scenarioPath, 'utf8')) as LifecycleScenario).provider).toBe('ABSENT');
+    expect(JSON.parse(await readFile(join(fixture.directory, 'controller-state.json'), 'utf8'))).toMatchObject({ lifecycle: { state: 'absent' } });
+    expect(await readFile(fixture.logPath, 'utf8')).toContain('instance delete');
+  }, 60_000);
+
+  it('does not reconcile a start until the guest reports the generation it armed', async () => {
+    const fixture = await createLifecycleFixture();
+    await builtTick(fixture); // idle
+    await updateScenario(fixture, (state) => { state.jobs[0]!.status = 'queued'; });
+    await builtTick(fixture); // create
+    await builtTick(fixture); // reconcile create
+    await builtTick(fixture); // start
+    await updateScenario(fixture, (state) => { state.lostGrantUpdates = 1; });
+    await builtTick(fixture); // arm-grant "succeeds" but the grant write is lost
+    const unresolved = JSON.parse(await readFile(join(fixture.directory, 'controller-state.json'), 'utf8')) as { pendingEffect: { effect: { type: string } } | null };
+    expect(unresolved.pendingEffect?.effect.type).toBe('start-vm');
+    await builtTick(fixture); // re-arm the same generation; now the guest reports it
+    const resolved = JSON.parse(await readFile(join(fixture.directory, 'controller-state.json'), 'utf8')) as { pendingEffect: unknown; lifecycle: { startCount: number } };
+    expect(resolved.pendingEffect).toBeNull();
+    expect((JSON.parse(await readFile(fixture.scenarioPath, 'utf8')) as LifecycleScenario).grant?.generation).toBe(resolved.lifecycle.startCount);
+  }, 30_000);
+
+  it('arms a pending start during a GitHub repository outage without admitting queued work', async () => {
+    const fixture = await createLifecycleFixture();
+    await builtTick(fixture); // idle
+    await updateScenario(fixture, (state) => { state.jobs[0]!.status = 'queued'; });
+    await builtTick(fixture); // create
+    await builtTick(fixture); // reconcile create
+    await builtTick(fixture); // start
+    await updateScenario(fixture, (state) => { state.repositoryUnavailable = true; });
+    expect(await builtTick(fixture)).toContain('"status":"reconciled"');
+    const controller = JSON.parse(await readFile(join(fixture.directory, 'controller-state.json'), 'utf8')) as {
+      lifecycle: { startCount: number }; pendingEffect: unknown;
+    };
+    const scenario = JSON.parse(await readFile(fixture.scenarioPath, 'utf8')) as LifecycleScenario;
+    expect(controller.pendingEffect).toBeNull();
+    expect(scenario.grant?.generation).toBe(controller.lifecycle.startCount);
+    await expect(builtTick(fixture)).rejects.toThrow(/complete provider, queue and guest observations are required/u);
+    expect(await readFile(fixture.logPath, 'utf8')).not.toContain('/registration-token');
+    await updateScenario(fixture, (state) => { state.repositoryUnavailable = false; });
+    expect(await builtTick(fixture)).toContain('"type":"register-runner"');
+  }, 30_000);
+
+  it('releases a registration effect before an ephemeral runner finishes its first job', async () => {
+    const fixture = await createLifecycleFixture();
+    await builtTick(fixture);
+    await updateScenario(fixture, (state) => { state.jobs[0]!.status = 'queued'; });
+    for (let step = 0; step < 4; step++) await builtTick(fixture); // create, reconcile, start, reconcile
+    expect(await builtTick(fixture)).toContain('"type":"register-runner"');
+    const statePath = join(fixture.directory, 'controller-state.json');
+    expect((JSON.parse(await readFile(statePath, 'utf8')) as { pendingEffect: unknown }).pendingEffect).toBeNull();
+    await updateScenario(fixture, (state) => {
+      state.jobs[0]!.status = 'completed'; state.jobs[0]!.conclusion = 'success';
+      state.runnerName = null; state.runnerId = null; state.runnerBusy = false; state.guest = 'ready';
+      state.jobs[1]!.status = 'queued';
+    });
+    expect(await builtTick(fixture)).toContain('"type":"register-runner"');
+    expect((JSON.parse(await readFile(fixture.scenarioPath, 'utf8')) as LifecycleScenario).jobs[1]?.status).toBe('in_progress');
+  }, 30_000);
+
+  it('reconciles an old registration effect only after cleanup proves VM and runner absence', async () => {
+    const fixture = await createLifecycleFixture();
+    await builtTick(fixture);
+    await updateScenario(fixture, (scenario) => {
+      scenario.jobs[0]!.status = 'queued';
+      scenario.runnerName = 'cirujano-a-g1'; scenario.runnerId = 301;
+    });
+    const statePath = join(fixture.directory, 'controller-state.json');
+    const state = JSON.parse(await readFile(statePath, 'utf8')) as Record<string, unknown>;
+    const permit = JSON.parse(await readFile(fixture.permitPath, 'utf8')) as Record<string, unknown>;
+    const deadline = Date.now() + 3_600_000;
+    state.lifecycle = { ...(state.lifecycle as Record<string, unknown>), state: 'ready', startCount: 1 };
+    state.pendingEffect = {
+      id: 'old-register', effect: { type: 'register-runner', assignmentCutoffMs: deadline },
+      createdAtMs: Date.now() - 60_000, status: 'pending', stage: 'emitting',
+      authorization: {
+        permitId: permit.permitId, permitExpiresAtMs: permit.expiresAtMs,
+        configHash: permit.configHash, candidateDigest: permit.candidateDigest,
+        repositoryId: permit.repositoryId, projectId: permit.projectId,
+        controllerId: permit.controllerId, resourcePrefix: permit.resourcePrefix,
+        operation: 'register', recoveryAllowed: permit.recoveryAllowed, effectDeadlineMs: deadline,
+      },
+    };
+    await writeFile(statePath, JSON.stringify(state));
+    expect(await builtTick(fixture)).toContain('"status":"pending"');
+    await updateScenario(fixture, (scenario) => { scenario.runnerName = null; scenario.runnerId = null; });
+    expect(await builtTick(fixture)).toContain('"status":"reconciled"');
+    expect((JSON.parse(await readFile(statePath, 'utf8')) as { pendingEffect: unknown }).pendingEffect).toBeNull();
+    expect(await builtTick(fixture)).toContain('"type":"create-vm"');
+  }, 30_000);
+
+  it('replaces a generation that powered itself off at its immutable deadline and keeps accounting monotonic', async () => {
+    const fixture = await createLifecycleFixture();
+    await builtTick(fixture); // idle
+    await updateScenario(fixture, (state) => { state.jobs[0]!.status = 'queued'; });
+    await builtTick(fixture); // create
+    await builtTick(fixture); // reconcile create
+    await builtTick(fixture); // start
+    await builtTick(fixture); // reconcile start and arm grant
+    await builtTick(fixture); // register
+    await builtTick(fixture); // reconcile registration
+    expect(await builtTick(fixture)).toContain('"state":"busy"');
+    const statePath = join(fixture.directory, 'controller-state.json');
+    const armed = JSON.parse(await readFile(statePath, 'utf8')) as { lifecycle: { grantDeadlineMs: number | null; cumulativeCostUsd: number; cumulativeRuntimeMs: number } };
+    expect(armed.lifecycle.grantDeadlineMs).toBeGreaterThan(Date.now());
+    // The guest watchdog powers the VM off at the deadline while the job is mid-flight; the
+    // journal keeps the deadline, and the elapsed lifetime is simulated by moving it into the past.
+    await updateScenario(fixture, (state) => {
+      state.provider = 'STOPPED'; state.guest = 'booting'; state.runnerBusy = false;
+      state.jobs[0]!.status = 'completed'; state.jobs[0]!.conclusion = 'failure';
+    });
+    await writeFile(statePath, JSON.stringify({ ...armed, lifecycle: { ...armed.lifecycle, grantDeadlineMs: Date.now() - 1 } }));
+    const deleting = await builtTick(fixture);
+    expect(deleting).toContain('"type":"delete-vm"');
+    expect(await builtTick(fixture)).toContain('"status":"reconciled"');
+    const afterDelete = JSON.parse(await readFile(statePath, 'utf8')) as { lifecycle: { state: string; startCount: number; cumulativeCostUsd: number; cumulativeRuntimeMs: number; grantDeadlineMs: number | null }; pendingEffect: unknown };
+    // The spent generation's deadline never survives into the next one.
+    expect(afterDelete).toMatchObject({ lifecycle: { state: 'absent', startCount: 1, grantDeadlineMs: null }, pendingEffect: null });
+    expect(afterDelete.lifecycle.cumulativeCostUsd).toBeGreaterThanOrEqual(armed.lifecycle.cumulativeCostUsd);
+    expect(afterDelete.lifecycle.cumulativeRuntimeMs).toBeGreaterThanOrEqual(armed.lifecycle.cumulativeRuntimeMs);
+    await updateScenario(fixture, (state) => { state.jobs[1]!.status = 'queued'; });
+    expect(await builtTick(fixture)).toContain('"type":"create-vm","generation":2');
+    await builtTick(fixture); // reconcile create
+    expect((JSON.parse(await readFile(statePath, 'utf8')) as { lifecycle: { grantDeadlineMs: number | null } }).lifecycle.grantDeadlineMs).toBeNull();
+    expect(await builtTick(fixture)).toContain('"type":"start-vm","generation":2');
+    const restarted = JSON.parse(await readFile(statePath, 'utf8')) as { lifecycle: { startCount: number; cumulativeCostUsd: number } };
+    expect(restarted.lifecycle.startCount).toBe(2);
+    expect(restarted.lifecycle.cumulativeCostUsd).toBeGreaterThanOrEqual(afterDelete.lifecycle.cumulativeCostUsd);
+    const log = await readFile(fixture.logPath, 'utf8');
+    const deleteIndex = log.indexOf('instance delete');
+    expect(deleteIndex).toBeGreaterThan(log.indexOf('instance start'));
+    expect(log.lastIndexOf('instance create')).toBeGreaterThan(deleteIndex);
+    // The offline runner registration of the spent generation was removed before the VM.
+    expect(log.slice(0, deleteIndex)).toMatch(/--method DELETE [^\n]*\/actions\/runners\//u);
+  }, 60_000);
+
+  it('replaces a start that stopped before registration after its boot window', async () => {
+    const fixture = await createLifecycleFixture();
+    await builtTick(fixture);
+    await updateScenario(fixture, (scenario) => { scenario.jobs[0]!.status = 'queued'; });
+    await builtTick(fixture); // create
+    await builtTick(fixture); // reconcile create
+    await builtTick(fixture); // start
+    const statePath = join(fixture.directory, 'controller-state.json');
+    const starting = JSON.parse(await readFile(statePath, 'utf8')) as { pendingEffect: { createdAtMs: number }; lifecycle: { startCount: number } };
+    starting.pendingEffect.createdAtMs = Date.now() - validRunnerConfig.timing.bootTimeoutMs - 1;
+    await writeFile(statePath, JSON.stringify(starting));
+    await updateScenario(fixture, (scenario) => {
+      scenario.provider = 'STOPPED'; scenario.guest = 'booting'; scenario.startOperationState = 'SUCCEEDED';
+      scenario.repositoryUnavailable = true;
+    });
+    expect(await builtTick(fixture)).toContain('"status":"pending"');
+    await updateScenario(fixture, (scenario) => { scenario.repositoryUnavailable = false; });
+    expect(await builtTick(fixture)).toContain('"type":"delete-vm"');
+    expect(await builtTick(fixture)).toContain('"status":"reconciled"');
+    expect(await builtTick(fixture)).toContain('"type":"create-vm","generation":2');
+    const log = await readFile(fixture.logPath, 'utf8');
+    expect(log.split('\n').filter((line) => line.includes('instance start'))).toHaveLength(1);
+  }, 60_000);
+
+  it('keeps the stopped VM while Nebius refuses its start for public IPv4 quota, then retries only the start', async () => {
+    const fixture = await createLifecycleFixture();
+    await builtTick(fixture);
+    await updateScenario(fixture, (scenario) => { scenario.jobs[0]!.status = 'queued'; scenario.startQuotaRefused = true; scenario.strictGrant = true; });
+    await builtTick(fixture); // create
+    await builtTick(fixture); // reconcile create
+    await builtTick(fixture); // start, refused asynchronously by the provider
+    // No boot-window wait and no delete: the refused start becomes a capacity wait on the same VM.
+    expect(await builtTick(fixture)).toContain('"status":"waiting"');
+    const held = await builtTick(fixture);
+    expect(held).toContain('"status":"waiting"');
+    expect(held).toContain('"reasonCode":"provider-capacity-wait"');
+    expect((JSON.parse(await readFile(fixture.scenarioPath, 'utf8')) as LifecycleScenario).provider).toBe('STOPPED');
+    const statePath = join(fixture.directory, 'controller-state.json');
+    const waiting = JSON.parse(await readFile(statePath, 'utf8')) as { lifecycle: { state: string; startCount: number; capacityWait: { detail: string; refusedEffect: string; refusals: number; retryAtMs: number } } };
+    expect(waiting.lifecycle.state).toBe('stopped');
+    expect(waiting.lifecycle.startCount).toBe(0);
+    expect(waiting.lifecycle.capacityWait).toMatchObject({ detail: 'vpc.ipv4-address.public.count', refusedEffect: 'start-vm', refusals: 1 });
+    expect((JSON.parse(await readFile(fixture.scenarioPath, 'utf8')) as LifecycleScenario).jobs[0]?.status).toBe('queued');
+    expect(await readFile(join(fixture.directory, 'events.jsonl'), 'utf8')).toContain('"type":"provider-capacity-refused","effect":"start-vm"');
+
+    // A slot frees and the backoff ends: the next tick starts the same instance again.
+    waiting.lifecycle.capacityWait.retryAtMs = Date.now() - 1;
+    await writeFile(statePath, JSON.stringify(waiting));
+    await updateScenario(fixture, (scenario) => { scenario.startQuotaRefused = false; });
+    expect(await builtTick(fixture)).toContain('"type":"start-vm","generation":1');
+    expect(await builtTick(fixture)).toContain('"status":"reconciled"');
+    expect(JSON.parse(await readFile(statePath, 'utf8'))).not.toHaveProperty('lifecycle.capacityWait');
+    expect((JSON.parse(await readFile(fixture.scenarioPath, 'utf8')) as LifecycleScenario).grant?.generation).toBe(1);
+    const log = (await readFile(fixture.logPath, 'utf8')).split('\n');
+    expect(log.filter((line) => line.includes('instance create'))).toHaveLength(1);
+    expect(log.filter((line) => line.includes('instance delete'))).toHaveLength(0);
+    expect(log.filter((line) => line.includes('instance start --id instance-1'))).toHaveLength(2);
+  }, 60_000);
+
+  it('retries a refused start of a previously booted VM as the generation its guest will accept', async () => {
+    const fixture = await createLifecycleFixture();
+    await builtTick(fixture);
+    await updateScenario(fixture, (scenario) => { scenario.jobs[0]!.status = 'queued'; scenario.strictGrant = true; });
+    for (let tick = 0; tick < 4; tick += 1) await builtTick(fixture); // create, reconcile, start, arm generation 1
+    expect((JSON.parse(await readFile(fixture.scenarioPath, 'utf8')) as LifecycleScenario).grant?.generation).toBe(1);
+    await builtDirect(fixture, 'stop'); // ordinary stop: the guest keeps grant generation 1 on disk
+    await updateScenario(fixture, (scenario) => { scenario.startQuotaRefused = true; });
+    expect(await builtTick(fixture)).toContain('"type":"start-vm","generation":2'); // refused by the provider
+    expect(await builtTick(fixture)).toContain('"status":"waiting"');
+    const statePath = join(fixture.directory, 'controller-state.json');
+    const waiting = JSON.parse(await readFile(statePath, 'utf8')) as { lifecycle: { startCount: number; capacityWait: { retryAtMs: number } } };
+    expect(waiting.lifecycle.startCount).toBe(1);
+    waiting.lifecycle.capacityWait.retryAtMs = Date.now() - 1;
+    await writeFile(statePath, JSON.stringify(waiting));
+    await updateScenario(fixture, (scenario) => { scenario.startQuotaRefused = false; });
+    expect(await builtTick(fixture)).toContain('"type":"start-vm","generation":2');
+    // arm-grant receives generation 2 with confirmed stop 1, which the strict guest accepts.
+    expect(await builtTick(fixture)).toContain('"status":"reconciled"');
+    expect((JSON.parse(await readFile(fixture.scenarioPath, 'utf8')) as LifecycleScenario).grant?.generation).toBe(2);
+    const state = JSON.parse(await readFile(statePath, 'utf8')) as { lifecycle: Record<string, unknown> };
+    expect(state.lifecycle).toMatchObject({ startCount: 2 });
+    expect(state.lifecycle).not.toHaveProperty('capacityWait');
+    const log = (await readFile(fixture.logPath, 'utf8')).split('\n');
+    expect(log.filter((line) => line.includes('instance create'))).toHaveLength(1);
+    expect(log.filter((line) => line.includes('instance delete'))).toHaveLength(0);
+  }, 60_000);
+
+  it('waits instead of failing when the create command itself is refused for quota', async () => {
+    const fixture = await createLifecycleFixture();
+    await builtTick(fixture);
+    await updateScenario(fixture, (scenario) => { scenario.jobs[0]!.status = 'queued'; scenario.createQuotaRefused = true; });
+    expect(await builtTick(fixture)).toContain('"status":"waiting"');
+    const state = JSON.parse(await readFile(join(fixture.directory, 'controller-state.json'), 'utf8')) as { pendingEffect: unknown; lifecycle: { state: string; capacityWait?: unknown } };
+    expect(state.pendingEffect).toBeNull();
+    expect(state.lifecycle.state).toBe('absent');
+    expect(state.lifecycle.capacityWait).toMatchObject({ reasonCode: 'provider-capacity-wait', detail: 'vpc.ipv4-address.public.count' });
+    expect(await builtTick(fixture)).toContain('"status":"waiting"');
+    const log = await readFile(fixture.logPath, 'utf8');
+    expect(log.split('\n').filter((line) => line.includes('instance create'))).toHaveLength(1);
+  }, 60_000);
+
+  it('waits for a pending provider start before retiring a stopped generation', async () => {
+    const fixture = await createLifecycleFixture();
+    await builtTick(fixture);
+    await updateScenario(fixture, (scenario) => { scenario.jobs[0]!.status = 'queued'; });
+    await builtTick(fixture); await builtTick(fixture); await builtTick(fixture);
+    const statePath = join(fixture.directory, 'controller-state.json');
+    const starting = JSON.parse(await readFile(statePath, 'utf8')) as { pendingEffect: { createdAtMs: number } };
+    starting.pendingEffect.createdAtMs = Date.now() - validRunnerConfig.timing.bootTimeoutMs - 1;
+    await writeFile(statePath, JSON.stringify(starting));
+    await updateScenario(fixture, (scenario) => {
+      scenario.provider = 'STOPPED'; scenario.guest = 'booting'; scenario.startOperationState = 'RUNNING';
+    });
+    expect(await builtTick(fixture)).toContain('"status":"pending"');
+    expect((JSON.parse(await readFile(statePath, 'utf8')) as { pendingEffect: unknown }).pendingEffect).not.toBeNull();
+    expect(await readFile(fixture.logPath, 'utf8')).not.toContain('instance delete');
+  }, 60_000);
+
+  it('still blocks a stopped guest before its journaled deadline instead of deleting it', async () => {
+    const fixture = await createLifecycleFixture();
+    await builtTick(fixture);
+    await updateScenario(fixture, (state) => { state.jobs[0]!.status = 'queued'; });
+    for (let tick = 0; tick < 6; tick += 1) await builtTick(fixture);
+    expect(await builtTick(fixture)).toContain('"state":"busy"');
+    await updateScenario(fixture, (state) => {
+      state.provider = 'STOPPED'; state.guest = 'booting'; state.runnerBusy = false;
+      state.jobs[0]!.status = 'completed'; state.jobs[0]!.conclusion = 'failure';
+    });
+    await expect(builtTick(fixture)).rejects.toThrow(/stopped outside the controller/u);
+    expect(await readFile(fixture.logPath, 'utf8')).not.toContain('instance delete');
+  }, 60_000);
+
+  it.each([
+    'ssh: connect to host 203.0.113.4 port 22: Connection refused',
+    'kex_exchange_identification: read: Connection reset by peer',
+  ])('retries one transient start readiness failure without another provider start: %s', async (sshFailure) => {
+    const fixture = await createLifecycleFixture();
+    await builtTick(fixture);
+    await updateScenario(fixture, (state) => {
+      state.jobs[0]!.status = 'queued';
+      state.sshFailures.push(sshFailure);
+    });
+    await builtTick(fixture);
+    await builtTick(fixture);
+    await builtTick(fixture);
+    const statePath = join(fixture.directory, 'controller-state.json');
+    const before = JSON.parse(await readFile(statePath, 'utf8')) as { pendingEffect: unknown; lifecycle: unknown };
+    expect(await builtTick(fixture)).toContain('"status":"pending"');
+    const during = JSON.parse(await readFile(statePath, 'utf8')) as { pendingEffect: unknown; lifecycle: unknown; readbacks: unknown[] };
+    expect(during.pendingEffect).toEqual(before.pendingEffect);
+    expect(during.lifecycle).toEqual(before.lifecycle);
+    expect(during.readbacks.at(-1)).toMatchObject({ sshReadiness: { transient: true } });
+    expect(await builtTick(fixture)).toContain('"status":"reconciled"');
+    const log = await readFile(fixture.logPath, 'utf8');
+    expect(log.split('\n').filter((line) => line.includes('instance start'))).toHaveLength(1);
+    expect(log.split('\n').filter((line) => line.includes('/opt/cirujano/arm-grant'))).toHaveLength(2);
+    expect(log).not.toContain('/registration-token');
+    expect(log).not.toContain('/opt/cirujano/register-runner');
+  }, 30_000);
+
+  it('fails a transient SSH result at the original boot deadline without another start', async () => {
+    const fixture = await createLifecycleFixture();
+    await builtTick(fixture);
+    await updateScenario(fixture, (state) => {
+      state.jobs[0]!.status = 'queued';
+      state.sshFailures.push('ssh: connect to host 203.0.113.4 port 22: Connection refused');
+    });
+    await builtTick(fixture);
+    await builtTick(fixture);
+    await builtTick(fixture);
+    const statePath = join(fixture.directory, 'controller-state.json');
+    const state = JSON.parse(await readFile(statePath, 'utf8')) as { pendingEffect: { createdAtMs: number } };
+    state.pendingEffect.createdAtMs = Date.now() - validRunnerConfig.timing.bootTimeoutMs;
+    await writeFile(statePath, JSON.stringify(state));
+    await expect(builtTick(fixture)).rejects.toThrow(/boot deadline/iu);
+    const log = await readFile(fixture.logPath, 'utf8');
+    expect(log.split('\n').filter((line) => line.includes('instance start'))).toHaveLength(1);
+    expect(log).not.toContain('/registration-token');
+    // Transient readiness refusals are journaled as readbacks, never as helper diagnostics.
+    await expect(access(join(fixture.directory, 'helper-diagnostics.jsonl'))).rejects.toThrow();
+  }, 30_000);
+
+  async function armedLifecycle(): Promise<LifecycleFixture> {
+    const fixture = await createLifecycleFixture();
+    await builtTick(fixture);
+    await updateScenario(fixture, (state) => { state.jobs[0]!.status = 'queued'; });
+    for (let tick = 0; tick < 4; tick += 1) await builtTick(fixture); // create, adopt, start, arm
+    return fixture;
+  }
+
+  const journalState = async (fixture: LifecycleFixture): Promise<string> =>
+    (JSON.parse(await readFile(join(fixture.directory, 'controller-state.json'), 'utf8')) as { lifecycle: { state: string } }).lifecycle.state;
+
+  it('refuses to restart a guest that stopped itself, even after a direct stop finds it stopped', async () => {
+    const fixture = await armedLifecycle();
+    // The guest watchdog powers the VM off (quarantine or expired grant) behind the controller's back.
+    await updateScenario(fixture, (state) => { state.provider = 'STOPPED'; state.guest = 'booting'; });
+    await expect(builtTick(fixture)).rejects.toThrow(/stopped outside the controller/u);
+    // A direct stop that finds the VM already stopped emits nothing and must not launder the guest's own stop.
+    await builtDirect(fixture, 'stop');
+    expect(await journalState(fixture)).toBe('starting');
+    await expect(builtTick(fixture)).rejects.toThrow(/stopped outside the controller/u);
+    const log = await readFile(fixture.logPath, 'utf8');
+    expect(log.split('\n').filter((line) => line.includes('instance start'))).toHaveLength(1);
+  }, 30_000);
+
+  it('records its own emitted stop and restarts on the next demand', async () => {
+    const fixture = await armedLifecycle();
+    await builtDirect(fixture, 'stop');
+    expect(await journalState(fixture)).toBe('stopping');
+    await builtTick(fixture);
+    const log = await readFile(fixture.logPath, 'utf8');
+    expect(log.split('\n').filter((line) => line.includes('instance start'))).toHaveLength(2);
+  }, 30_000);
+
+  it('persists a bounded redacted stderr tail when a guest helper fails', async () => {
+    const fixture = await createLifecycleFixture();
+    await builtTick(fixture);
+    await updateScenario(fixture, (state) => {
+      state.jobs[0]!.status = 'queued';
+      state.registerFailure = 'bash: line 1: cd: /var/lib/cirujano/runner-1: Permission denied';
+    });
+    // create, adopt, start, arm; the fifth tick registers.
+    for (let tick = 0; tick < 4; tick += 1) await builtTick(fixture);
+    await expect(builtTick(fixture)).rejects.toThrow(/register-runner failed: helper/u);
+    const diagnostics = (await readFile(join(fixture.directory, 'helper-diagnostics.jsonl'), 'utf8')).trim().split('\n').map((line) => JSON.parse(line) as Record<string, unknown>);
+    expect(diagnostics).toHaveLength(1);
+    expect(diagnostics[0]).toMatchObject({ type: 'helper-failure', helper: '/opt/cirujano/register-runner', exitCode: 1, timedOut: false, reason: 'helper' });
+    expect(diagnostics[0]!.stderrTail).toContain('Permission denied');
+    expect(diagnostics[0]!.stderrTail).toContain('token=[REDACTED]');
+    expect(JSON.stringify(diagnostics)).not.toContain('fixture-registration-token');
+    const log = await readFile(fixture.logPath, 'utf8');
+    expect(log.split('\n').filter((line) => line.includes('instance start'))).toHaveLength(1);
+  }, 30_000);
+
+  it.each([
+    ['host-key', 'WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!'],
+    ['authentication', 'runner@203.0.113.4: Permission denied (publickey).'],
+  ])('fails closed on %s during start reconciliation', async (reason, sshFailure) => {
+    const fixture = await createLifecycleFixture();
+    await builtTick(fixture);
+    await updateScenario(fixture, (state) => {
+      state.jobs[0]!.status = 'queued';
+      state.sshFailures.push(sshFailure);
+    });
+    await builtTick(fixture);
+    await builtTick(fixture);
+    await builtTick(fixture);
+    await expect(builtTick(fixture)).rejects.toThrow(new RegExp(`ssh readiness failed: ${reason}`, 'u'));
+    const log = await readFile(fixture.logPath, 'utf8');
+    expect(log.split('\n').filter((line) => line.includes('instance start'))).toHaveLength(1);
+    expect(log).not.toContain('/registration-token');
+  }, 30_000);
+});
+
+function captureIo(): CliIo & { out: string[]; err: string[] } {
+  const out: string[] = [];
+  const err: string[] = [];
+  return { out, err, stdout: (text) => { out.push(text); }, stderr: (text) => { err.push(text); } };
+}
+
+async function waitForText(path: string, expected: string): Promise<void> {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    const value = await readFile(path, 'utf8').catch(() => '');
+    if (value.includes(expected)) return;
+    await new Promise((resolveWait) => setTimeout(resolveWait, 20));
+  }
+  throw new Error(`timed out waiting for ${expected}`);
+}
+
+interface LifecycleScenario {
+  provider: 'ABSENT' | 'STOPPED' | 'RUNNING';
+  guest: 'booting' | 'ready' | 'busy' | 'drained';
+  grant: { generation: number; startedAtMs: number; deadlineMs: number } | null;
+  runnerName: string | null;
+  runnerId: number | null;
+  runnerBusy: boolean;
+  sshFailures: string[];
+  /** arm-grant reports success but a concurrent writer restores the previous grant. */
+  lostGrantUpdates?: number;
+  registerFailure?: string;
+  repositoryUnavailable?: boolean;
+  startOperationState?: 'RUNNING' | 'SUCCEEDED';
+  /** The start operation fails with the live public-IPv4 quota status and the VM stays stopped. */
+  startQuotaRefused?: boolean;
+  /** The create command itself exits 1 with a RESOURCE_EXHAUSTED quota error. */
+  createQuotaRefused?: boolean;
+  /**
+   * Emulates guest/arm-grant.sh: with a grant present, only the same generation or exactly
+   * grant+1 with confirmed stop == grant is accepted (otherwise exit 3); a created VM has no grant.
+   */
+  strictGrant?: boolean;
+  jobs: Array<{ runId: number; jobId: number; status: 'none' | 'queued' | 'in_progress' | 'completed'; conclusion: string | null; runnerId: number | null; runnerName: string | null }>;
+}
+
+interface KnownFixtureAssignment { runId: number; runAttempt: number; jobId: number; runnerId: number; runnerName: string; conclusion: string }
+
+interface LifecycleFixture { directory: string; scenarioPath: string; configPath: string; permitPath: string; logPath: string; env: NodeJS.ProcessEnv }
+
+async function builtRunner(fixture: LifecycleFixture, command: 'watch' | 'stop' | 'cleanup', extraEnv: NodeJS.ProcessEnv = {}): Promise<string> {
+  const executable = join(packageDirectory, 'dist/bin.js');
+  const result = await executeFile(process.execPath, [executable, 'runner', command, '--config', fixture.configPath, '--permit', fixture.permitPath], {
+    env: { ...fixture.env, ...extraEnv }, maxBuffer: 1024 * 1024,
+  }).catch((error: { stderr?: string; stdout?: string }) => { throw new Error(`${error.stderr ?? ''}${error.stdout ?? ''}` || `built ${command} failed`); });
+  return result.stdout;
+}
+
+const builtTick = (fixture: LifecycleFixture): Promise<string> => builtRunner(fixture, 'watch', { CIRUJANO_RUNNER_ONCE: '1' });
+const builtDirect = (fixture: LifecycleFixture, action: 'stop' | 'cleanup'): Promise<string> => builtRunner(fixture, action);
+
+async function updateScenario(fixture: LifecycleFixture, update: (state: LifecycleScenario) => void): Promise<void> {
+  const state = JSON.parse(await readFile(fixture.scenarioPath, 'utf8')) as LifecycleScenario;
+  update(state);
+  await writeFile(fixture.scenarioPath, JSON.stringify(state));
+}
+
+async function createLifecycleFixture(idleResourcePolicy?: 'delete-after-stop'): Promise<LifecycleFixture> {
+  const directory = await mkdtemp(join(tmpdir(), 'cirujano-r11-lifecycle-'));
+  const scenarioPath = join(directory, 'scenario.json');
+  const logPath = join(directory, 'commands.log');
+  const ghPath = join(directory, 'gh-fixture');
+  const nebiusPath = join(directory, 'nebius-fixture');
+  const sshPath = join(directory, 'ssh-fixture');
+  const controllerKeyPath = join(directory, 'controller_ed25519');
+  const hostKeyPath = join(directory, 'host_ed25519');
+  await executeFile('/usr/bin/ssh-keygen', ['-q', '-t', 'ed25519', '-N', '', '-f', controllerKeyPath]);
+  const hostPair = testHostKeyPair();
+  await writeFile(hostKeyPath, hostPair.privateKey, { mode: 0o600 });
+  await writeFile(`${hostKeyPath}.pub`, `${hostPair.publicKey}\n`);
+  const hostPublicKey = hostPair.publicKey;
+  const scenario: LifecycleScenario = {
+    provider: 'ABSENT', guest: 'booting', grant: null, runnerName: null, runnerId: null, runnerBusy: false,
+    sshFailures: [],
+    jobs: [
+      { runId: 1001, jobId: 2001, status: 'none', conclusion: null, runnerId: null, runnerName: null },
+      { runId: 1002, jobId: 2002, status: 'none', conclusion: null, runnerId: null, runnerName: null },
+    ],
+  };
+  await writeFile(scenarioPath, JSON.stringify(scenario));
+  const sharedPrelude = `const fs=require('node:fs');const p=process.env.CIRUJANO_SCENARIO_PATH;const s=JSON.parse(fs.readFileSync(p,'utf8'));const save=()=>fs.writeFileSync(p,JSON.stringify(s));fs.appendFileSync(process.env.CIRUJANO_FIXTURE_LOG,process.argv.slice(2).join(' ')+'\\n');`;
+  await writeFile(ghPath, `#!/usr/bin/env node
+${sharedPrelude}
+const a=process.argv.slice(2);const endpoint=a.find(v=>v.startsWith('/repos/'))||'';const method=a[a.indexOf('--method')+1];let status=200;let body={};
+if(/^\\/repos\\/trusted\\/private$/.test(endpoint)){if(s.repositoryUnavailable)status=403;else body={id:123,full_name:'trusted/private',private:true,visibility:'private',fork:false};}
+else if(endpoint.endsWith('/actions/runs')){const active=s.jobs.filter(j=>j.status==='queued'||j.status==='in_progress');body={total_count:active.length,workflow_runs:active.map(j=>({id:j.runId,workflow_id:41,run_attempt:1,status:j.status==='queued'?'queued':'in_progress',conclusion:null,event:'push',head_branch:'develop',head_sha:'sha-'+j.runId,repository:{id:123},head_repository:{id:123},pull_requests:[]}))};}
+else if(endpoint.includes('/attempts/1/jobs')){const runId=Number(endpoint.match(/runs\\/(\\d+)/)[1]);const jobs=s.jobs.filter(j=>j.runId===runId&&j.status!=='none');body={total_count:jobs.length,jobs:jobs.map(j=>({id:j.jobId,run_id:j.runId,head_sha:'sha-'+j.runId,status:j.status,conclusion:j.conclusion,name:'e2e',labels:['self-hosted','cirujano-pilot-a'],runner_id:j.runnerId,runner_name:j.runnerName,runner_group_id:null,runner_group_name:null,started_at:j.status==='queued'?null:'2026-09-13T10:00:00Z',completed_at:j.status==='completed'?'2026-09-13T10:01:00Z':null}))};}
+else if(endpoint.endsWith('/actions/runners'))body={total_count:s.runnerName===null?0:1,runners:s.runnerName===null?[]:[{id:s.runnerId,name:s.runnerName,os:'linux',status:'online',busy:s.runnerBusy,labels:[{name:'self-hosted'},{name:'cirujano-pilot-a'}]}]};
+else if(endpoint.endsWith('/registration-token')){status=201;body={token:'fixture-registration-token',expires_at:'2099-01-01T00:00:00Z'};}
+else if(method==='DELETE'&&endpoint.includes('/actions/runners/')){status=204;s.runnerName=null;s.runnerId=null;s.runnerBusy=false;save();body=null;}
+process.stdout.write('HTTP/2 '+status+'\\n\\n'+(body===null?'':JSON.stringify(body)));
+`);
+  await writeFile(nebiusPath, `#!/usr/bin/env node
+${sharedPrelude}
+const a=process.argv.slice(2);let body={};
+const quotaMessage='rpc error: code = ResourceExhausted desc = Quota limit exceeded. Exceeded limit for container tenant-fixture, quota vpc.ipv4-address.public.count.';
+if(a.includes('list-operations-by-parent')&&s.startQuotaRefused)body={operations:[{id:'op-start',description:'Start Instance',resource_id:'instance-1',finished_at:'2026-10-02T05:34:35Z',status:{code:8,message:quotaMessage,details:[{service:'VPC API',code:'QuotaFailure',quota_failure:{violations:[{quota:'vpc.ipv4-address.public.count',limit:'3',requested:'4'}]},retry_type:'NOTHING'}]}}]};
+else if(a.includes('create')&&s.createQuotaRefused){process.stderr.write('Error: '+quotaMessage+'\\n');process.exit(1);}
+else if(a.includes('start')&&s.startQuotaRefused)body={metadata:{id:'op-start'}};
+else if(a.includes('list-operations-by-parent'))body=s.startOperationState?{items:[{metadata:{id:'op-start'},spec:{resource_id:'instance-1'},status:{state:s.startOperationState}}]}:{};
+else if(a.includes('create')){s.provider='STOPPED';s.guest='booting';if(s.strictGrant)s.grant=null;save();body={metadata:{id:'op-create'}};}
+else if(a.includes('start')){s.provider='RUNNING';s.guest='booting';save();body={metadata:{id:'op-start'}};}
+else if(a.includes('stop')){s.provider='STOPPED';s.guest='booting';s.runnerName=null;s.runnerId=null;s.runnerBusy=false;save();body={metadata:{id:'op-stop'}};}
+else if(a.includes('delete')){s.provider='ABSENT';save();body={metadata:{id:'op-delete'}};}
+else if(s.provider!=='ABSENT')body={items:[{metadata:{id:'instance-1',parent_id:'project-1',name:'cirujano-a-vm',labels:{'cirujano-controller':'controller-a','cirujano-config':process.env.CIRUJANO_CONFIG_HASH}},spec:{stopped:s.provider==='STOPPED',recovery_policy:'FAIL',resources:{platform:'cpu-d3',preset:'4vcpu-16gb'},network_interfaces:[{name:'primary',subnet_id:'subnet-1',ip_address:{},public_ip_address:{}}],boot_disk:{attach_mode:'READ_WRITE',managed_disk:{name:'cirujano-a-boot',spec:{type:'NETWORK_SSD',size_gibibytes:80,source_image_id:'image-1'}}}},status:{state:s.provider,network_interfaces:[{name:'primary',ip_address:{address:'10.0.0.4'},public_ip_address:{address:'203.0.113.4'}}],disk_attachments:[{name:'cirujano-a-boot',id:'disk-1'}]}}]};
+process.stdout.write(JSON.stringify(body));
+`);
+  await writeFile(sshPath, `#!/usr/bin/env node
+${sharedPrelude}
+const helper=process.argv.at(-1);const lines=fs.readFileSync(0,'utf8').trim().split('\\n');
+if(helper==='/opt/cirujano/arm-grant'&&s.sshFailures.length>0){const failure=s.sshFailures.shift();save();process.stderr.write(failure);process.exit(255);}
+else if(helper==='/opt/cirujano/arm-grant'&&(s.lostGrantUpdates??0)>0){s.lostGrantUpdates-=1;s.guest='ready';save();process.stdout.write('armed\\n');}
+else if(helper==='/opt/cirujano/arm-grant'&&s.strictGrant&&s.grant!==null&&Number(lines[0])!==s.grant.generation&&!(Number(lines[0])===s.grant.generation+1&&Number(lines[5])===s.grant.generation)){process.stderr.write('grant generation must increment exactly once\\n');process.exit(3);}
+else if(helper==='/opt/cirujano/arm-grant'){s.grant={generation:Number(lines[0]),startedAtMs:Number(lines[1]),deadlineMs:Number(lines[2])};s.guest='ready';save();process.stdout.write('armed\\n');}
+else if(helper==='/opt/cirujano/register-runner'&&s.registerFailure){process.stderr.write(s.registerFailure+'\\ntoken='+lines[4]+'\\n');process.exit(1);}
+else if(helper==='/opt/cirujano/register-runner'){const job=s.jobs.find(j=>j.status==='queued');s.runnerName=lines[1];s.runnerId=job.jobId===2001?301:302;s.runnerBusy=true;job.status='in_progress';job.runnerId=s.runnerId;job.runnerName=s.runnerName;s.guest='busy';save();process.stdout.write('registered\\n');}
+else if(helper==='/opt/cirujano/drain'){s.guest='drained';s.runnerName=null;s.runnerId=null;s.runnerBusy=false;save();process.stdout.write('drained\\n');}
+else if(helper==='/opt/cirujano/resume-admission'){s.guest='ready';save();process.stdout.write('resumed\\n');}
+else{const ready=s.guest!=='booting';process.stdout.write(JSON.stringify({complete:true,status:s.guest,admissionEnabled:s.guest!=='drained',runnerActive:s.runnerName!==null,workerActive:s.runnerBusy,grant:s.grant,watchdogReady:ready,sshIdentityVerified:true,registrationReady:ready,networkEgressBytes:1048576}));}
+`);
+  for (const path of [ghPath, nebiusPath, sshPath]) await chmod(path, 0o755);
+  const config = {
+    ...validRunnerConfig,
+    ...(idleResourcePolicy === undefined ? {} : { idleResourcePolicy }),
+    ssh: { publicKey: hostPublicKey, fingerprint: verifySshPublicKeyFingerprint(hostPublicKey) },
+    timing: { ...validRunnerConfig.timing, pollIntervalMs: 2_000, idleGraceMs: 1 },
+  };
+  const configPath = join(directory, 'config.json');
+  const configText = JSON.stringify(config);
+  await writeFile(configPath, configText);
+  const configHash = runnerConfigHash(parseRunnerConfig(config));
+  const permitPath = join(directory, 'permit.json');
+  const now = Date.now();
+  await writeFile(permitPath, JSON.stringify({ schemaVersion: 1, permitId: 'r11-permit', operations: ['create', 'start', 'register', 'stop', 'delete'], issuedAtMs: now - 1_000, expiresAtMs: now + 10_800_000, maxStarts: 3, maxRuntimeMs: 20_000_000, maxTotalCostUsd: 10, recoveryAllowed: true, configHash, candidateDigest: 'fixture-candidate', repositoryId: 123, projectId: 'project-1', controllerId: 'controller-a', resourcePrefix: 'cirujano-a' }));
+  return { directory, scenarioPath, configPath, permitPath, logPath, env: { ...process.env, CIRUJANO_GH_PATH: ghPath, CIRUJANO_NEBIUS_PATH: nebiusPath, CIRUJANO_SSH_PATH: sshPath, CIRUJANO_SSH_KEY_PATH: controllerKeyPath, CIRUJANO_GUEST_DIR: resolve(packageDirectory, '../runner/guest'), CIRUJANO_HOST_PRIVATE_KEY_PATH: hostKeyPath, CIRUJANO_LOGIN_PUBLIC_KEY_PATH: `${controllerKeyPath}.pub`, CIRUJANO_ACTIONS_RUNNER_VERSION: '2.328.0', CIRUJANO_ACTIONS_RUNNER_SHA256: 'a'.repeat(64), CIRUJANO_NETWORK_EGRESS_LIMIT_GIB: '1', CIRUJANO_CANDIDATE_DIGEST: 'fixture-candidate', CIRUJANO_CONFIG_HASH: configHash, CIRUJANO_SCENARIO_PATH: scenarioPath, CIRUJANO_FIXTURE_LOG: logPath } };
+}
+
+function sshField(value: Buffer): Buffer {
+  const length = Buffer.alloc(4);
+  length.writeUInt32BE(value.length);
+  return Buffer.concat([length, value]);
+}
+
+function testHostKeyPair(): { privateKey: string; publicKey: string } {
+  const pair = generateKeyPairSync('ed25519');
+  const privateJwk = pair.privateKey.export({ format: 'jwk' });
+  const publicJwk = pair.publicKey.export({ format: 'jwk' });
+  const publicBytes = Buffer.from(publicJwk.x!, 'base64url');
+  const privateSeed = Buffer.from(privateJwk.d!, 'base64url');
+  const keyType = Buffer.from('ssh-ed25519');
+  const publicBlob = Buffer.concat([sshField(keyType), sshField(publicBytes)]);
+  const fields = Buffer.concat([Buffer.alloc(8, 7), sshField(keyType), sshField(publicBytes), sshField(Buffer.concat([privateSeed, publicBytes])), sshField(Buffer.from('fixture'))]);
+  const padding = Buffer.from(Array.from({ length: 8 - (fields.length % 8) }, (_unused, index) => index + 1));
+  const envelope = Buffer.concat([Buffer.from('openssh-key-v1\0'), sshField(Buffer.from('none')), sshField(Buffer.from('none')), sshField(Buffer.alloc(0)), Buffer.from([0, 0, 0, 1]), sshField(publicBlob), sshField(Buffer.concat([fields, padding]))]).toString('base64');
+  return { privateKey: `-----BEGIN OPENSSH PRIVATE KEY-----\n${envelope.match(/.{1,70}/gu)!.join('\n')}\n-----END OPENSSH PRIVATE KEY-----\n`, publicKey: `ssh-ed25519 ${publicBlob.toString('base64')} fixture` };
+}
+
+async function createFixture(running = false, demand = false, stateful = false): Promise<{ configPath: string; permitPath?: string; logPath: string; env: NodeJS.ProcessEnv }> {
+  const directory = await mkdtemp(join(tmpdir(), 'cirujano-runner-service-'));
+  const logPath = join(directory, 'commands.log');
+  const ghPath = join(directory, 'gh-fixture');
+  const nebiusPath = join(directory, 'nebius-fixture');
+  const sshPath = join(directory, 'ssh-fixture');
+  const sshKeyPath = join(directory, 'controller-key');
+  const providerStatePath = join(directory, 'provider-state');
+  const guestStatePath = join(directory, 'guest-state');
+  const runnerStatePath = join(directory, 'runner-state');
+  await writeFile(ghPath, `#!/usr/bin/env node
+const fs = require('node:fs');
+fs.appendFileSync(process.env.CIRUJANO_FIXTURE_LOG, process.argv.slice(2).join(' ') + '\\n');
+const endpoint = process.argv.find((value) => value.startsWith('/repos/')) || '';
+let body = {};
+let status = 200;
+if (process.env.CIRUJANO_FIXTURE_REPOSITORY_HOLD && endpoint === '/repos/trusted/private') {
+  const headers = 'x-ratelimit-resource: core\\nx-ratelimit-remaining: 2000\\nx-ratelimit-reset: ' + Math.ceil(Date.now()/1000 + 60);
+  const limited = process.env.CIRUJANO_FIXTURE_REPOSITORY_HOLD === 'rate-limit';
+  process.stdout.write('HTTP/2 ' + (limited ? '429' : '200') + '\\n' + headers + '\\nretry-after: 60\\n\\n' + JSON.stringify(limited ? {} : {id:123,full_name:'trusted/private',private:true,visibility:'private',fork:false}));
+  process.exit(0);
+}
+if (process.env.CIRUJANO_FIXTURE_AUTH_FAIL === '1') { process.stdout.write('HTTP/2 401\\n\\n{}'); process.exit(0); }
+if (process.env.CIRUJANO_FIXTURE_RATE_LIMIT === '1' && endpoint.endsWith('/actions/runs')) { process.stdout.write('HTTP/2 429\\nretry-after: 1\\n\\n{}'); process.exit(0); }
+if (/^\\/repos\\/trusted\\/private$/.test(endpoint)) body = { id: 123, full_name: 'trusted/private', private: true, visibility: 'private', fork: false };
+else if (process.argv.includes('DELETE') && endpoint.includes('/actions/runners/')) { status=204; if(process.env.CIRUJANO_RUNNER_STATE_PATH)fs.writeFileSync(process.env.CIRUJANO_RUNNER_STATE_PATH,'absent'); body=null; }
+else if (endpoint.endsWith('/actions/runners')) { const owned=process.env.CIRUJANO_RUNNER_STATE_PATH&&fs.existsSync(process.env.CIRUJANO_RUNNER_STATE_PATH)&&fs.readFileSync(process.env.CIRUJANO_RUNNER_STATE_PATH,'utf8')==='owned'; body={total_count:owned?1:0,runners:owned?[{id:301,name:'cirujano-a-g1',os:'linux',status:'online',busy:false,labels:[{name:'self-hosted'},{name:'cirujano-pilot-a'}]}]:[]}; }
+else if (endpoint.endsWith('/actions/runs')) body = process.env.CIRUJANO_FIXTURE_DEMAND === '1' ? { total_count: 1, workflow_runs: [{id:1001,workflow_id:41,run_attempt:1,status:'queued',conclusion:null,event:'push',head_branch:'develop',head_sha:'abc',repository:{id:123},head_repository:{id:123},pull_requests:[]}] } : { total_count: 0, workflow_runs: [] };
+else if (endpoint.includes('/attempts/1/jobs')) body = { total_count: 1, jobs: [{id:2001,run_id:1001,head_sha:'abc',status:'queued',conclusion:null,name:'e2e',labels:['self-hosted','cirujano-pilot-a'],runner_id:null,runner_name:null,runner_group_id:null,runner_group_name:null,started_at:null,completed_at:null}] };
+else if (endpoint.endsWith('/registration-token')) { status = 201; body = { token: 'fixture-registration-token', expires_at: '2099-01-01T00:00:00Z' }; }
+const quotaHeaders = process.env.CIRUJANO_FIXTURE_JOB_RESERVE === '1' && endpoint.includes('/attempts/1/jobs') ? '\\nx-ratelimit-resource: core\\nx-ratelimit-remaining: 2000\\nx-ratelimit-reset: ' + Math.ceil(Date.now()/1000 + 60) : '';
+process.stdout.write('HTTP/2 ' + status + quotaHeaders + '\\n\\n' + JSON.stringify(body));
+`);
+  await writeFile(nebiusPath, `#!/usr/bin/env node
+const fs = require('node:fs');
+fs.appendFileSync(process.env.CIRUJANO_FIXTURE_LOG, process.argv.slice(2).join(' ') + '\\n');
+const args = process.argv.slice(2);
+let state = process.env.CIRUJANO_FIXTURE_RUNNING === '1' ? 'RUNNING' : 'ABSENT';
+if (process.env.CIRUJANO_PROVIDER_STATE_PATH && fs.existsSync(process.env.CIRUJANO_PROVIDER_STATE_PATH)) state = fs.readFileSync(process.env.CIRUJANO_PROVIDER_STATE_PATH, 'utf8');
+if (args.includes('list-operations-by-parent')) process.stdout.write(process.env.CIRUJANO_FIXTURE_OPERATION_PRESENT === '1' ? JSON.stringify({items:[{metadata:{id:'ambiguous-stop'},spec:{resource_id:'instance-1'},status:{state:'RUNNING'}}]}) : process.env.CIRUJANO_FIXTURE_OPERATION_PRESENT === 'succeeded' ? JSON.stringify({items:[{metadata:{id:'old-start'},spec:{resource_id:'instance-1'},status:{state:'SUCCEEDED'}},{metadata:{id:'old-stop'},spec:{resource_id:'instance-1'},status:{state:'SUCCEEDED'}}]}) : '{}');
+else if (args.includes('stop')) { state = 'STOPPED'; fs.writeFileSync(process.env.CIRUJANO_PROVIDER_STATE_PATH, state); process.stdout.write(JSON.stringify({metadata:{id:'operation-stop'}})); }
+else if (args.includes('delete')) { state = 'ABSENT'; fs.writeFileSync(process.env.CIRUJANO_PROVIDER_STATE_PATH, state); process.stdout.write(JSON.stringify({metadata:{id:'operation-delete'}})); }
+else if (state !== 'ABSENT') process.stdout.write(JSON.stringify({items:[{metadata:{id:'instance-1',parent_id:'project-1',name:'cirujano-a-vm',labels:{'cirujano-controller':'controller-a','cirujano-config':process.env.CIRUJANO_CONFIG_HASH}},spec:{stopped:state==='STOPPED',recovery_policy:'FAIL',resources:{platform:'cpu-d3',preset:'4vcpu-16gb'},network_interfaces:[{name:'primary',subnet_id:'subnet-1',ip_address:{},public_ip_address:{}}],boot_disk:{attach_mode:'READ_WRITE',managed_disk:{name:'cirujano-a-boot',spec:{type:'NETWORK_SSD',size_gibibytes:80,source_image_id:'image-1'}}}},status:{state,network_interfaces:[{name:'primary',ip_address:{address:'10.0.0.4'},public_ip_address:{address:'203.0.113.4'}}],disk_attachments:[{name:'cirujano-a-boot',id:'disk-1'}]}}]}));
+else if (process.env.CIRUJANO_FIXTURE_UNRELATED_INSTANCES) process.stdout.write(JSON.stringify({items:Array.from({length:Number(process.env.CIRUJANO_FIXTURE_UNRELATED_INSTANCES)},(_,i)=>({metadata:{id:'other-'+i,parent_id:'project-1',name:'other-vm-'+i,labels:{team:'unrelated-'+i}},spec:{stopped:true,recovery_policy:'FAIL',resources:{platform:'cpu-d3',preset:'4vcpu-16gb'},network_interfaces:[{name:'primary',subnet_id:'subnet-1',ip_address:{},public_ip_address:{}}],boot_disk:{attach_mode:'READ_WRITE',managed_disk:{name:'other-boot-'+i,spec:{type:'NETWORK_SSD',size_gibibytes:80,source_image_id:'image-1'}}}},status:{state:'STOPPED',network_interfaces:[{name:'primary',ip_address:{address:'10.0.1.'+(i%250)},public_ip_address:{}}]}}))}));
+else process.stdout.write('{}');
+`);
+  await writeFile(sshPath, `#!/usr/bin/env node
+const fs = require('node:fs');
+fs.appendFileSync(process.env.CIRUJANO_FIXTURE_LOG, process.argv.slice(2).join(' ') + '\\n');
+if (process.env.CIRUJANO_FIXTURE_GUEST_LOSS === '1') process.exit(255);
+const input = fs.readFileSync(0, 'utf8').trim().split('\\n');
+if (input.length > 1) fs.appendFileSync(process.env.CIRUJANO_FIXTURE_LOG, 'stdin=' + input.slice(0, -1).join('|') + '\\n');
+const helper = process.argv.at(-1);
+if (process.env.CIRUJANO_GUEST_STATE_PATH && helper === '/opt/cirujano/drain') { fs.writeFileSync(process.env.CIRUJANO_GUEST_STATE_PATH, 'drained'); process.stdout.write('drained\\n'); process.exit(0); }
+if (process.env.CIRUJANO_GUEST_STATE_PATH && helper === '/opt/cirujano/resume-admission') { fs.writeFileSync(process.env.CIRUJANO_GUEST_STATE_PATH, 'ready'); process.stdout.write('resumed\\n'); process.exit(0); }
+const now = Date.now();
+const state = process.env.CIRUJANO_GUEST_STATE_PATH && fs.existsSync(process.env.CIRUJANO_GUEST_STATE_PATH) ? fs.readFileSync(process.env.CIRUJANO_GUEST_STATE_PATH, 'utf8') : 'ready';
+process.stdout.write(JSON.stringify({complete:true,status:state,admissionEnabled:state!=='drained',runnerActive:false,workerActive:false,grant:{generation:1,startedAtMs:now-1000,deadlineMs:now+5400000},watchdogReady:true,sshIdentityVerified:true,registrationReady:true}));
+`);
+  await chmod(ghPath, 0o755);
+  await chmod(nebiusPath, 0o755);
+  await chmod(sshPath, 0o755);
+  await writeFile(sshKeyPath, 'fixture key', { mode: 0o600 });
+  if (stateful) { await writeFile(providerStatePath, running ? 'RUNNING' : 'ABSENT'); await writeFile(guestStatePath, 'ready'); await writeFile(runnerStatePath, 'owned'); }
+  const configPath = join(directory, 'config.json');
+  const config = running ? { ...validRunnerConfig, ssh: { publicKey: testSshPublicKey, fingerprint: verifySshPublicKeyFingerprint(testSshPublicKey) } } : validRunnerConfig;
+  const configText = JSON.stringify(config);
+  await writeFile(configPath, configText);
+  const configHash = runnerConfigHash(parseRunnerConfig(config));
+  const permitPath = join(directory, 'permit.json');
+  if (demand) {
+    const now = Date.now();
+    await writeFile(permitPath, JSON.stringify({ schemaVersion: 1, permitId: 'fixture-permit', operations: ['create', 'start', 'register', 'stop', 'delete'], issuedAtMs: now - 1000, expiresAtMs: now + 7_200_000, maxStarts: 2, maxRuntimeMs: 7_200_000, maxTotalCostUsd: 10, recoveryAllowed: true, configHash, candidateDigest: 'fixture-candidate', repositoryId: 123, projectId: 'project-1', controllerId: 'controller-a', resourcePrefix: 'cirujano-a' }));
+    await writeFile(join(directory, 'controller-state.json'), JSON.stringify({ schemaVersion: 1, identity: { configHash, candidateDigest: 'fixture-candidate', repositoryId: 123, projectId: 'project-1', controllerId: 'controller-a', resourcePrefix: 'cirujano-a' }, lifecycle: { state: 'ready', startCount: 1, cumulativeRuntimeMs: 0, cumulativeCostUsd: 0, outstandingIntent: null, idleObservations: [] }, pendingEffect: null, readbacks: [] }));
+  }
+  return {
+    configPath,
+    ...(demand ? { permitPath } : {}),
+    logPath,
+    env: {
+      ...process.env,
+      CIRUJANO_GH_PATH: ghPath,
+      CIRUJANO_NEBIUS_PATH: nebiusPath,
+      CIRUJANO_FIXTURE_LOG: logPath,
+      CIRUJANO_SSH_PATH: sshPath,
+      CIRUJANO_SSH_KEY_PATH: sshKeyPath,
+      CIRUJANO_CONFIG_HASH: configHash,
+      CIRUJANO_CANDIDATE_DIGEST: 'fixture-candidate',
+      ...(running ? { CIRUJANO_FIXTURE_RUNNING: '1' } : {}),
+      ...(demand ? { CIRUJANO_FIXTURE_DEMAND: '1' } : {}),
+      ...(stateful ? { CIRUJANO_PROVIDER_STATE_PATH: providerStatePath } : {}),
+      ...(stateful ? { CIRUJANO_GUEST_STATE_PATH: guestStatePath } : {}),
+      ...(stateful ? { CIRUJANO_RUNNER_STATE_PATH: runnerStatePath } : {}),
+    },
+  };
+}
+
+const validRunnerConfig = {
+  schemaVersion: 1,
+  repository: { id: 123, nameWithOwner: 'trusted/private', visibility: 'private' },
+  workflowIds: [41], allowedBranch: 'develop', eligibleJobNames: ['e2e'], runnerLabel: 'cirujano-pilot-a', slots: 1,
+  nebius: { profile: 'pilot', projectId: 'project-1', subnetId: 'subnet-1', imageId: 'image-1', platform: 'cpu-d3', preset: '4vcpu-16gb', diskType: 'network-ssd', diskSizeGiB: 80 },
+  ssh: { publicKey: 'ssh-ed25519 AAAA pilot', fingerprint: 'SHA256:pilot' },
+  ownership: { controllerId: 'controller-a', resourcePrefix: 'cirujano-a' },
+  timing: { pollIntervalMs: 30_000, idleGraceMs: 300_000, bootTimeoutMs: 600_000, maxJobMs: 3_600_000, lifetimeMs: 5_400_000, shutdownMarginMs: 300_000 },
+  rates: { currency: 'USD', quotedAt: '2026-09-13', source: 'provider quote', computeUsdPerHour: 0.24, diskUsdPerGibMonth: 0.10, networkEgressUsdPerGib: 0.05, hostedUsdPerMinute: 0.008 },
+};
+
+const testSshPublicKey = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA pilot';

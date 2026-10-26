@@ -1,8 +1,37 @@
-export const VERSION = '0.0.1';
+import { SHA_PATTERN } from './fleet-registry.js';
+import { HOSTED_SKUS, type HostedSku } from './telemetry.js';
+import { parseOptimizeArguments, type OptimizeArguments } from './optimization/arguments.js';
+
+export const VERSION = '0.1.0';
 
 export const USAGE = [
   'Usage:',
+  '  cirujano optimize collect --repository <owner/name> --ref <sha> --workflow <path> --job <key> --run <id>... --output <directory>',
+  '  cirujano optimize collect --family skip-validated-push --repository <owner/name> --ref <sha> --workflow <path> --branch <name> --output <directory>',
+  '  cirujano optimize diagnose --input <input.json> --config <config.json> --output <directory> [--permit <permit.json>]',
+  '  cirujano optimize propose --input <input.json> --diagnosis <diagnosis.json> --output <directory>',
+  '  cirujano optimize verify --proposal <proposal.json> --profile <profile.json> --permit <permit.json> --output <directory>',
+  '  cirujano optimize measure --proposal <proposal.json> --sandbox <sandbox.json> --cohort <cohort.json> --output <directory>',
+  '  cirujano optimize report --proposal <proposal.json> --sandbox <sandbox.json> --measurement <measurement.json> --output <directory>',
+  '  cirujano optimize publish --report <report.json> --permit <permit.json>',
+  '  cirujano optimize status --operation <directory> [--format json|text]',
+  '  cirujano optimize cancel --operation <directory> --permit <permit.json>',
   '  cirujano estimate --jobs <github-jobs.json> [--format json|text]',
+  '  cirujano runner inspect --config <runner.json> [--format json|text]',
+  '  cirujano runner watch --config <runner.json> [--permit <permit.json>] [--dry-run]',
+  '  cirujano runner stop --config <runner.json> --permit <permit.json>',
+  '  cirujano runner cleanup --config <runner.json> --permit <permit.json>',
+  '  cirujano runner report --state <state.json> --format json',
+  '  cirujano telemetry collect --owner <login> --store <directory> [--lookback-hours 48]',
+  '  cirujano telemetry report --store <directory> --since <YYYY-MM-DD> [--format json|markdown] [--registry <fleet-registry.json>]',
+  '  cirujano fleet init --registry <file> --owner <login> [--since <YYYY-MM-DD>] [--through <YYYY-MM-DD>]',
+  '  cirujano fleet enroll --registry <file> --repository <owner/name> --workflow <path> --job <key> [--job-name <name>]... [--sku actions_linux] [--branch <name>]',
+  '  cirujano fleet cutover --registry <file> --id <P#> --commit <sha>',
+  '  cirujano fleet verify --registry <file>',
+  '  cirujano fleet show --registry <file>',
+  '  cirujano fleet controller-config --registry <file> --id <P#> --state-root <dir> --template <config.json> [--allowed-branch <branch>] (admission is same-repository; the branch matters for integration pushes)',
+  '  cirujano fleet permit-proposal --registry <file> --id <P#> --candidate-digest <sha256> --quote <quote.json>',
+  '  cirujano fleet publish --registry <file> --store <directory> --since <YYYY-MM-DD> --output <report.md>',
   '  cirujano --help',
   '  cirujano --version',
   '',
@@ -26,7 +55,122 @@ export interface VersionArguments {
   command: 'version';
 }
 
-export type ParsedArguments = EstimateArguments | HelpArguments | VersionArguments;
+export interface RunnerInspectArguments {
+  command: 'runner';
+  action: 'inspect';
+  configPath: string;
+  format: OutputFormat;
+}
+
+export interface RunnerWatchArguments {
+  command: 'runner';
+  action: 'watch';
+  configPath: string;
+  permitPath?: string;
+  dryRun: boolean;
+}
+
+export interface RunnerMutationArguments {
+  command: 'runner';
+  action: 'stop' | 'cleanup';
+  configPath: string;
+  permitPath: string;
+}
+
+export interface RunnerReportArguments {
+  command: 'runner';
+  action: 'report';
+  statePath: string;
+  format: 'json';
+}
+
+export interface TelemetryCollectArguments {
+  command: 'telemetry';
+  action: 'collect';
+  owner: string;
+  storePath: string;
+  lookbackHours: number;
+}
+
+export interface TelemetryReportArguments {
+  command: 'telemetry';
+  action: 'report';
+  storePath: string;
+  since: string;
+  format: 'json' | 'markdown';
+  registryPath?: string;
+}
+
+export type TelemetryArguments = TelemetryCollectArguments | TelemetryReportArguments;
+
+export interface FleetInitArguments {
+  command: 'fleet';
+  action: 'init';
+  registryPath: string;
+  owner: string;
+  since: string;
+  through: string;
+}
+
+export interface FleetEnrollArguments {
+  command: 'fleet';
+  action: 'enroll';
+  registryPath: string;
+  repository: string;
+  workflowPath: string;
+  jobKey: string;
+  jobNames: string[];
+  sku: HostedSku;
+  targetBranch?: string;
+}
+
+export interface FleetCutoverArguments {
+  command: 'fleet';
+  action: 'cutover';
+  registryPath: string;
+  id: string;
+  commit: string;
+}
+
+export interface FleetReadArguments {
+  command: 'fleet';
+  action: 'verify' | 'show';
+  registryPath: string;
+}
+
+export interface FleetControllerConfigArguments {
+  command: 'fleet';
+  action: 'controller-config';
+  registryPath: string;
+  id: string;
+  stateRoot: string;
+  templatePath: string;
+  allowedBranch?: string;
+}
+
+export interface FleetPermitProposalArguments {
+  command: 'fleet';
+  action: 'permit-proposal';
+  registryPath: string;
+  id: string;
+  candidateDigest: string;
+  quotePath: string;
+}
+
+export interface FleetPublishArguments {
+  command: 'fleet';
+  action: 'publish';
+  registryPath: string;
+  storePath: string;
+  since: string;
+  outputPath: string;
+}
+
+export type FleetArguments = FleetInitArguments | FleetEnrollArguments | FleetCutoverArguments | FleetReadArguments
+  | FleetControllerConfigArguments | FleetPermitProposalArguments | FleetPublishArguments;
+
+export type RunnerArguments = RunnerInspectArguments | RunnerWatchArguments | RunnerMutationArguments | RunnerReportArguments;
+export type ParsedArguments = EstimateArguments | HelpArguments | VersionArguments | RunnerArguments | TelemetryArguments | FleetArguments | OptimizeArguments;
 
 export class ArgumentError extends Error {
   override readonly name = 'ArgumentError';
@@ -40,6 +184,10 @@ export function parseArguments(argv: readonly string[]): ParsedArguments {
   if (first === '--version' || first === '-v') {
     return { command: 'version' };
   }
+  if (first === 'runner') return parseRunnerArguments(rest);
+  if (first === 'optimize') return parseOptimizeArguments(rest);
+  if (first === 'telemetry') return parseTelemetryArguments(rest);
+  if (first === 'fleet') return parseFleetArguments(rest);
   if (first !== 'estimate') {
     throw new ArgumentError(`Unknown command "${first}".`);
   }
@@ -72,4 +220,212 @@ export function parseArguments(argv: readonly string[]): ParsedArguments {
     throw new ArgumentError('estimate requires --jobs <file>.');
   }
   return { command: 'estimate', jobsPath, format };
+}
+
+function parseTelemetryArguments(argv: readonly string[]): TelemetryArguments {
+  const [action, ...rest] = argv;
+  if (action === undefined) throw new ArgumentError('telemetry requires a subcommand.');
+  if (action !== 'collect' && action !== 'report') throw new ArgumentError(`Unknown telemetry command "${action}".`);
+  let owner: string | undefined;
+  let storePath: string | undefined;
+  let since: string | undefined;
+  let registryPath: string | undefined;
+  let format: 'json' | 'markdown' = action === 'report' ? 'markdown' : 'json';
+  let lookbackHours = 48;
+  for (let index = 0; index < rest.length; index += 1) {
+    const flag = rest[index];
+    const value = rest[index + 1];
+    if (value === undefined || value.startsWith('--')) throw new ArgumentError(`${flag ?? 'option'} requires a value.`);
+    index += 1;
+    if (flag === '--owner') owner = value;
+    else if (flag === '--store') storePath = value;
+    else if (flag === '--since') since = value;
+    else if (flag === '--registry') registryPath = value;
+    else if (flag === '--lookback-hours') {
+      lookbackHours = Number(value);
+      if (!Number.isInteger(lookbackHours) || lookbackHours < 1 || lookbackHours > 1080) {
+        throw new ArgumentError('--lookback-hours must be an integer from 1 through 1080.');
+      }
+    } else if (flag === '--format' && (value === 'json' || value === 'markdown')) format = value;
+    else throw new ArgumentError(`Unknown option "${flag ?? ''}" for telemetry ${action}.`);
+  }
+  if (storePath === undefined) throw new ArgumentError(`telemetry ${action} requires --store <directory>.`);
+  if (action === 'collect') {
+    if (owner === undefined) throw new ArgumentError('telemetry collect requires --owner <login>.');
+    if (since !== undefined || format !== 'json' || registryPath !== undefined) throw new ArgumentError('telemetry collect received a report-only option.');
+    return { command: 'telemetry', action, owner, storePath, lookbackHours };
+  }
+  if (owner !== undefined || lookbackHours !== 48) throw new ArgumentError('telemetry report received a collect-only option.');
+  if (since === undefined || !validIsoDate(since)) {
+    throw new ArgumentError('telemetry report requires --since YYYY-MM-DD.');
+  }
+  return registryPath === undefined
+    ? { command: 'telemetry', action, storePath, since, format }
+    : { command: 'telemetry', action, storePath, since, format, registryPath };
+}
+
+const FLEET_ACTIONS = ['init', 'enroll', 'cutover', 'verify', 'show', 'controller-config', 'permit-proposal', 'publish'] as const;
+type FleetAction = typeof FLEET_ACTIONS[number];
+const FLEET_OPTIONS: Record<FleetAction, readonly string[]> = {
+  init: ['--registry', '--owner', '--since', '--through'],
+  enroll: ['--registry', '--repository', '--workflow', '--job', '--job-name', '--sku', '--branch'],
+  cutover: ['--registry', '--id', '--commit'],
+  verify: ['--registry'],
+  show: ['--registry'],
+  'controller-config': ['--registry', '--id', '--state-root', '--template', '--allowed-branch'],
+  'permit-proposal': ['--registry', '--id', '--candidate-digest', '--quote'],
+  publish: ['--registry', '--store', '--since', '--output'],
+};
+
+function parseFleetArguments(argv: readonly string[]): FleetArguments {
+  const [action, ...rest] = argv;
+  if (action === undefined) throw new ArgumentError('fleet requires a subcommand.');
+  if (!isFleetAction(action)) throw new ArgumentError(`Unknown fleet command "${action}".`);
+  const allowed = FLEET_OPTIONS[action];
+  const values = new Map<string, string>();
+  const jobNames: string[] = [];
+  for (let index = 0; index < rest.length; index += 1) {
+    const flag = rest[index];
+    const value = rest[index + 1];
+    if (flag === undefined || !allowed.includes(flag)) throw new ArgumentError(`Unknown option "${flag ?? ''}" for fleet ${action}.`);
+    if (value === undefined || value.startsWith('--')) throw new ArgumentError(`${flag} requires a value.`);
+    index += 1;
+    if (flag === '--job-name') jobNames.push(value);
+    else values.set(flag, value);
+  }
+  const registryPath = values.get('--registry');
+  if (registryPath === undefined) throw new ArgumentError(`fleet ${action} requires --registry <file>.`);
+  if (action === 'verify' || action === 'show') return { command: 'fleet', action, registryPath };
+  if (action === 'init') {
+    const owner = values.get('--owner');
+    if (owner === undefined) throw new ArgumentError('fleet init requires --owner <login>.');
+    const since = values.get('--since') ?? '2026-09-13';
+    const through = values.get('--through') ?? '2026-10-28';
+    if (!validIsoDate(since) || !validIsoDate(through)) throw new ArgumentError('fleet init --since and --through require YYYY-MM-DD.');
+    return { command: 'fleet', action, registryPath, owner, since, through };
+  }
+  if (action === 'publish') {
+    const storePath = values.get('--store');
+    const since = values.get('--since');
+    const outputPath = values.get('--output');
+    if (storePath === undefined) throw new ArgumentError('fleet publish requires --store <directory>.');
+    if (since === undefined || !validIsoDate(since)) throw new ArgumentError('fleet publish requires --since YYYY-MM-DD.');
+    if (outputPath === undefined) throw new ArgumentError('fleet publish requires --output <report.md>.');
+    return { command: 'fleet', action, registryPath, storePath, since, outputPath };
+  }
+  if (action === 'controller-config' || action === 'permit-proposal') {
+    const id = values.get('--id');
+    if (id === undefined) throw new ArgumentError(`fleet ${action} requires --id <P#>.`);
+    if (action === 'controller-config') {
+      const stateRoot = values.get('--state-root');
+      const templatePath = values.get('--template');
+      const allowedBranch = values.get('--allowed-branch');
+      if (stateRoot === undefined) throw new ArgumentError('fleet controller-config requires --state-root <dir>.');
+      if (templatePath === undefined) throw new ArgumentError('fleet controller-config requires --template <config.json>.');
+      return allowedBranch === undefined
+        ? { command: 'fleet', action, registryPath, id, stateRoot, templatePath }
+        : { command: 'fleet', action, registryPath, id, stateRoot, templatePath, allowedBranch };
+    }
+    const candidateDigest = values.get('--candidate-digest');
+    const quotePath = values.get('--quote');
+    if (candidateDigest === undefined) throw new ArgumentError('fleet permit-proposal requires --candidate-digest <sha256>.');
+    if (quotePath === undefined) throw new ArgumentError('fleet permit-proposal requires --quote <quote.json>.');
+    return { command: 'fleet', action, registryPath, id, candidateDigest, quotePath };
+  }
+  if (action === 'cutover') {
+    const id = values.get('--id');
+    const commit = values.get('--commit');
+    if (id === undefined) throw new ArgumentError('fleet cutover requires --id <P#>.');
+    if (commit === undefined) throw new ArgumentError('fleet cutover requires --commit <sha>.');
+    if (!SHA_PATTERN.test(commit)) throw new ArgumentError('fleet cutover --commit must be a 40-character lowercase SHA.');
+    return { command: 'fleet', action, registryPath, id, commit };
+  }
+  const repository = values.get('--repository');
+  const workflowPath = values.get('--workflow');
+  const jobKey = values.get('--job');
+  const sku = values.get('--sku') ?? 'actions_linux';
+  const targetBranch = values.get('--branch');
+  if (repository === undefined) throw new ArgumentError('fleet enroll requires --repository <owner/name>.');
+  if (!/^[^/\s]+\/[^/\s]+$/u.test(repository)) throw new ArgumentError('fleet enroll --repository must be owner/name.');
+  if (workflowPath === undefined) throw new ArgumentError('fleet enroll requires --workflow <path>.');
+  if (jobKey === undefined) throw new ArgumentError('fleet enroll requires --job <key>.');
+  if (!isHostedSku(sku)) throw new ArgumentError(`fleet enroll --sku must be one of ${HOSTED_SKUS.join(', ')}.`);
+  if (targetBranch !== undefined && !validGitBranchName(targetBranch)) throw new ArgumentError('fleet enroll --branch must be a safe Git branch name.');
+  return targetBranch === undefined
+    ? { command: 'fleet', action: 'enroll', registryPath, repository, workflowPath, jobKey, jobNames, sku }
+    : { command: 'fleet', action: 'enroll', registryPath, repository, workflowPath, jobKey, jobNames, sku, targetBranch };
+}
+
+export function validGitBranchName(value: string): boolean {
+  return value.length <= 200
+    && /^(?:[A-Za-z0-9_-][A-Za-z0-9._-]*)(?:\/[A-Za-z0-9_-][A-Za-z0-9._-]*)*$/u.test(value)
+    && !value.includes('..')
+    && !value.split('/').some((part) => part.endsWith('.') || part.endsWith('.lock'));
+}
+
+function isFleetAction(value: string): value is FleetAction {
+  return (FLEET_ACTIONS as readonly string[]).includes(value);
+}
+
+function isHostedSku(value: string): value is HostedSku {
+  return (HOSTED_SKUS as readonly string[]).includes(value);
+}
+
+export function validIsoDate(value: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/u.test(value)) return false;
+  const timestamp = Date.parse(`${value}T00:00:00Z`);
+  return Number.isFinite(timestamp) && new Date(timestamp).toISOString().slice(0, 10) === value;
+}
+
+function parseRunnerArguments(argv: readonly string[]): RunnerArguments {
+  const [action, ...rest] = argv;
+  if (action === undefined) throw new ArgumentError('runner requires a subcommand.');
+  if (action !== 'inspect' && action !== 'watch' && action !== 'stop' && action !== 'cleanup' && action !== 'report') {
+    throw new ArgumentError(`Unknown runner command "${action}".`);
+  }
+  let configPath: string | undefined;
+  let permitPath: string | undefined;
+  let statePath: string | undefined;
+  let format: OutputFormat | undefined;
+  let dryRun = false;
+  for (let index = 0; index < rest.length; index += 1) {
+    const flag = rest[index];
+    if (flag === '--dry-run') {
+      if (action !== 'watch') throw new ArgumentError(`Unknown option "${flag}" for runner ${action}.`);
+      dryRun = true;
+      continue;
+    }
+    if (flag !== '--config' && flag !== '--permit' && flag !== '--state' && flag !== '--format') {
+      throw new ArgumentError(`Unknown option "${flag ?? ''}" for runner ${action}.`);
+    }
+    const value = rest[index + 1];
+    if (value === undefined || value.startsWith('--')) throw new ArgumentError(`${flag} requires a file path or value.`);
+    index += 1;
+    if (flag === '--config') configPath = value;
+    else if (flag === '--permit') permitPath = value;
+    else if (flag === '--state') statePath = value;
+    else if (value === 'json' || value === 'text') format = value;
+    else throw new ArgumentError('--format must be "json" or "text".');
+  }
+  if (action === 'report') {
+    if (configPath !== undefined || permitPath !== undefined || dryRun) throw new ArgumentError(`Unknown option for runner ${action}.`);
+    if (statePath === undefined) throw new ArgumentError('runner report requires --state <file>.');
+    if (format === undefined) throw new ArgumentError('runner report requires --format json.');
+    if (format !== 'json') throw new ArgumentError('runner report only supports --format json.');
+    return { command: 'runner', action, statePath, format };
+  }
+  if (statePath !== undefined) throw new ArgumentError(`Unknown option "--state" for runner ${action}.`);
+  if (configPath === undefined) throw new ArgumentError(`runner ${action} requires --config <file>.`);
+  if (action === 'inspect') {
+    if (permitPath !== undefined || dryRun) throw new ArgumentError(`Unknown option for runner ${action}.`);
+    return { command: 'runner', action, configPath, format: format ?? 'text' };
+  }
+  if (format !== undefined) throw new ArgumentError(`Unknown option "--format" for runner ${action}.`);
+  if (action === 'watch') {
+    return permitPath === undefined
+      ? { command: 'runner', action, configPath, dryRun }
+      : { command: 'runner', action, configPath, permitPath, dryRun };
+  }
+  if (permitPath === undefined) throw new ArgumentError(`runner ${action} requires --permit <file>.`);
+  return { command: 'runner', action, configPath, permitPath };
 }

@@ -1,0 +1,853 @@
+import { chmod, mkdir, rename, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+
+import { billableMinutesForJob } from '@cirujano/core';
+import { estimateRunnerCost, type CostRates } from '@cirujano/runner';
+
+import type { EnrollmentStatus, FleetEnrollment, FleetRegistry } from './fleet-registry.js';
+
+export const HOSTED_SKUS = ['actions_linux', 'actions_linux_arm', 'actions_windows', 'actions_macos'] as const;
+export type HostedSku = typeof HOSTED_SKUS[number];
+
+/** Legacy shared labels and enrollment-owned labels both identify the hosted SKU. */
+export function cirujanoSkuForLabel(label: string): HostedSku | null {
+  const legacy = (TELEMETRY_RATES.cirujanoLabels as Record<string, HostedSku>)[label];
+  if (legacy !== undefined) return legacy;
+  return /^cirujano-p[1-9]\d{0,3}-actions_linux$/u.test(label) ? 'actions_linux' : null;
+}
+
+export const TELEMETRY_RATES = {
+  currency: 'USD' as const,
+  quotedAt: '2026-09-13',
+  source: 'https://docs.github.com/en/billing/reference/actions-runner-pricing',
+  skus: {
+    actions_linux: 0.006,
+    actions_linux_arm: 0.005,
+    actions_windows: 0.010,
+    actions_macos: 0.062,
+  },
+  cirujanoLabels: {
+    'cirujano-pilot-fixture': 'actions_linux',
+    'cirujano-baseline-actions_linux': 'actions_linux',
+  } satisfies Record<string, HostedSku>,
+};
+
+export type RepositoryVisibility = 'private' | 'public';
+export type RunnerKind = 'github-hosted' | 'cirujano' | 'self-hosted';
+export type MeasurementStatus = 'measured' | 'not-run' | 'incomplete';
+
+export interface TelemetryRepository {
+  fullName: string;
+  visibility: RepositoryVisibility;
+  archived: boolean;
+}
+
+export interface TelemetryRun {
+  id: number;
+  attempt: number;
+  workflowName: string;
+  event: string;
+  createdAt: string;
+  conclusion: string;
+}
+
+export interface TelemetryJobInput {
+  id: number;
+  name: string;
+  startedAt: string | null;
+  completedAt: string | null;
+  conclusion: string;
+  labels: string[];
+  runnerName: string;
+  runnerGroupName: string;
+}
+
+export interface TelemetryRunEvidence extends TelemetryRun {
+  key: string;
+  repository: string;
+  jobsObserved: number;
+  reusable: boolean;
+}
+
+export interface GitHubTelemetrySource {
+  listRepositories(): Promise<TelemetryRepository[]>;
+  listRuns(repository: string, windowStart: string): Promise<TelemetryRun[]>;
+  listJobs(repository: string, runId: number, attempt: number): Promise<TelemetryJobInput[]>;
+}
+
+export interface TelemetryJob {
+  key: string;
+  repository: string;
+  visibility: RepositoryVisibility;
+  workflowName: string;
+  runId: number;
+  runAttempt: number;
+  jobId: number;
+  jobName: string;
+  event: string;
+  conclusion: string;
+  createdAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
+  runnerKind: RunnerKind;
+  runnerName: string;
+  runnerGroupName: string;
+  labels: string[];
+  measurementStatus: MeasurementStatus;
+  durationMs: number | null;
+  billableMinutes: number | null;
+  hostedSku: HostedSku | null;
+  hostedUsdPerMinute: number | null;
+  pricingSource: string;
+  actualGithubListCostUsd: number | null;
+  counterfactualHostedCostUsd: number | null;
+}
+
+export interface TelemetrySnapshot {
+  schemaVersion: 1;
+  owner: string;
+  collectedAt: string;
+  windowStart: string;
+  rates: typeof TELEMETRY_RATES;
+  repositoryInventory: Array<Pick<TelemetryRepository, 'fullName' | 'visibility'>>;
+  repositoriesScanned: number;
+  runsScanned: number;
+  runs: TelemetryRunEvidence[];
+  jobs: TelemetryJob[];
+}
+
+export interface TelemetryRepositoryReport {
+  repository: string;
+  jobs: number;
+  githubHostedMinutes: number;
+  githubHostedListCostUsd: number;
+  cirujanoJobs: number;
+  cirujanoMinutes: number;
+  grossHostedCostAvoidedUsd: number;
+  unpricedJobs: number;
+}
+
+export interface EnrollmentWindowReport {
+  jobs: number;
+  hostedJobs: number;
+  hostedMinutes: number;
+  hostedListCostUsd: number;
+}
+
+export interface EnrollmentAfterReport extends EnrollmentWindowReport {
+  cirujanoJobs: number;
+  cirujanoMinutes: number;
+  grossHostedCostAvoidedUsd: number;
+  queueLatencySamples: number;
+  queueLatencyP50Ms: number | null;
+  queueLatencyP95Ms: number | null;
+}
+
+/** Controller journals for one enrollment, read from its state directory (fleet-service). */
+export interface ControllerEvidence {
+  controllerId: string;
+  resourcePrefix: string;
+  startCount: number;
+  cumulativeRuntimeMs: number;
+  cumulativeCostUsd: number;
+  diskRetainedMs: number;
+  diskSizeGiB: number;
+  networkEgressBytes: number;
+  rates: CostRates;
+  assignments: ReadonlyArray<{ runId: number; runAttempt: number; jobId: number; runnerId: number; runnerName: string; conclusion: string | null }>;
+  /** Prior journals preserved when a controller bundle was replaced. */
+  historical?: ReadonlyArray<Omit<ControllerEvidence, 'historical'>>;
+}
+
+export interface EnrollmentAssignment {
+  runId: number;
+  jobId: number;
+  runnerId: number;
+  runnerName: string;
+}
+
+export interface TelemetryEnrollmentReport {
+  id: string;
+  repository: string;
+  visibility: RepositoryVisibility | null;
+  workflowName: string;
+  jobNames: string[];
+  status: EnrollmentStatus;
+  cutoverAt: string | null;
+  before: EnrollmentWindowReport;
+  after: EnrollmentAfterReport;
+  vmStarts: number | null;
+  controllerJournaledCostUsd: number | null;
+  nebiusComputeUsd: number | null;
+  nebiusDiskUsd: number | null;
+  nebiusNetworkUsd: number | null;
+  nebiusTotalUsd: number | null;
+  netSavingsUsd: number | null;
+  assignments: EnrollmentAssignment[];
+  unmatchedCirujanoJobs: string[];
+  complete: boolean;
+  incompleteReason: string | null;
+}
+
+export interface FleetSavingsReport {
+  enrollments: number;
+  grossHostedCostAvoidedUsd: number;
+  nebiusTotalUsd: number | null;
+  netSavingsUsd: number | null;
+  complete: boolean;
+}
+
+export interface TelemetryReport {
+  schemaVersion: 1;
+  since: string;
+  through: string;
+  repositories: number;
+  workflows: number;
+  jobs: number;
+  successfulJobs: number;
+  failedJobs: number;
+  cancelledJobs: number;
+  notRunJobs: number;
+  incompleteJobs: number;
+  successRate: number | null;
+  githubHostedMinutes: number;
+  githubHostedListCostUsd: number;
+  cirujanoJobs: number;
+  cirujanoMinutes: number;
+  grossHostedCostAvoidedUsd: number;
+  otherSelfHostedJobs: number;
+  unpricedJobs: number;
+  byRepository: TelemetryRepositoryReport[];
+  enrollments?: TelemetryEnrollmentReport[];
+  fleet?: FleetSavingsReport;
+}
+
+export async function collectTelemetry(input: {
+  owner: string;
+  lookbackHours: number;
+  nowMs?: number;
+  source: GitHubTelemetrySource;
+  priorSnapshot?: TelemetrySnapshot;
+  onRepository?: (repository: string) => void;
+}): Promise<TelemetrySnapshot> {
+  if (!/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/u.test(input.owner)) throw new Error('owner is invalid');
+  if (!Number.isInteger(input.lookbackHours) || input.lookbackHours < 1 || input.lookbackHours > 24 * 45) {
+    throw new Error('lookbackHours must be an integer from 1 through 1080');
+  }
+  const nowMs = input.nowMs ?? Date.now();
+  const windowStart = new Date(nowMs - input.lookbackHours * 3_600_000).toISOString();
+  const repositories = (await input.source.listRepositories())
+    .filter(({ fullName, archived }) => !archived && fullName.startsWith(`${input.owner}/`))
+    .sort((left, right) => left.fullName.localeCompare(right.fullName));
+  if (input.priorSnapshot !== undefined && input.priorSnapshot.owner !== input.owner) throw new Error('prior snapshot owner does not match');
+  const priorRuns = groupJobsByRun(input.priorSnapshot?.jobs ?? []);
+  const priorRunEvidence = new Map((input.priorSnapshot?.runs ?? [])
+    .filter(({ reusable }) => reusable)
+    .map((run) => [run.key, run]));
+  const results = await mapLimit(repositories, 4, async (repository) => {
+    const runs = await input.source.listRuns(repository.fullName, windowStart);
+    const jobs: TelemetryJob[] = [];
+    const evidence: TelemetryRunEvidence[] = [];
+    for (const run of runs) {
+      const key = runKey(repository.fullName, run.id, run.attempt);
+      if (run.conclusion.length === 0) {
+        evidence.push(runEvidence(repository.fullName, run, 0, false));
+        continue;
+      }
+      const priorEvidence = priorRunEvidence.get(key);
+      if (priorEvidence !== undefined && sameRunEvidence(priorEvidence, repository.fullName, run)) {
+        const priorJobs = priorRuns.get(key) ?? [];
+        jobs.push(...priorJobs);
+        evidence.push(runEvidence(repository.fullName, run, priorJobs.length, true));
+        continue;
+      }
+      const normalized = (await input.source.listJobs(repository.fullName, run.id, run.attempt))
+        // GitHub includes successful jobs carried forward from a previous
+        // attempt under new job IDs. They did not execute on this retry.
+        .filter((job) => run.attempt === 1
+          || (job.startedAt === null || Date.parse(job.startedAt) >= Date.parse(run.createdAt))
+            && (job.completedAt === null || Date.parse(job.completedAt) >= Date.parse(run.createdAt)))
+        .map((job) => normalizeTelemetryJob(repository, run, job));
+      jobs.push(...normalized);
+      evidence.push(runEvidence(
+        repository.fullName,
+        run,
+        normalized.length,
+        normalized.every(({ measurementStatus }) => measurementStatus !== 'incomplete'),
+      ));
+    }
+    input.onRepository?.(repository.fullName);
+    return { jobs, evidence };
+  });
+  const jobs = results.flatMap(({ jobs: repositoryJobs }) => repositoryJobs);
+  const runs = results.flatMap(({ evidence }) => evidence).sort((left, right) => left.key.localeCompare(right.key));
+  const runsScanned = runs.length;
+  const collectedAt = new Date(input.nowMs ?? Date.now()).toISOString();
+  jobs.sort((left, right) => left.key.localeCompare(right.key));
+  return {
+    schemaVersion: 1,
+    owner: input.owner,
+    collectedAt,
+    windowStart,
+    rates: TELEMETRY_RATES,
+    repositoryInventory: repositories.map(({ fullName, visibility }) => ({ fullName, visibility })),
+    repositoriesScanned: repositories.length,
+    runsScanned,
+    runs,
+    jobs,
+  };
+}
+
+function runEvidence(repository: string, run: TelemetryRun, jobsObserved: number, reusable: boolean): TelemetryRunEvidence {
+  return { key: runKey(repository, run.id, run.attempt), repository, ...run, jobsObserved, reusable };
+}
+
+function sameRunEvidence(evidence: TelemetryRunEvidence, repository: string, run: TelemetryRun): boolean {
+  return evidence.repository === repository
+    && evidence.id === run.id
+    && evidence.attempt === run.attempt
+    && evidence.workflowName === run.workflowName
+    && evidence.event === run.event
+    && evidence.createdAt === run.createdAt
+    && evidence.conclusion === run.conclusion;
+}
+
+function groupJobsByRun(jobs: readonly TelemetryJob[]): ReadonlyMap<string, TelemetryJob[]> {
+  const groups = new Map<string, TelemetryJob[]>();
+  for (const job of jobs) {
+    const key = runKey(job.repository, job.runId, job.runAttempt);
+    const group = groups.get(key) ?? [];
+    group.push(job);
+    groups.set(key, group);
+  }
+  return groups;
+}
+
+const VISIBILITY_DRIFT_FIELDS: ReadonlySet<keyof TelemetryJob> = new Set(['visibility', 'actualGithubListCostUsd', 'counterfactualHostedCostUsd']);
+
+/** Sorted names of the fields whose values differ between two observations of one job. */
+function differingFields(left: TelemetryJob, right: TelemetryJob): Array<keyof TelemetryJob> {
+  return [...new Set([...Object.keys(left), ...Object.keys(right)] as Array<keyof TelemetryJob>)]
+    .filter((field) => JSON.stringify(left[field]) !== JSON.stringify(right[field]))
+    .sort();
+}
+
+/** Fill missing timing only; keep identity, known timestamps and original visibility. */
+function completedJobTiming(earlier: TelemetryJob, later: TelemetryJob): TelemetryJob | null {
+  if (earlier.measurementStatus !== 'incomplete' || later.measurementStatus !== 'measured') return null;
+  if (earlier.startedAt !== null && earlier.startedAt !== later.startedAt) return null;
+  if (earlier.completedAt !== null && earlier.completedAt !== later.completedAt) return null;
+  const normalize = (visibility: RepositoryVisibility) => normalizeTelemetryJob(
+    { fullName: earlier.repository, visibility, archived: false },
+    { ...earlier, id: earlier.runId, attempt: earlier.runAttempt },
+    { ...earlier, id: earlier.jobId, name: earlier.jobName, startedAt: later.startedAt, completedAt: later.completedAt },
+  );
+  const completed = normalize(later.visibility);
+  // Re-derive timing and cost from source fields; no changed identity, conclusion,
+  // runner attribution or inconsistent derived values may ride along with completion.
+  if (differingFields(completed, later).length !== 0) return null;
+  return earlier.visibility === later.visibility ? completed : normalize(earlier.visibility);
+}
+
+function runKey(repository: string, runId: number, attempt: number): string {
+  return `${repository}:${runId}:${attempt}`;
+}
+
+async function mapLimit<T, R>(items: readonly T[], limit: number, task: (item: T) => Promise<R>): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (next < items.length) {
+      const index = next;
+      next += 1;
+      results[index] = await task(items[index]!);
+    }
+  }));
+  return results;
+}
+
+export async function writeTelemetrySnapshot(directory: string, snapshot: TelemetrySnapshot): Promise<string> {
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  await chmod(directory, 0o700);
+  const date = snapshot.collectedAt.slice(0, 10);
+  const path = join(directory, `${date}.json`);
+  const temporary = `${path}.${process.pid}.tmp`;
+  await writeFile(temporary, `${JSON.stringify(snapshot, null, 2)}\n`, { mode: 0o600 });
+  await rename(temporary, path);
+  return path;
+}
+
+export function aggregateTelemetry(
+  snapshots: readonly TelemetrySnapshot[],
+  sinceMs: number,
+  registry?: FleetRegistry,
+  evidenceById: ReadonlyMap<string, ControllerEvidence> = new Map(),
+): TelemetryReport {
+  if (!Number.isFinite(sinceMs) || sinceMs < 0) throw new Error('since must be a non-negative timestamp');
+  const byKey = new Map<string, TelemetryJob>();
+  let latestSnapshot: TelemetrySnapshot | undefined;
+  let throughMs = sinceMs;
+  // With a registry the measurement window bounds the report; jobs created after it are out.
+  const windowEndMs = registry === undefined ? Number.POSITIVE_INFINITY : Date.parse(`${registry.measurementWindow.through}T23:59:59.999Z`);
+  // Merge in collection order, preserving original visibility while accepting validated
+  // timing completion and retry timestamp corrections.
+  const chronological = [...snapshots].sort((left, right) => Date.parse(left.collectedAt) - Date.parse(right.collectedAt));
+  for (const snapshot of chronological) {
+    throughMs = Math.max(throughMs, Math.min(windowEndMs, Date.parse(snapshot.collectedAt)));
+    if (latestSnapshot === undefined || Date.parse(snapshot.collectedAt) > Date.parse(latestSnapshot.collectedAt)) latestSnapshot = snapshot;
+    for (const job of snapshot.jobs) {
+      if (Date.parse(job.completedAt ?? job.startedAt ?? job.createdAt) < sinceMs) continue;
+      if (Date.parse(job.createdAt) > windowEndMs) continue;
+      const existing = byKey.get(job.key);
+      if (existing === undefined) {
+        byKey.set(job.key, job);
+        continue;
+      }
+      if (JSON.stringify(existing) === JSON.stringify(job)) continue;
+      const differing = differingFields(existing, job);
+      if (differing.length === 0) continue;
+      const completed = completedJobTiming(existing, job);
+      if (completed !== null) {
+        byKey.set(job.key, completed);
+        continue;
+      }
+      // A repository whose visibility changed reprices its earlier jobs. The
+      // first observation records the visibility the job ran under, so keep it.
+      if (differing.includes('visibility') && differing.every((field) => VISIBILITY_DRIFT_FIELDS.has(field))) continue;
+      // Older snapshots used the workflow run's creation time for retries.
+      // Attempt details give the later, attempt-specific time. Accept only
+      // this timestamp correction, while still rejecting every other drift.
+      if (job.runAttempt === 1 || differing.length !== 1 || differing[0] !== 'createdAt') {
+        throw new Error(`conflicting duplicate telemetry job ${job.key} (${differing.join(', ')})`);
+      }
+      if (Date.parse(job.createdAt) > Date.parse(existing.createdAt)) byKey.set(job.key, job);
+    }
+  }
+  const jobs = [...byKey.values()];
+  const hosted = jobs.filter(({ runnerKind }) => runnerKind === 'github-hosted');
+  const cirujano = jobs.filter(({ runnerKind }) => runnerKind === 'cirujano');
+  const executed = jobs.filter(({ measurementStatus }) => measurementStatus !== 'not-run');
+  const successfulJobs = executed.filter(({ conclusion }) => conclusion === 'success').length;
+  const failedJobs = executed.filter(({ conclusion }) => conclusion === 'failure').length;
+  const repositoryNames = new Set(latestSnapshot?.repositoryInventory.map(({ fullName }) => fullName) ?? []);
+  for (const job of jobs) repositoryNames.add(job.repository);
+  const byRepository = [...repositoryNames].sort().map((repository) => {
+    const repositoryJobs = jobs.filter((job) => job.repository === repository);
+    const repositoryHosted = repositoryJobs.filter(({ runnerKind }) => runnerKind === 'github-hosted');
+    const repositoryCirujano = repositoryJobs.filter(({ runnerKind }) => runnerKind === 'cirujano');
+    return {
+      repository,
+      jobs: repositoryJobs.length,
+      githubHostedMinutes: sumKnown(repositoryHosted, 'billableMinutes'),
+      githubHostedListCostUsd: money(sumKnown(repositoryHosted, 'actualGithubListCostUsd')),
+      cirujanoJobs: repositoryCirujano.length,
+      cirujanoMinutes: sumKnown(repositoryCirujano, 'billableMinutes'),
+      grossHostedCostAvoidedUsd: money(sumKnown(repositoryCirujano, 'counterfactualHostedCostUsd')),
+      unpricedJobs: repositoryJobs.filter(({ actualGithubListCostUsd, counterfactualHostedCostUsd }) => actualGithubListCostUsd === null || counterfactualHostedCostUsd === null).length,
+    };
+  });
+  const visibilityByRepository = new Map(latestSnapshot?.repositoryInventory.map(({ fullName, visibility }) => [fullName, visibility]) ?? []);
+  const enrollments = registry?.enrollments.map((enrollment, index) => {
+    // A reverted enrollment remains in the registry for historical cost, but
+    // the next enrollment of this job owns executions from its baseline onward.
+    const successor = enrollment.status === 'reverted'
+      ? registry.enrollments.slice(index + 1).find((entry) => entry.repository === enrollment.repository
+        && entry.workflowPath === enrollment.workflowPath && entry.jobKey === enrollment.jobKey)
+      : undefined;
+    const endMs = successor === undefined ? Number.POSITIVE_INFINITY : Date.parse(successor.before.recordedAt);
+    return enrollmentReport(enrollment, jobs, evidenceById.get(enrollment.id), visibilityByRepository, endMs);
+  });
+  return {
+    schemaVersion: 1,
+    since: new Date(sinceMs).toISOString(),
+    through: new Date(throughMs).toISOString(),
+    repositories: repositoryNames.size,
+    workflows: new Set(jobs.map(({ repository, workflowName }) => `${repository}\0${workflowName}`)).size,
+    jobs: jobs.length,
+    successfulJobs,
+    failedJobs,
+    successRate: executed.length === 0 ? null : round(successfulJobs / executed.length),
+    githubHostedMinutes: sumKnown(hosted, 'billableMinutes'),
+    githubHostedListCostUsd: money(sumKnown(hosted, 'actualGithubListCostUsd')),
+    cirujanoJobs: cirujano.length,
+    cirujanoMinutes: sumKnown(cirujano, 'billableMinutes'),
+    grossHostedCostAvoidedUsd: money(sumKnown(cirujano, 'counterfactualHostedCostUsd')),
+    otherSelfHostedJobs: jobs.filter(({ runnerKind }) => runnerKind === 'self-hosted').length,
+    unpricedJobs: jobs.filter(({ actualGithubListCostUsd, counterfactualHostedCostUsd }) => actualGithubListCostUsd === null || counterfactualHostedCostUsd === null).length,
+    cancelledJobs: jobs.filter(({ conclusion }) => conclusion === 'cancelled').length,
+    notRunJobs: jobs.filter(({ measurementStatus }) => measurementStatus === 'not-run').length,
+    incompleteJobs: jobs.filter(({ measurementStatus }) => measurementStatus === 'incomplete').length,
+    byRepository,
+    ...(enrollments === undefined ? {} : { enrollments, fleet: fleetSavings(enrollments) }),
+  };
+}
+
+function enrollmentReport(
+  enrollment: FleetEnrollment,
+  jobs: readonly TelemetryJob[],
+  evidence: ControllerEvidence | undefined,
+  visibilityByRepository: ReadonlyMap<string, RepositoryVisibility>,
+  endMs: number,
+): TelemetryEnrollmentReport {
+  const cutoverAt = enrollment.after?.recordedAt ?? null;
+  const cutoverMs = cutoverAt === null ? Number.POSITIVE_INFINITY : Date.parse(cutoverAt);
+  const enrolled = jobs.filter((job) => job.repository === enrollment.repository
+    && job.workflowName === enrollment.workflowName && enrollment.jobNames.includes(job.jobName)
+    && Date.parse(job.startedAt ?? job.createdAt) < endMs);
+  // A queued run can be created before the cutover yet execute on Cirujano
+  // afterward. Use job start for executed work, creation for jobs never started.
+  const isAfter = (job: TelemetryJob) => Date.parse(job.startedAt ?? job.createdAt) >= cutoverMs;
+  const before = enrolled.filter((job) => !isAfter(job));
+  const after = enrolled.filter(isAfter);
+  const cirujano = after.filter(({ runnerKind }) => runnerKind === 'cirujano');
+  const latencies = cirujano
+    .filter((job) => job.startedAt !== null)
+    .map((job) => Math.max(0, Date.parse(job.startedAt!) - Date.parse(job.createdAt)))
+    .sort((left, right) => left - right);
+  const grossHostedCostAvoidedUsd = money(sumKnown(cirujano, 'counterfactualHostedCostUsd'));
+  const base = {
+    id: enrollment.id,
+    repository: enrollment.repository,
+    visibility: visibilityByRepository.get(enrollment.repository) ?? enrolled[0]?.visibility ?? null,
+    workflowName: enrollment.workflowName,
+    jobNames: [...enrollment.jobNames],
+    status: enrollment.status,
+    cutoverAt,
+    before: windowReport(before),
+    after: {
+      ...windowReport(after),
+      cirujanoJobs: cirujano.length,
+      cirujanoMinutes: sumKnown(cirujano, 'billableMinutes'),
+      grossHostedCostAvoidedUsd,
+      queueLatencySamples: latencies.length,
+      queueLatencyP50Ms: percentile(latencies, 0.5),
+      queueLatencyP95Ms: percentile(latencies, 0.95),
+    },
+  };
+  const noCost = {
+    vmStarts: null, controllerJournaledCostUsd: null,
+    nebiusComputeUsd: null, nebiusDiskUsd: null, nebiusNetworkUsd: null, nebiusTotalUsd: null, netSavingsUsd: null,
+    assignments: [], unmatchedCirujanoJobs: [],
+  };
+  if (enrollment.status === 'proposed') return { ...base, ...noCost, complete: false, incompleteReason: 'not cut over' };
+  if (evidence === undefined) return { ...base, ...noCost, complete: false, incompleteReason: 'controller evidence is absent' };
+  const generations = [evidence, ...(evidence.historical ?? [])];
+  const costs = generations.map((generation) => estimateRunnerCost({
+    rates: generation.rates,
+    computeIntervals: [{ startMs: 0, endMs: generation.cumulativeRuntimeMs }],
+    disk: { sizeGiB: generation.diskSizeGiB, retainedMs: generation.diskRetainedMs },
+    networkEgressGiB: generation.networkEgressBytes / 1_073_741_824,
+    hostedBillableMinutes: base.after.cirujanoMinutes,
+  }));
+  const incompleteCost = costs.find((cost) => !cost.complete);
+  if (incompleteCost !== undefined) return { ...base, ...noCost, complete: false, incompleteReason: `controller cost is incomplete: ${incompleteCost.reason}` };
+  const completeCosts = costs.filter((cost) => cost.complete);
+  const total = (key: 'computeUsd' | 'diskUsd' | 'networkUsd' | 'runnerTotalUsd') => money(completeCosts.reduce((sum, cost) => sum + cost[key], 0));
+  const assignmentByKey = new Map(generations.flatMap((generation) => generation.assignments).map((entry) => [`${entry.runId}:${entry.runAttempt}:${entry.jobId}`, entry]));
+  const assignments: EnrollmentAssignment[] = [];
+  const unmatchedCirujanoJobs: string[] = [];
+  for (const job of cirujano) {
+    const assignment = assignmentByKey.get(`${job.runId}:${job.runAttempt}:${job.jobId}`);
+    if (assignment === undefined) unmatchedCirujanoJobs.push(job.key);
+    else assignments.push({ runId: assignment.runId, jobId: assignment.jobId, runnerId: assignment.runnerId, runnerName: assignment.runnerName });
+  }
+  const incompleteReason = unmatchedCirujanoJobs.length === 0
+    ? null
+    : `${unmatchedCirujanoJobs.length} Cirujano job${unmatchedCirujanoJobs.length === 1 ? '' : 's'} credited by telemetry ${unmatchedCirujanoJobs.length === 1 ? 'has' : 'have'} no controller assignment`;
+  return {
+    ...base,
+    vmStarts: generations.reduce((sum, generation) => sum + generation.startCount, 0),
+    controllerJournaledCostUsd: money(generations.reduce((sum, generation) => sum + generation.cumulativeCostUsd, 0)),
+    nebiusComputeUsd: total('computeUsd'),
+    nebiusDiskUsd: total('diskUsd'),
+    nebiusNetworkUsd: total('networkUsd'),
+    nebiusTotalUsd: total('runnerTotalUsd'),
+    netSavingsUsd: incompleteReason === null ? money(grossHostedCostAvoidedUsd - total('runnerTotalUsd')) : null,
+    assignments,
+    unmatchedCirujanoJobs,
+    complete: incompleteReason === null,
+    incompleteReason,
+  };
+}
+
+function fleetSavings(enrollments: readonly TelemetryEnrollmentReport[]): FleetSavingsReport {
+  // A reverted enrollment keeps the evidence it gathered while cut over, so it counts here.
+  const cutOver = enrollments.filter(({ status }) => status !== 'proposed');
+  const grossHostedCostAvoidedUsd = money(cutOver.reduce((total, row) => total + row.after.grossHostedCostAvoidedUsd, 0));
+  const costed = cutOver.every((row) => row.nebiusTotalUsd !== null);
+  const nebiusTotalUsd = costed ? money(cutOver.reduce((total, row) => total + (row.nebiusTotalUsd ?? 0), 0)) : null;
+  const complete = cutOver.every((row) => row.complete);
+  return {
+    enrollments: cutOver.length,
+    grossHostedCostAvoidedUsd,
+    nebiusTotalUsd,
+    netSavingsUsd: !complete || nebiusTotalUsd === null ? null : money(grossHostedCostAvoidedUsd - nebiusTotalUsd),
+    complete,
+  };
+}
+
+function windowReport(jobs: readonly TelemetryJob[]): EnrollmentWindowReport {
+  const hosted = jobs.filter(({ runnerKind }) => runnerKind === 'github-hosted');
+  return {
+    jobs: jobs.length,
+    hostedJobs: hosted.length,
+    hostedMinutes: sumKnown(hosted, 'billableMinutes'),
+    hostedListCostUsd: money(sumKnown(hosted, 'actualGithubListCostUsd')),
+  };
+}
+
+/** Nearest-rank percentile over ascending samples; null without samples. */
+function percentile(sorted: readonly number[], fraction: number): number | null {
+  if (sorted.length === 0) return null;
+  return sorted[Math.min(sorted.length, Math.max(1, Math.ceil(fraction * sorted.length))) - 1]!;
+}
+
+export function renderTelemetryMarkdown(report: TelemetryReport): string {
+  const success = percent(report.successRate);
+  return [
+    '# Cirujano fleet telemetry',
+    '',
+    `Window: ${report.since} through ${report.through}`,
+    '',
+    '| Metric | Value |',
+    '| --- | ---: |',
+    `| Repositories | ${report.repositories} |`,
+    `| Workflows | ${report.workflows} |`,
+    `| Jobs | ${report.jobs} |`,
+    `| Successful jobs | ${report.successfulJobs} |`,
+    `| Failed jobs | ${report.failedJobs} |`,
+    `| Cancelled jobs | ${report.cancelledJobs} |`,
+    `| Jobs not run | ${report.notRunJobs} |`,
+    `| Jobs with incomplete timing | ${report.incompleteJobs} |`,
+    `| Success rate | ${success} |`,
+    `| GitHub-hosted minutes | ${report.githubHostedMinutes} |`,
+    `| GitHub-hosted list cost | $${report.githubHostedListCostUsd.toFixed(2)} |`,
+    `| Cirujano jobs | ${report.cirujanoJobs} |`,
+    `| Cirujano job minutes | ${report.cirujanoMinutes} |`,
+    `| Gross hosted cost avoided | $${report.grossHostedCostAvoidedUsd.toFixed(2)} |`,
+    `| Other self-hosted jobs | ${report.otherSelfHostedJobs} |`,
+    `| Jobs with unknown price | ${report.unpricedJobs} |`,
+    '',
+    '## By repository',
+    '',
+    '| Repository | Jobs | Hosted minutes | Hosted list cost | Cirujano jobs | Cirujano minutes | Gross cost avoided | Unknown price |',
+    '| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |',
+    ...report.byRepository.map((repository) =>
+      `| \`${repository.repository}\` | ${repository.jobs} | ${repository.githubHostedMinutes} | $${repository.githubHostedListCostUsd.toFixed(2)} | ${repository.cirujanoJobs} | ${repository.cirujanoMinutes} | $${repository.grossHostedCostAvoidedUsd.toFixed(2)} | ${repository.unpricedJobs} |`),
+    '',
+    ...(report.enrollments === undefined ? [] : renderEnrollmentsMarkdown(report.enrollments, report.fleet)),
+    'Gross avoided cost excludes Nebius cost. Net savings require provider accounting.',
+    '',
+  ].join('\n');
+}
+
+function renderEnrollmentsMarkdown(enrollments: readonly TelemetryEnrollmentReport[], fleet: FleetSavingsReport | undefined): string[] {
+  return [
+    '## Enrollments',
+    '',
+    '| Enrollment | Repository | Workflow / job | Status | Before jobs | Before hosted min | Before hosted cost | After jobs | After hosted jobs | After Cirujano jobs | After Cirujano min | Gross avoided | Queue p50 | Queue p95 | Nebius cost | Net savings |',
+    '| --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |',
+    ...enrollments.map((row) => tableRow([
+      row.id, `\`${row.repository}\``, `${row.workflowName} / ${row.jobNames.join(', ')}`, row.status,
+      ...enrollmentWindowCells(row),
+      ...enrollmentCostCells(row),
+    ])),
+    '',
+    ...enrollmentFootnotes(enrollments, fleet),
+  ];
+}
+
+const QUEUE_LATENCY_NOTE = 'Queue latency is job start minus run creation (the first attempt) for Cirujano jobs after the cutover; it includes controller poll, VM start and boot time, and a re-run attempt inflates it.';
+
+function enrollmentWindowCells(row: TelemetryEnrollmentReport): Array<string | number> {
+  return [
+    row.before.jobs, row.before.hostedMinutes, usd(row.before.hostedListCostUsd),
+    row.after.jobs, row.after.hostedJobs, row.after.cirujanoJobs, row.after.cirujanoMinutes, usd(row.after.grossHostedCostAvoidedUsd),
+    minutes(row.after.queueLatencyP50Ms), minutes(row.after.queueLatencyP95Ms),
+  ];
+}
+
+function enrollmentCostCells(row: TelemetryEnrollmentReport): string[] {
+  return [row.nebiusTotalUsd === null ? 'n/a' : usd(row.nebiusTotalUsd), row.netSavingsUsd === null ? 'n/a' : usd(row.netSavingsUsd)];
+}
+
+function tableRow(cells: ReadonlyArray<string | number>): string {
+  return `| ${cells.map(String).join(' | ')} |`;
+}
+
+/** Public-repository and incompleteness notes, the fleet line, the latency note and the limits. */
+function enrollmentFootnotes(enrollments: readonly TelemetryEnrollmentReport[], fleet: FleetSavingsReport | undefined): string[] {
+  const notes = [
+    ...enrollments.filter((row) => row.visibility === 'public').map((row) => `- ${row.id} is a public repository: hosted minutes are free, so migration only adds provider cost.`),
+    ...enrollments.filter((row) => !row.complete && row.status !== 'proposed').map((row) => `- ${row.id} is incomplete: ${row.incompleteReason ?? 'unknown reason'}.`),
+  ];
+  return [
+    ...notes,
+    ...(notes.length > 0 ? [''] : []),
+    ...(fleet === undefined ? [] : [fleetLine(fleet), '']),
+    QUEUE_LATENCY_NOTE,
+    '',
+    ...LIMITS_PARAGRAPH,
+    '',
+  ];
+}
+
+function percent(rate: number | null): string {
+  return rate === null ? 'n/a' : `${(rate * 100).toFixed(1)}%`;
+}
+
+const LIMITS_PARAGRAPH = [
+  'Limits: gross avoided cost uses GitHub list prices and per-job rounded minutes; the',
+  'private-account allowance is not subtracted. Nebius cost is the controller journal at the',
+  'dated config rates (compute runtime, retained boot disk over a 30-day month, observed egress).',
+  'One VM per enrollment runs jobs one at a time (single-slot), so parallel matrices serialize,',
+  'and the controller runs on a Mac that sleeps: queued jobs wait until it wakes. Net savings',
+  'are gross avoided cost minus Nebius cost and are negative until enough hosted minutes move.',
+];
+
+function fleetLine(fleet: FleetSavingsReport): string {
+  const nebius = fleet.nebiusTotalUsd === null ? 'n/a' : usd(fleet.nebiusTotalUsd);
+  const net = fleet.netSavingsUsd === null ? 'n/a' : usd(fleet.netSavingsUsd);
+  const noun = fleet.enrollments === 1 ? 'enrollment' : 'enrollments';
+  return `Fleet: gross avoided ${usd(fleet.grossHostedCostAvoidedUsd)} / Nebius cost ${nebius} / net savings ${net} (${fleet.enrollments} cut-over ${noun}, ${fleet.complete ? 'complete' : 'incomplete'})`;
+}
+
+/**
+ * The publishable 45-day report: P-handles only, no repository names, no resource identities,
+ * fleet-wide usage, per-enrollment savings and the limits paragraph.
+ */
+export function renderFleetSavingsMarkdown(report: TelemetryReport): string {
+  if (report.enrollments === undefined || report.fleet === undefined) throw new Error('fleet savings report requires a registry');
+  const success = percent(report.successRate);
+  return [
+    '# Cirujano fleet migration: net savings',
+    '',
+    `Window: ${report.since} through ${report.through}`,
+    '',
+    '| Fleet metric | Value |',
+    '| --- | ---: |',
+    `| Repositories | ${report.repositories} |`,
+    `| Jobs | ${report.jobs} |`,
+    `| Success rate | ${success} |`,
+    `| GitHub-hosted minutes | ${report.githubHostedMinutes} |`,
+    `| GitHub-hosted list cost | ${usd(report.githubHostedListCostUsd)} |`,
+    `| Cirujano jobs | ${report.cirujanoJobs} |`,
+    `| Cirujano job minutes | ${report.cirujanoMinutes} |`,
+    `| Gross hosted cost avoided | ${usd(report.grossHostedCostAvoidedUsd)} |`,
+    '',
+    '## Enrollments',
+    '',
+    '| Enrollment | Status | Before jobs | Before hosted min | Before hosted cost | After jobs | After hosted jobs | After Cirujano jobs | After Cirujano min | Gross avoided | Queue p50 | Queue p95 | VM starts | Nebius cost | Net savings | Complete |',
+    '| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |',
+    ...report.enrollments.map((row) => tableRow([
+      row.id, row.status,
+      ...enrollmentWindowCells(row),
+      row.vmStarts === null ? 'n/a' : row.vmStarts,
+      ...enrollmentCostCells(row),
+      row.complete ? 'yes' : 'no',
+    ])),
+    '',
+    ...enrollmentFootnotes(report.enrollments, report.fleet),
+  ].join('\n');
+}
+
+function usd(value: number): string {
+  return `${value < 0 ? '-' : ''}$${Math.abs(value).toFixed(3)}`;
+}
+
+function minutes(valueMs: number | null): string {
+  return valueMs === null ? 'n/a' : `${(valueMs / 60_000).toFixed(1)} min`;
+}
+
+export function normalizeTelemetryJob(repository: TelemetryRepository, run: TelemetryRun, job: TelemetryJobInput): TelemetryJob {
+  const hasStart = job.startedAt !== null;
+  const hasEnd = job.completedAt !== null;
+  const startMs = hasStart ? Date.parse(job.startedAt!) : Number.NaN;
+  const endMs = hasEnd ? Date.parse(job.completedAt!) : Number.NaN;
+  const hasValidTiming = hasStart && hasEnd && Number.isFinite(startMs) && Number.isFinite(endMs) && endMs >= startMs;
+  const measurementStatus: MeasurementStatus = job.conclusion.length === 0 ? 'incomplete' : hasValidTiming ? 'measured'
+    : !hasStart && !hasEnd && job.conclusion.length > 0 ? 'not-run' : 'incomplete';
+  const minutes = measurementStatus === 'measured'
+    ? billableMinutesForJob({ name: job.name, startedAt: job.startedAt, completedAt: job.completedAt })
+    : measurementStatus === 'not-run' ? 0 : null;
+  const durationMs = measurementStatus === 'measured'
+    ? endMs - startMs
+    : measurementStatus === 'not-run' ? 0 : null;
+  const runnerKind = classifyRunner(job);
+  const sku = hostedSku(job.labels, runnerKind);
+  const rate = sku === null ? null : TELEMETRY_RATES.skus[sku];
+  const noRun = measurementStatus === 'not-run';
+  const actualGithubListCostUsd = runnerKind !== 'github-hosted' || noRun || repository.visibility === 'public'
+    ? 0 : minutes === null || rate === null ? null : money(minutes * rate);
+  const counterfactualHostedCostUsd = runnerKind === 'self-hosted' || noRun || repository.visibility === 'public'
+    ? 0 : minutes === null || rate === null ? null : money(minutes * rate);
+  return {
+    key: `${repository.fullName}:${run.id}:${run.attempt}:${job.id}`,
+    repository: repository.fullName,
+    visibility: repository.visibility,
+    workflowName: run.workflowName,
+    runId: run.id,
+    runAttempt: run.attempt,
+    jobId: job.id,
+    jobName: job.name,
+    event: run.event,
+    conclusion: job.conclusion,
+    createdAt: run.createdAt,
+    startedAt: job.startedAt,
+    completedAt: job.completedAt,
+    runnerKind,
+    runnerName: job.runnerName,
+    runnerGroupName: job.runnerGroupName,
+    labels: [...job.labels].sort(),
+    measurementStatus,
+    durationMs,
+    billableMinutes: minutes,
+    hostedSku: sku,
+    hostedUsdPerMinute: rate,
+    pricingSource: TELEMETRY_RATES.source,
+    actualGithubListCostUsd,
+    counterfactualHostedCostUsd,
+  };
+}
+
+function classifyRunner(job: TelemetryJobInput): RunnerKind {
+  if (!job.labels.includes('self-hosted')) return 'github-hosted';
+  if (job.runnerName.startsWith('cirujano-')) return 'cirujano';
+  return 'self-hosted';
+}
+
+/** The hosted SKU GitHub bills for a hosted runner selection, or null when the labels are unpriced. */
+export function hostedSkuForLabels(labels: readonly string[]): HostedSku | null {
+  return hostedSku(labels, 'github-hosted');
+}
+
+function hostedSku(labels: readonly string[], runnerKind: RunnerKind): HostedSku | null {
+  const values = new Set(labels.map((label) => label.toLowerCase()));
+  if (runnerKind === 'cirujano') {
+    for (const label of values) {
+      const sku = cirujanoSkuForLabel(label);
+      if (sku !== null) return sku;
+    }
+    return null;
+  }
+  if (['ubuntu-latest', 'ubuntu-24.04', 'ubuntu-22.04', 'ubuntu-20.04'].some((label) => values.has(label))) return 'actions_linux';
+  if (['ubuntu-24.04-arm', 'ubuntu-22.04-arm'].some((label) => values.has(label))) return 'actions_linux_arm';
+  if (['windows-latest', 'windows-2025', 'windows-2022', 'windows-2019', 'windows-11-arm'].some((label) => values.has(label))) return 'actions_windows';
+  if (['macos-latest', 'macos-15', 'macos-14', 'macos-13', 'macos-15-intel'].some((label) => values.has(label))) return 'actions_macos';
+  return null;
+}
+
+function sumKnown<T>(items: readonly T[], key: keyof T): number {
+  return items.reduce((total, item) => {
+    const value = item[key];
+    return total + (typeof value === 'number' ? value : 0);
+  }, 0);
+}
+
+function money(value: number): number {
+  return Math.round(value * 100_000_000) / 100_000_000;
+}
+
+function round(value: number): number {
+  return Math.round(value * 10_000) / 10_000;
+}

@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Vision</title>
+<link rel="stylesheet" href="base.css">
+<style>
+  svg.scene { position: absolute; top: 150px; left: 0; width: 1920px; height: 800px; }
+  .title { position: absolute; left: 120px; bottom: 80px; font-size: 54px; font-weight: 700; }
+  .title em { font-style: normal; color: var(--accent); }
+</style></head>
+<body>
+  <div class="tag">Vision</div>
+  <svg class="scene" viewBox="0 0 1920 800" font-family="system-ui, -apple-system, sans-serif">
+    <defs>
+      <marker id="arr" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#8b97a5"/></marker>
+    </defs>
+    <g id="repos" font-family="ui-monospace, SF Mono, Menlo, monospace" font-size="22" fill="#8b97a5"></g>
+    <script>
+      const g = document.getElementById('repos');
+      const ns = 'http://www.w3.org/2000/svg';
+      const cols = [120, 290, 460], rows = [70, 200, 330, 460, 590];
+      const widths = [92, 64, 100, 48, 80, 72, 100, 56, 88, 40, 96, 68, 84, 52, 76];
+      const el = (tag, attrs, parent = g) => { const e = document.createElementNS(ns, tag); Object.entries(attrs).forEach(([k, v]) => e.setAttribute(k, v)); parent.appendChild(e); return e; };
+      let n = 0;
+      cols.forEach(x => rows.forEach(y => {
+        const l = document.createElementNS(ns, 'path');
+        Object.entries({d: `M${x + 130} ${y + 45} C 720 ${y + 45}, 720 400, 830 400`, fill: 'none', stroke: '#ff7a59', 'stroke-width': 3, 'stroke-opacity': .3}).forEach(([k, v]) => l.setAttribute(k, v));
+        g.insertBefore(l, g.firstChild);
+        el('rect', {x, y, width: 130, height: 90, rx: 14, fill: '#151b23', stroke: '#2a3340', 'stroke-width': 3});
+        const t = el('text', {x: x + 18, y: y + 38}); t.textContent = 'repo';
+        el('rect', {x: x + 18, y: y + 54, width: widths[n++], height: 12, rx: 6, fill: '#ff7a59'});
+      }));
+    </script>
+    <g transform="translate(830 330)">
+      <rect width="140" height="140" rx="26" fill="#151b23" stroke="#2a3340" stroke-width="3"/>
+      <g transform="scale(2.1875)">
+        <g stroke="#e8edf2" stroke-width="5" stroke-linecap="round"><path d="M14 22 H37"/><path d="M14 32 H33"/><path d="M14 42 H29"/></g>
+        <g stroke="#8b97a5" stroke-opacity=".45" stroke-width="5" stroke-linecap="round"><path d="M47 22 H50"/><path d="M43 32 H50"/><path d="M39 42 H50"/></g>
+        <path d="M46 11 L30 53" stroke="#ff7a59" stroke-width="3" stroke-linecap="round"/>
+      </g>
+      <text x="70" y="190" text-anchor="middle" font-size="36" font-weight="700" fill="#e8edf2">Cirujano</text>
+    </g>
+    <path d="M990 400 L1080 400" stroke="#8b97a5" stroke-width="3" marker-end="url(#arr)"/>
+    <g text-anchor="middle">
+      <g transform="translate(1100 130)"><rect width="300" height="124" rx="18" fill="#151b23" stroke="#2a3340" stroke-width="3"/><text x="150" y="58" font-size="34" font-weight="600" fill="#e8edf2">Measure</text><text x="150" y="96" font-size="24" fill="#8b97a5">billing and run history</text></g>
+      <g transform="translate(1500 130)"><rect width="300" height="124" rx="18" fill="#151b23" stroke="#2a3340" stroke-width="3"/><text x="150" y="58" font-size="34" font-weight="600" fill="#e8edf2">Propose a cut</text><text x="150" y="96" font-size="24" fill="#8b97a5">NVIDIA Nemotron</text></g>
+      <g transform="translate(1500 546)"><rect width="300" height="124" rx="18" fill="#151b23" stroke="#2a3340" stroke-width="3"/><text x="150" y="58" font-size="34" font-weight="600" fill="#e8edf2">Prove it</text><text x="150" y="96" font-size="24" fill="#8b97a5">Sandboxes, then real runs</text></g>
+      <g transform="translate(1100 546)"><rect width="300" height="124" rx="18" fill="#151b23" stroke="#3ddc97" stroke-width="4"/><text x="150" y="58" font-size="34" font-weight="600" fill="#3ddc97">Human approves</text><text x="150" y="96" font-size="24" fill="#8b97a5">never auto-merged</text></g>
+    </g>
+    <g stroke="#8b97a5" stroke-width="3" fill="none" marker-end="url(#arr)">
+      <path d="M1405 192 L1490 192"/>
+      <path d="M1650 259 L1650 536"/>
+      <path d="M1495 608 L1410 608"/>
+    </g>
+    <path d="M1250 541 L1250 264" stroke="#8b97a5" stroke-width="3" stroke-dasharray="10 10" fill="none" marker-end="url(#arr)"/>
+    <text x="1268" y="408" font-size="26" fill="#8b97a5">next run</text>
+    <text x="900" y="580" font-size="26" fill="#7cc4ff" text-anchor="middle">heavy jobs run on</text>
+    <text x="900" y="614" font-size="26" fill="#7cc4ff" text-anchor="middle">on-demand Nebius AI Cloud VMs</text>
+  </svg>
+  <div class="title">Every team, CI that removes its own waste. <em>Every cut, proven.</em></div>
+</body></html>

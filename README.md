@@ -1,9 +1,23 @@
 # Cirujano: Verified CI Cost Surgery
 
-[![CI](https://github.com/juan294/cirujano/actions/workflows/ci.yml/badge.svg)](https://github.com/juan294/cirujano/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-![TypeScript](https://img.shields.io/badge/TypeScript-6-3178C6)
-![Node](https://img.shields.io/badge/Node-22%2B-339933)
+[![CI](https://github.com/juan294/cirujano/actions/workflows/ci.yml/badge.svg?branch=develop&event=push)](https://github.com/juan294/cirujano/actions/workflows/ci.yml?query=branch%3Adevelop+event%3Apush)
+[![CodeQL](https://github.com/juan294/cirujano/actions/workflows/codeql.yml/badge.svg?branch=develop&event=push)](https://github.com/juan294/cirujano/actions/workflows/codeql.yml?query=branch%3Adevelop+event%3Apush)
+![TypeScript](https://img.shields.io/badge/TypeScript-6.0.3-3178C6?logo=typescript&logoColor=white)
+![Node.js](https://img.shields.io/badge/Node.js-22.13%2B-43853D?logo=node.js&logoColor=white)
+![pnpm](https://img.shields.io/badge/pnpm-11.28.6-F69220?logo=pnpm&logoColor=white)
+![Vitest](https://img.shields.io/badge/Vitest-5.0.5-6E9F18?logo=vitest&logoColor=white)
+![ESLint](https://img.shields.io/badge/ESLint-10.13.0-4B32C3?logo=eslint&logoColor=white)
+![esbuild](https://img.shields.io/badge/esbuild-0.28.2-FFCF00?logo=esbuild&logoColor=black)
+[![GitHub Actions](https://img.shields.io/badge/GitHub-Actions-2088FF?logo=githubactions&logoColor=white)](https://docs.github.com/en/actions)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![NVIDIA Nemotron](https://img.shields.io/badge/NVIDIA-Nemotron_3_Nano-76B900?logo=nvidia&logoColor=white)](https://build.nvidia.com/nvidia/nvidia-nemotron-3-nano-30b-a3b)
+[![Nebius Token Factory](https://img.shields.io/badge/Nebius-Token_Factory-5B5BD6)](https://tokenfactory.nebius.com/)
+[![Nebius Token Factory Sandboxes](https://img.shields.io/badge/Nebius-Token_Factory_Sandboxes-5B5BD6)](https://docs.tokenfactory.nebius.com/)
+[![Nebius AI Cloud](https://img.shields.io/badge/Nebius-AI_Cloud_VMs-5B5BD6)](https://nebius.com/ai-cloud)
+
+<a href="https://chapa.thecreativetoken.com/u/juan294">
+  <img src="https://chapa.thecreativetoken.com/u/juan294/badge.svg" alt="juan294's Chapa Impact Badge" width="100%" />
+</a>
 
 Cirujano reads GitHub Actions billing and run history, ranks where the
 minutes go, proposes and verifies workflow patches that cut cost without
@@ -14,18 +28,53 @@ before and after minutes and never auto-merges.
 "Cirujano" means surgeon. Its sibling [Sutura](https://github.com/juan294/sutura)
 repairs CI that is red; Cirujano cuts the cost of CI that is green. Both are
 GitHub Actions built for the Nebius x NVIDIA Global AI Hackathon, as separate
-entries.
+entries designed to work together.
+
+The through-line is a physician who measures before cutting: find the bleed,
+stop it, show the chart. Cirujano never touches production, never auto-merges,
+and every number it claims comes from a real run.
 
 ## Status
 
-Day 0. The repository was bootstrapped on 2026-09-08 with the measurement
-core, a CLI that estimates the billable minutes of one run, and an Action that
-reports them. The audit, patch proposal, verification, and Nebius runner
-stages are not implemented yet. The measured starting point that motivates
-the project is in
+The measurement core, single-run estimator, reporting Action, on-demand Nebius
+runner controller, and daily fleet telemetry are implemented. On 2026-09-15
+the runner passed its live pilot on Nebius `eu-west1`: a queued job started a
+VM and ran on it about four and a half minutes after dispatch, a second job
+reused the stopped VM with a fresh registration, the controller drained and
+stopped the VM after the idle grace, survived being killed mid-job, and cleaned
+up every resource. The full matrix and its limits are in
+[docs/research/2026-09-15-nebius-runner-pilot-r14.md](docs/research/2026-09-15-nebius-runner-pilot-r14.md).
+Most enrolled private repositories have since cut over to these runners; their 45-day
+savings window closes on 2026-10-28, and no fleet savings are claimed before
+then. The bounded pnpm cache optimizer covers collection, NVIDIA inference,
+two-field patch validation, paired Sandbox verification, six-attempt GitHub
+measurement, reporting and authorized unmerged PR delivery. On 2026-10-02 it
+completed its live chain on the proof repository: a real NVIDIA Nemotron
+decision, the exact two-line patch, paired Sandbox verification and a six-run
+GitHub measurement. The truthful result was **no-improvement** (3 rounded
+minutes against 3), so no savings PR was opened and no optimizer savings are
+claimed. The run is recorded in
+[the plan notes](docs/plans/2026-09-29-nemotron-workflow-optimization-notes.md#outcome-later-on-2026-10-02-complete-live-chain-truthful-no-improvement).
+The second family, skip-validated-push, lets a push that lands an already-green
+pull request skip re-running the same jobs on the same tree. On 2026-10-09 its
+live chain passed on the public proof repository: a real NVIDIA Nemotron
+proposal, a Sandbox-verified guard, and a per-push GitHub measurement of
+**1 billed minute instead of 3** on each of three merged-PR pushes, while a
+direct push still ran every job. The evidence pull request is open and unmerged;
+the runs are listed in
+[the live proof](docs/research/2026-10-09-skip-validated-push-live-proof.md).
+Setup, limits and the reproducible evaluation for both families are in
+[the optimization demo](docs/demo/nemotron-optimization.md). Further workflow
+patch families remain future work. The measured starting point that
+motivates the project is in
 [docs/research/2026-09-08-github-actions-cost-baseline.md](docs/research/2026-09-08-github-actions-cost-baseline.md).
 
 ## How it works
+
+The implemented workflow optimizer supports two bounded patch families,
+described in the demo: the two-field pnpm cache change and the
+skip-validated-push guard. The diagnosis and prescription examples below
+describe intended broader capabilities that remain future work.
 
 ```mermaid
 flowchart LR
@@ -41,23 +90,32 @@ flowchart LR
 
 Three movements:
 
-1. **Diagnose.** Rank billable minutes by repository, workflow, job, and
-   trigger. Billable minutes are computed the way GitHub bills them: each
-   job's wall-clock time rounded up to the next minute. The `timing`
-   endpoint is not used because it reports zero on current GitHub.
+1. **Diagnose.** Rank billable minutes across every repository in an account,
+   by workflow, job, and trigger, on a monthly cadence. Billable minutes are
+   computed the way GitHub bills them: each job's wall-clock time rounded up
+   to the next minute. The `timing` endpoint is not used because it reports
+   zero on current GitHub. Nemotron reads the workflow YAML and run history
+   and names the waste in plain language: a push run duplicating a pull
+   request run, four coverage shards that each pay their own install, a job
+   that rebuilds the application three times.
 2. **Prescribe and verify.** For each waste pattern, propose a concrete
-   workflow patch, apply it in a branch, run the workflow, and measure the
+   workflow patch — skip the push run when the same tree already passed, cut
+   redundant triggers, right-size shards, drop dead steps, tighten path
+   filters — then apply it in a branch, run the workflow, and measure the
    billed minutes before and after. Only a green run with a measured saving
-   becomes a PR.
-3. **Relocate.** Move jobs that cannot be shrunk onto a Nebius VM that the
-   tool provisions, starts when jobs queue, and stops when idle.
+   becomes a PR, and the PR carries the runs that prove it.
+3. **Relocate.** Move jobs that cannot be shrunk, such as end-to-end suites
+   with database or Firebase emulators, onto a Nebius VM that the tool
+   provisions, starts when jobs queue, and stops when idle. On the measured
+   baseline that is roughly 150 VM-hours a month instead of 730, turning
+   about $155 of hosted minutes into about $25 to $30 of compute.
 
 ## Runtime roles
 
 | Service | Runtime role |
 | --- | --- |
-| NVIDIA Nemotron on Nebius Token Factory | Explains each waste pattern from workflow YAML and run history and drafts the patch. |
-| Nebius AI Cloud | Hosts the on-demand runner VMs. |
+| NVIDIA Nemotron on Nebius Token Factory | Selects a supported pnpm-cache or skip-validated-push operation, or abstains, from bounded structural facts and collected evidence. Live results and limits are recorded above. |
+| Nebius AI Cloud / Token Factory Sandboxes | Hosts on-demand runners; the optimizer uses separately authorized paired offline Sandboxes. |
 | GitHub Actions API | Source of runs, jobs, and timings; target of the verified PRs. |
 
 ## Security boundary
@@ -80,13 +138,38 @@ git clone https://github.com/juan294/cirujano.git
 cd cirujano
 pnpm install
 pnpm run build
-gh api repos/OWNER/REPO/actions/runs/RUN_ID/jobs > jobs.json
+gh api --paginate --slurp 'repos/OWNER/REPO/actions/runs/RUN_ID/jobs?per_page=100' \
+  --jq '{total_count: .[0].total_count, jobs: [.[].jobs[]]}' > jobs.json
 node packages/cli/dist/bin.js estimate --jobs jobs.json
 ```
 
+## Fleet telemetry
+
+Collect a private local snapshot of completed GitHub Actions jobs across every
+active repository owned by the authenticated account:
+
+```bash
+pnpm --dir packages/cli build
+node packages/cli/dist/bin.js telemetry collect \
+  --owner OWNER \
+  --store "$HOME/.local/share/cirujano/telemetry" \
+  --lookback-hours 48
+node packages/cli/dist/bin.js telemetry report \
+  --store "$HOME/.local/share/cirujano/telemetry" \
+  --since 2026-09-13 \
+  --format markdown
+```
+
+On macOS, `./scripts/install-telemetry-agent.sh` installs a launch agent that
+runs at login and every day at 06:10 local time. It uses the existing GitHub CLI
+login and stores raw snapshots and the cumulative `latest.md` report under
+`~/.local/share/cirujano/telemetry`. The report includes a per-repository usage
+and savings table, including active repositories with zero jobs. See
+[the fleet telemetry runbook](docs/runbooks/fleet-telemetry.md).
+
 ## Contributor setup
 
-Requires Node 22 or newer and pnpm 11.
+Requires Node 22.13 or newer and pnpm 11. The workspace selects Node 24 through `.nvmrc`.
 
 ```bash
 pnpm install
@@ -96,9 +179,11 @@ pnpm run test
 pnpm run build
 ```
 
-`pnpm run ci:fast` mirrors `.github/workflows/ci.yml` and runs on every push
-through the pre-push hook. `packages/action/dist/index.cjs` is committed;
-rebuild and commit it together with any source change.
+`pnpm run ci:fast` runs the local typecheck, lint, bundle verification and tests
+through the pre-push hook. CI also runs coverage, Ubuntu boot verification and
+native verification receipts. Rebuild and commit `packages/action/dist/index.cjs`
+with core or Action source changes, and `scripts/optimization/push-guard-harness.mjs`
+with core or push-harness entry changes.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md).
 

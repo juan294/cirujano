@@ -1,0 +1,577 @@
+import { describe, expect, it } from 'vitest';
+
+import type { LifecycleInput, Permit } from './contracts.js';
+import { GUEST_UP_STATES, canBeginAssignedJob, decideLifecycle, drainDeadlineMs, nextCapacityWait, parsePermit, validatePermit } from './lifecycle.js';
+import { validConfig as rawConfig } from './config.test.js';
+import { parseRunnerConfig } from './config.js';
+
+const config = parseRunnerConfig(rawConfig);
+const NOW = Date.parse('2026-09-13T12:00:00Z');
+
+const permit: Permit = {
+  schemaVersion: 1,
+  permitId: 'permit-1',
+  configHash: 'config-sha256',
+  candidateDigest: 'candidate-sha256',
+  repositoryId: 123,
+  projectId: 'project-1',
+  controllerId: 'controller-a',
+  resourcePrefix: 'cirujano-a',
+  operations: ['create', 'start', 'register', 'stop', 'delete'],
+  issuedAtMs: NOW - 60_000,
+  expiresAtMs: NOW + 7_200_000,
+  maxStarts: 1,
+  maxRuntimeMs: 5_400_000,
+  maxTotalCostUsd: 2,
+  recoveryAllowed: true,
+};
+
+function input(overrides: Partial<LifecycleInput> = {}): LifecycleInput {
+  return {
+    nowMs: NOW,
+    config,
+    identity: {
+      configHash: 'config-sha256', candidateDigest: 'candidate-sha256',
+      repositoryId: 123, projectId: 'project-1', controllerId: 'controller-a',
+      resourcePrefix: 'cirujano-a',
+    },
+    permit,
+    provider: { complete: true, vmStatus: 'stopped', ownership: 'owned', ownedMatches: 1, outstandingOperation: null },
+    queue: { complete: true, eligibleQueuedJobs: 1, ownedBusy: false, observedAtMs: NOW },
+    guest: {
+      complete: true, status: 'offline', admissionEnabled: false,
+      runnerActive: false, workerActive: false, grant: null,
+    },
+    journal: { state: 'stopped', startCount: 0, cumulativeRuntimeMs: 0, cumulativeCostUsd: 0, outstandingIntent: null, idleObservations: [], grantDeadlineMs: null },
+    projectedStartCostUsd: 1,
+    ...overrides,
+  };
+}
+
+describe('permit and ownership failures (R01)', () => {
+  it.each([
+    ['absent approval', null],
+    ['expired permit', { ...permit, expiresAtMs: NOW }],
+    ['candidate mismatch', { ...permit, candidateDigest: 'other' }],
+    ['operation missing', { ...permit, operations: ['stop'] as const }],
+  ])('%s produces an explanatory block and zero mutation effects', (_name, candidatePermit) => {
+    const result = decideLifecycle(input({ permit: candidatePermit }));
+    expect(result.effect).toEqual({ type: 'none' });
+    expect(result.state).toBe('blocked');
+    expect(result.reason.length).toBeGreaterThan(0);
+  });
+
+  it('wrong resource ownership cannot emit a remote effect', () => {
+    const result = decideLifecycle(input({
+      provider: { complete: true, vmStatus: 'stopped', ownership: 'foreign', ownedMatches: 0, outstandingOperation: null },
+    }));
+    expect(result.effect.type).toBe('none');
+    expect(result.state).toBe('blocked');
+  });
+
+  it('unknown provider status fails closed even when an untyped adapter leaks it through', () => {
+    const result = decideLifecycle(input({
+      provider: { complete: true, vmStatus: 'mystery' as never, ownership: 'owned', ownedMatches: 1, outstandingOperation: null },
+    }));
+    expect(result.effect.type).toBe('none');
+    expect(result.state).toBe('blocked');
+  });
+
+  it('validates exact identity and finite approval bounds', () => {
+    expect(validatePermit(permit, input().identity, NOW)).toEqual({ valid: true });
+    expect(validatePermit({ ...permit, maxRuntimeMs: Number.NaN }, input().identity, NOW)).toEqual({
+      valid: false, reason: 'permit maxRuntimeMs must be a positive finite number',
+    });
+  });
+
+  it.each([
+    ['unknown key', { ...permit, extra: true }],
+    ['wrong operation type', { ...permit, operations: ['start', 7] }],
+    ['wrong recovery type', { ...permit, recoveryAllowed: 'yes' }],
+  ])('strictly rejects runtime permit input with %s', (_name, candidate) => {
+    expect(() => parsePermit(candidate)).toThrow();
+  });
+});
+
+describe('replay-safe transitions (R02)', () => {
+  it('emits one start intent for an eligible queue and stopped owned VM', () => {
+    expect(decideLifecycle(input())).toMatchObject({
+      state: 'starting', effect: { type: 'start-vm', generation: 1, deadlineMs: NOW + 5_400_000 },
+    });
+  });
+
+  it.each([
+    ['fractional queue count', { eligibleQueuedJobs: 0.5 }],
+    ['negative queue count', { eligibleQueuedJobs: -1 }],
+    ['nonfinite observation time', { observedAtMs: Number.NaN }],
+    ['future observation', { observedAtMs: NOW + 1 }],
+    ['stale observation', { observedAtMs: NOW - 30_001 }],
+  ])('blocks ordinary mutations for %s', (_name, queuePatch) => {
+    const result = decideLifecycle(input({ queue: { ...input().queue, ...queuePatch } }));
+    expect(result.effect.type).toBe('none');
+    expect(result.state).toBe('blocked');
+  });
+
+  it.each(GUEST_UP_STATES)('never restarts a guest that stopped itself while the controller believed it was %s', (state) => {
+    // A quarantined or expired guest powers itself off; its disk will not re-run cloud-init, so a
+    // restart can never become ready. The only safe path is cleanup and a fresh generation.
+    const result = decideLifecycle(input({ permit: { ...permit, maxStarts: 2 }, journal: { ...input().journal, state, startCount: 1 } }));
+    expect(result.effect).toEqual({ type: 'none' });
+    expect(result.state).toBe('blocked');
+    expect(result.reason).toMatch(/stopped outside the controller/u);
+  });
+
+  it.each(GUEST_UP_STATES)('deletes a spent generation that stopped itself while %s once its journaled grant deadline has passed', (state) => {
+    // The guest powers itself off at the immutable deadline; the disk cannot boot again, so the
+    // operating controller replaces the generation instead of blocking forever (plan D6).
+    const result = decideLifecycle(input({
+      permit: { ...permit, maxStarts: 2 },
+      journal: { ...input().journal, state, startCount: 1, grantDeadlineMs: NOW - 1 },
+    }));
+    expect(result).toMatchObject({ state: 'absent', effect: { type: 'delete-vm', generation: 1 } });
+    expect(result.reason).toMatch(/immutable lifetime expired/u);
+  });
+
+  it('still blocks a guest that stopped itself before its journaled deadline', () => {
+    const result = decideLifecycle(input({
+      permit: { ...permit, maxStarts: 2 },
+      journal: { ...input().journal, state: 'busy', startCount: 1, grantDeadlineMs: NOW + 1 },
+    }));
+    expect(result.effect).toEqual({ type: 'none' });
+    expect(result.reason).toMatch(/stopped outside the controller/u);
+  });
+
+  it('requires delete authority and recovery permission for expired-generation cleanup', () => {
+    const journal = { ...input().journal, state: 'busy' as const, startCount: 1, grantDeadlineMs: NOW - 1 };
+    expect(decideLifecycle(input({ permit: { ...permit, maxStarts: 2, operations: ['create', 'start', 'register', 'stop'] }, journal })))
+      .toMatchObject({ state: 'blocked', effect: { type: 'none' }, reason: 'permit does not authorize delete' });
+    expect(decideLifecycle(input({ permit: { ...permit, maxStarts: 2, expiresAtMs: NOW }, journal })))
+      .toMatchObject({ state: 'absent', effect: { type: 'delete-vm', generation: 1 } });
+    expect(decideLifecycle(input({ permit: { ...permit, maxStarts: 2, expiresAtMs: NOW, recoveryAllowed: false }, journal })))
+      .toMatchObject({ state: 'blocked', effect: { type: 'none' } });
+  });
+
+  it('creates the next generation under the same permit once the spent VM is gone', () => {
+    const result = decideLifecycle(input({
+      permit: { ...permit, maxStarts: 2 },
+      provider: { complete: true, vmStatus: 'absent', ownership: 'absent', ownedMatches: 0, outstandingOperation: null },
+      journal: { ...input().journal, state: 'absent', startCount: 1, grantDeadlineMs: NOW - 1 },
+    }));
+    expect(result).toMatchObject({ state: 'starting', effect: { type: 'create-vm', generation: 2, reservedStartCount: 2 } });
+  });
+
+  it('restarts a stopped VM after its own ordinary stop resolved', () => {
+    expect(decideLifecycle(input({ permit: { ...permit, maxStarts: 2 }, journal: { ...input().journal, state: 'stopping', startCount: 1 } }))).toMatchObject({
+      state: 'starting', effect: { type: 'start-vm', generation: 2 },
+    });
+  });
+
+  it('deletes an idle stopped VM and its retained disk only when configured and authorized', () => {
+    const idle = input({
+      config: parseRunnerConfig({ ...rawConfig, idleResourcePolicy: 'delete-after-stop' }),
+      queue: { complete: true, eligibleQueuedJobs: 0, ownedBusy: false, observedAtMs: NOW },
+      journal: { ...input().journal, state: 'stopping', startCount: 1 },
+    });
+    expect(decideLifecycle(idle)).toMatchObject({ state: 'absent', effect: { type: 'delete-vm', generation: 1 } });
+    expect(decideLifecycle({ ...idle, permit: { ...permit, operations: ['start'] } }).effect).toEqual({ type: 'none' });
+    expect(decideLifecycle({ ...idle, queue: { ...idle.queue, eligibleQueuedJobs: 1 }, permit: { ...permit, maxStarts: 2 } })).toMatchObject({ effect: { type: 'start-vm' } });
+    expect(decideLifecycle({ ...idle, config, queue: { ...idle.queue, eligibleQueuedJobs: 0 } }).effect).toEqual({ type: 'none' });
+    expect(decideLifecycle({ ...idle, permit: { ...permit, expiresAtMs: NOW } })).toMatchObject({ effect: { type: 'delete-vm' } });
+    expect(decideLifecycle({ ...idle, permit: { ...permit, expiresAtMs: NOW, recoveryAllowed: false } }).effect).toEqual({ type: 'none' });
+  });
+
+  it('does not duplicate a start while an operation or intent is outstanding', () => {
+    for (const changed of [
+      input({ provider: { complete: true, vmStatus: 'starting', ownership: 'owned', ownedMatches: 1, outstandingOperation: 'op-1' } }),
+      input({ journal: { ...input().journal, state: 'starting', startCount: 1, outstandingIntent: { type: 'start-vm', generation: 1, status: 'pending', deadlineMs: NOW + 5_400_000 } } }),
+    ]) {
+      expect(decideLifecycle(changed).effect.type).toBe('none');
+    }
+  });
+
+  it('never ordinarily stops a busy job', () => {
+    const result = decideLifecycle(input({
+      provider: { complete: true, vmStatus: 'running', ownership: 'owned', ownedMatches: 1, outstandingOperation: null },
+      queue: { complete: true, eligibleQueuedJobs: 0, ownedBusy: true, observedAtMs: NOW },
+      guest: { complete: true, status: 'busy', admissionEnabled: false, runnerActive: true, workerActive: true, grant: { generation: 1, startedAtMs: NOW - 60_000, deadlineMs: NOW + 5_000_000 } },
+      journal: { ...input().journal, state: 'draining', startCount: 1 },
+    }));
+    expect(result.effect.type).toBe('none');
+    expect(result.state).toBe('busy');
+  });
+});
+
+describe('drain safety (R03)', () => {
+  const grant = { generation: 1, startedAtMs: NOW - 600_000, deadlineMs: NOW + 4_800_000 };
+  const idleInput = input({
+    provider: { complete: true, vmStatus: 'running', ownership: 'owned', ownedMatches: 1, outstandingOperation: null },
+    queue: { complete: true, eligibleQueuedJobs: 0, ownedBusy: false, observedAtMs: NOW },
+    guest: { complete: true, status: 'drained', admissionEnabled: false, runnerActive: false, workerActive: false, grant },
+    journal: {
+      ...input().journal, state: 'draining', startCount: 1,
+      idleObservations: [
+        { observedAtMs: NOW - 300_000, complete: true, generation: 1 },
+        { observedAtMs: NOW, complete: true, generation: 1 },
+      ],
+    },
+  });
+
+  it('stops only after two complete observations span idle grace and the guest is drained', () => {
+    expect(decideLifecycle(idleInput).effect).toEqual({ type: 'stop-vm', emergency: false });
+    expect(decideLifecycle(input({ ...idleInput, journal: { ...idleInput.journal, idleObservations: [idleInput.journal.idleObservations[1]!] } })).effect.type).toBe('none');
+  });
+
+  it('reissues a lost drain after its pending effect expires without draining the idle guest', () => {
+    const undrained = {
+      ...idleInput,
+      guest: { ...idleInput.guest, status: 'ready' as const, admissionEnabled: true },
+      journal: { ...idleInput.journal, idleObservations: [] },
+    };
+    expect(decideLifecycle(undrained)).toMatchObject({
+      state: 'draining', effect: { type: 'begin-drain', fallbackDeadlineMs: NOW + 600_000 },
+    });
+    expect(decideLifecycle({ ...undrained, permit: { ...permit, operations: ['stop'] } })).toMatchObject({
+      state: 'blocked', effect: { type: 'none' }, reason: 'permit does not authorize register',
+    });
+  });
+
+  it('returns to work when a queue arrives during drain', () => {
+    const result = decideLifecycle({ ...idleInput, queue: { ...idleInput.queue, eligibleQueuedJobs: 1 } });
+    expect(result).toMatchObject({ state: 'ready', effect: { type: 'resume-admission' } });
+  });
+
+  it('keeps draining instead of resuming when a job would not fit before the immutable deadline', () => {
+    // Cutoff = deadline - maxJobMs - shutdownMarginMs = NOW - 900_000: a resumed guest could never take the job.
+    const nearDeadline = { ...grant, deadlineMs: NOW + 3_000_000 };
+    const queued = { ...idleInput.queue, eligibleQueuedJobs: 1 };
+    const result = decideLifecycle({ ...idleInput, queue: queued, guest: { ...idleInput.guest, grant: nearDeadline } });
+    expect(result.effect).toEqual({ type: 'stop-vm', emergency: false });
+    const withinGrace = decideLifecycle({
+      ...idleInput, queue: queued, guest: { ...idleInput.guest, grant: nearDeadline },
+      journal: { ...idleInput.journal, idleObservations: [idleInput.journal.idleObservations[1]!] },
+    });
+    expect(withinGrace).toMatchObject({ state: 'draining', effect: { type: 'none' } });
+  });
+
+  it('names a guest grant that lags the journal generation instead of waiting on idle grace forever', () => {
+    // 2026-09-23 P2: journal generation 4, guest still enforcing generation 3's grant.
+    const lagging = decideLifecycle({ ...idleInput, journal: { ...idleInput.journal, startCount: 2 } });
+    expect(lagging).toMatchObject({ state: 'blocked', effect: { type: 'none' } });
+    expect(lagging.reason).toBe('guest grant generation 1 does not match journal generation 2');
+    const busyLagging = decideLifecycle({
+      ...idleInput, journal: { ...idleInput.journal, startCount: 2 },
+      queue: { ...idleInput.queue, ownedBusy: true }, guest: { ...idleInput.guest, status: 'busy', workerActive: true, runnerActive: true },
+    });
+    expect(busyLagging.reason).toBe('guest grant generation 1 does not match journal generation 2');
+  });
+
+  it('counts idle grace only from observations after the last interruption of the generation', () => {
+    const resumedOnce = [
+      { observedAtMs: NOW - 900_000, complete: true, generation: 1 },
+      { observedAtMs: NOW - 600_000, complete: true, generation: 1 },
+      { observedAtMs: NOW - 400_000, complete: false, generation: 1 },
+    ];
+    const oneAfter = decideLifecycle({ ...idleInput, journal: { ...idleInput.journal, idleObservations: [...resumedOnce, { observedAtMs: NOW, complete: true, generation: 1 }] } });
+    expect(oneAfter).toMatchObject({ state: 'draining', effect: { type: 'none' } });
+    const spanAfter = decideLifecycle({
+      ...idleInput,
+      journal: {
+        ...idleInput.journal,
+        idleObservations: [...resumedOnce, { observedAtMs: NOW - 300_000, complete: true, generation: 1 }, { observedAtMs: NOW, complete: true, generation: 1 }],
+      },
+    });
+    expect(spanAfter.effect).toEqual({ type: 'stop-vm', emergency: false });
+  });
+
+  it('blocks ordinary stop on unknown busy state or incomplete observations', () => {
+    for (const changed of [
+      { ...idleInput, queue: { ...idleInput.queue, ownedBusy: null } },
+      { ...idleInput, queue: { ...idleInput.queue, complete: false } },
+      { ...idleInput, guest: { ...idleInput.guest, complete: false } },
+    ]) {
+      const result = decideLifecycle(changed);
+      expect(result.effect.type).toBe('none');
+      expect(result.state).toBe('blocked');
+    }
+  });
+
+  it('caps drain fallback at the original immutable deadline', () => {
+    expect(drainDeadlineMs(NOW + 60_000, NOW, 600_000)).toBe(NOW + 60_000);
+    expect(drainDeadlineMs(NOW + 4_800_000, NOW, 600_000)).toBe(NOW + 600_000);
+  });
+
+  it('rejects stale observations from a previous generation', () => {
+    const stale = {
+      ...idleInput,
+      guest: { ...idleInput.guest, grant: { ...grant, generation: 2 } },
+    };
+    expect(decideLifecycle(stale).effect.type).toBe('none');
+  });
+});
+
+describe('deadline and admission budget (R04)', () => {
+  it.each(['future', 'unavailable'] as const)('enforces the journal deadline with %s guest evidence (SE-H1)', (kind) => {
+    const current = input({
+      nowMs: NOW + 5_400_000,
+      provider: { complete: true, vmStatus: 'running', ownership: 'owned', ownedMatches: 1, outstandingOperation: null },
+      queue: { complete: false, eligibleQueuedJobs: 0, ownedBusy: true, observedAtMs: NOW },
+      permit: { ...permit, expiresAtMs: NOW + 1 },
+      journal: { ...input().journal, state: 'busy', startCount: 1, grantDeadlineMs: NOW + 5_400_000 },
+      guest: { complete: kind === 'future', status: kind === 'future' ? 'busy' : 'unknown', admissionEnabled: null, runnerActive: null, workerActive: null,
+        grant: kind === 'future' ? { generation: 1, startedAtMs: NOW + 5_400_000, deadlineMs: NOW + 9_000_000 } : null },
+    });
+    expect(decideLifecycle(current)).toMatchObject({ state: 'stopping', effect: { type: 'stop-vm', emergency: true } });
+    for (const changedPermit of [null, { ...permit, recoveryAllowed: false }, { ...permit, operations: ['register'] as const }]) {
+      expect(decideLifecycle({ ...current, permit: changedPermit }).effect.type).toBe('none');
+    }
+    for (const ownership of ['foreign', 'ambiguous', 'unknown'] as const) {
+      expect(decideLifecycle({ ...current, provider: { ...current.provider, ownership } }).effect.type).toBe('none');
+    }
+  });
+
+  it('does not use a stale guest deadline to interrupt the current generation (SE-H1)', () => {
+    const current = input({
+      provider: { complete: true, vmStatus: 'running', ownership: 'owned', ownedMatches: 1, outstandingOperation: null },
+      queue: { complete: true, eligibleQueuedJobs: 0, ownedBusy: true, observedAtMs: NOW },
+      journal: { ...input().journal, state: 'busy', startCount: 2, grantDeadlineMs: NOW + 5_400_000 },
+      guest: { complete: true, status: 'busy', admissionEnabled: true, runnerActive: true, workerActive: true,
+        grant: { generation: 1, startedAtMs: NOW - 5_400_001, deadlineMs: NOW - 1 } },
+    });
+    expect(decideLifecycle(current).effect.type).toBe('none');
+  });
+
+  it('emits an emergency stop at the immutable lifetime deadline', () => {
+    const result = decideLifecycle(input({
+      nowMs: NOW + 5_400_000,
+      provider: { complete: false, vmStatus: 'unknown', ownership: 'owned', ownedMatches: 1, outstandingOperation: null },
+      permit: { ...permit, expiresAtMs: NOW + 1 },
+      guest: { complete: false, status: 'unknown', admissionEnabled: null, runnerActive: null, workerActive: null, grant: { generation: 1, startedAtMs: NOW, deadlineMs: NOW + 5_400_000 } },
+      journal: { ...input().journal, state: 'busy', startCount: 1, grantDeadlineMs: NOW + 5_400_000 },
+    }));
+    expect(result).toMatchObject({ state: 'stopping', effect: { type: 'stop-vm', emergency: true } });
+  });
+
+  it('does not use an invalid permit schema for emergency recovery', () => {
+    const result = decideLifecycle(input({
+      nowMs: NOW + 5_400_000,
+      permit: { ...permit, schemaVersion: 2 as never },
+      provider: { complete: false, vmStatus: 'unknown', ownership: 'owned', ownedMatches: 1, outstandingOperation: null },
+      guest: { complete: false, status: 'unknown', admissionEnabled: null, runnerActive: null, workerActive: null, grant: { generation: 1, startedAtMs: NOW, deadlineMs: NOW + 5_400_000 } },
+      journal: { ...input().journal, state: 'busy', startCount: 1, grantDeadlineMs: NOW + 5_400_000 },
+    }));
+    expect(result.effect.type).toBe('none');
+    expect(result.state).toBe('blocked');
+  });
+
+  it('uses actual now for recovery: future-issued blocks while expired recovery may stop', () => {
+    const emergency = {
+      nowMs: NOW + 5_400_000,
+      provider: { complete: false, vmStatus: 'unknown' as const, ownership: 'owned' as const, ownedMatches: 1, outstandingOperation: null },
+      guest: { complete: false, status: 'unknown' as const, admissionEnabled: null, runnerActive: null, workerActive: null, grant: { generation: 1, startedAtMs: NOW, deadlineMs: NOW + 5_400_000 } },
+      journal: { ...input().journal, state: 'busy' as const, startCount: 1, grantDeadlineMs: NOW + 5_400_000 },
+    };
+    expect(decideLifecycle(input({ ...emergency, permit: { ...permit, issuedAtMs: NOW + 5_400_001, expiresAtMs: NOW + 9_000_000 } })).effect.type).toBe('none');
+    expect(decideLifecycle(input({ ...emergency, permit: { ...permit, expiresAtMs: NOW + 1 } })).effect).toEqual({ type: 'stop-vm', emergency: true });
+  });
+
+  it('forbids registration unless the full job and shutdown margin fit both deadlines', () => {
+    const ready = input({
+      provider: { complete: true, vmStatus: 'running', ownership: 'owned', ownedMatches: 1, outstandingOperation: null },
+      guest: { complete: true, status: 'ready', admissionEnabled: false, runnerActive: false, workerActive: false, grant: { generation: 1, startedAtMs: NOW - 1_000, deadlineMs: NOW + 3_899_999 } },
+      journal: { ...input().journal, state: 'ready', startCount: 1 },
+    });
+    expect(decideLifecycle(ready).effect.type).toBe('none');
+    expect(decideLifecycle({ ...ready, guest: { ...ready.guest, grant: { ...ready.guest.grant!, deadlineMs: NOW + 3_900_000 } } }).effect.type).toBe('register-runner');
+  });
+
+  it('fails a delayed assignment before user steps after the safe cutoff', () => {
+    expect(canBeginAssignedJob(NOW + 1, NOW + 3_900_000, NOW + 3_900_000, 3_600_000, 300_000)).toEqual({
+      allowed: false, reason: 'assignment arrived after the safe job-start cutoff',
+    });
+  });
+
+  it('blocks starts that exceed cumulative runtime or projected cost and caps the granted deadline', () => {
+    expect(decideLifecycle(input({ journal: { ...input().journal, cumulativeRuntimeMs: 1_500_001 } })).effect.type).toBe('none');
+    expect(decideLifecycle(input({ projectedStartCostUsd: 2.01 })).effect.type).toBe('none');
+    const capped = decideLifecycle(input({ permit: { ...permit, maxRuntimeMs: 6_000_000 }, journal: { ...input().journal, cumulativeRuntimeMs: 1_000_000 } }));
+    expect(capped.effect).toMatchObject({ type: 'start-vm', deadlineMs: NOW + 5_000_000 });
+  });
+
+  it('generated replay and restart sequences never produce a second start for one generation', () => {
+    let seed = 0x5eed;
+    for (let sequence = 0; sequence < 64; sequence += 1) {
+      seed = (seed * 1_664_525 + 1_013_904_223) >>> 0;
+      const hasIntent = (seed & 1) === 1;
+      const hasOperation = (seed & 2) === 2;
+      const result = decideLifecycle(input({
+        provider: { complete: true, vmStatus: hasOperation ? 'starting' : 'stopped', ownership: 'owned', ownedMatches: 1, outstandingOperation: hasOperation ? `op-${sequence}` : null },
+        journal: { ...input().journal, state: hasIntent ? 'starting' : 'stopped', startCount: hasIntent ? 1 : 0, outstandingIntent: hasIntent ? { type: 'start-vm', generation: 1, status: 'pending', deadlineMs: NOW + 5_400_000 } : null },
+      }));
+      if (hasIntent || hasOperation) expect(result.effect.type).toBe('none');
+      else expect(result.effect.type).toBe('start-vm');
+    }
+  });
+
+
+  it('evolves through ambiguous create timeout, adoption, restart and a second generation without duplication', () => {
+    const absent = input({
+      provider: { complete: true, vmStatus: 'absent', ownership: 'absent', ownedMatches: 0, outstandingOperation: null },
+      journal: { ...input().journal, state: 'absent' },
+      permit: { ...permit, maxStarts: 2, maxRuntimeMs: 10_800_000, maxTotalCostUsd: 3 },
+    });
+    expect(decideLifecycle(absent).effect).toEqual({
+      type: 'create-vm', generation: 1, reservedStartCount: 1, deadlineMs: NOW + 5_400_000,
+    });
+
+    const timedOut = input({
+      ...absent,
+      journal: { ...absent.journal, startCount: 0, outstandingIntent: { type: 'create-vm', generation: 1, status: 'ambiguous', deadlineMs: NOW + 5_400_000 } },
+    });
+    expect(decideLifecycle(timedOut).effect.type).toBe('none');
+
+    const adopted = decideLifecycle(input({
+      ...timedOut,
+      provider: { complete: true, vmStatus: 'stopped', ownership: 'owned', ownedMatches: 1, outstandingOperation: null },
+    }));
+    expect(adopted.effect).toEqual({ type: 'adopt-vm', generation: 1, deadlineMs: NOW + 5_400_000 });
+
+    const restarted = decideLifecycle(input({
+      permit: absent.permit,
+      journal: { ...input().journal, state: 'stopped', startCount: 1, cumulativeRuntimeMs: 5_400_000, cumulativeCostUsd: 1 },
+    }));
+    expect(restarted.effect).toMatchObject({ type: 'start-vm', generation: 2 });
+  });
+
+  it.each([
+    ['incomplete', { complete: false, vmStatus: 'running' as const }, {}, 'blocked', 'none'],
+    ['unknown', { complete: true, vmStatus: 'unknown' as const }, {}, 'blocked', 'none'],
+    ['error', { complete: true, vmStatus: 'error' as const }, {}, 'blocked', 'none'],
+    ['starting', { complete: true, vmStatus: 'starting' as const }, {}, 'starting', 'adopt-vm'],
+    ['stopped', { complete: true, vmStatus: 'stopped' as const }, {}, 'stopped', 'adopt-vm'],
+    ['running without readiness', { complete: true, vmStatus: 'running' as const }, {}, 'starting', 'adopt-vm'],
+    ['fully ready running', { complete: true, vmStatus: 'running' as const }, { watchdogReady: true, sshIdentityVerified: true, registrationReady: true }, 'ready', 'adopt-vm'],
+  ])('adopts a create result conservatively for %s provider state', (_name, providerPatch, guestPatch, expectedState, expectedEffect) => {
+    const result = decideLifecycle(input({
+      provider: { ...input().provider, ...providerPatch },
+      guest: { ...input().guest, status: 'ready', ...guestPatch },
+      journal: {
+        ...input().journal,
+        state: 'starting',
+        startCount: 1,
+        outstandingIntent: { type: 'create-vm', generation: 1, status: 'ambiguous', deadlineMs: NOW + 5_400_000 },
+      },
+    }));
+    expect(result.state).toBe(expectedState);
+    expect(result.effect.type).toBe(expectedEffect);
+  });
+
+  it('blocks absent discovery with multiple matches', () => {
+    const result = decideLifecycle(input({
+      provider: { complete: true, vmStatus: 'absent', ownership: 'ambiguous', ownedMatches: 2, outstandingOperation: null },
+      journal: { ...input().journal, state: 'absent' },
+    }));
+    expect(result.effect.type).toBe('none');
+    expect(result.state).toBe('blocked');
+  });
+});
+
+describe('provider capacity wait (public IPv4 quota)', () => {
+  const absent = { complete: true, vmStatus: 'absent', ownership: 'absent', ownedMatches: 0, outstandingOperation: null } as const;
+  const waiting = (retryAtMs: number, refusedEffect: 'create-vm' | 'start-vm' = 'start-vm') => ({
+    reasonCode: 'provider-capacity-wait' as const, refusedEffect, detail: 'vpc.ipv4-address.public.count',
+    firstRefusedAtMs: NOW - 60_000, lastRefusedAtMs: NOW - 60_000, refusals: 1, retryAtMs,
+  });
+  const deleteAfterStop = parseRunnerConfig({ ...rawConfig, idleResourcePolicy: 'delete-after-stop' });
+
+  it('keeps a start-refused stopped VM and holds its start during the backoff', () => {
+    const result = decideLifecycle(input({
+      config: deleteAfterStop, permit: { ...permit, maxStarts: 3 },
+      journal: { ...input().journal, state: 'stopped', startCount: 1, capacityWait: waiting(NOW + 1) },
+    }));
+    expect(result).toMatchObject({ state: 'stopped', effect: { type: 'none' }, reasonCode: 'provider-capacity-wait' });
+    expect(result.reason).toContain('vpc.ipv4-address.public.count');
+  });
+
+  it('retries only the start of the same stopped VM once the backoff has elapsed', () => {
+    const result = decideLifecycle(input({
+      permit: { ...permit, maxStarts: 3 },
+      journal: { ...input().journal, state: 'stopped', startCount: 1, capacityWait: waiting(NOW) },
+    }));
+    expect(result).toMatchObject({ state: 'starting', effect: { type: 'start-vm', generation: 2 } });
+    expect(result.reasonCode).toBeUndefined();
+  });
+
+  it('recreates through the owned path when the retained VM disappeared during a start wait', () => {
+    const result = decideLifecycle(input({
+      permit: { ...permit, maxStarts: 3 }, provider: absent,
+      journal: { ...input().journal, state: 'stopped', startCount: 1, capacityWait: waiting(NOW + 600_000) },
+    }));
+    expect(result).toMatchObject({ state: 'starting', effect: { type: 'create-vm', generation: 2 } });
+  });
+
+  it('holds and then retries a refused create when no VM exists', () => {
+    const held = decideLifecycle(input({
+      permit: { ...permit, maxStarts: 3 }, provider: absent,
+      journal: { ...input().journal, state: 'absent', startCount: 1, capacityWait: waiting(NOW + 1, 'create-vm') },
+    }));
+    expect(held).toMatchObject({ state: 'absent', effect: { type: 'none' }, reasonCode: 'provider-capacity-wait' });
+    const retried = decideLifecycle(input({
+      permit: { ...permit, maxStarts: 3 }, provider: absent,
+      journal: { ...input().journal, state: 'absent', startCount: 1, capacityWait: waiting(NOW, 'create-vm') },
+    }));
+    expect(retried).toMatchObject({ state: 'starting', effect: { type: 'create-vm', generation: 2 } });
+  });
+
+  it('does not report a capacity wait when no work is queued', () => {
+    const result = decideLifecycle(input({
+      provider: absent, queue: { complete: true, eligibleQueuedJobs: 0, ownedBusy: false, observedAtMs: NOW },
+      journal: { ...input().journal, state: 'absent', capacityWait: waiting(NOW + 1, 'create-vm') },
+    }));
+    expect(result.reasonCode).toBeUndefined();
+    expect(result.reason).toBe('no complete eligible demand requires creation');
+  });
+
+  it('deletes a capacity-waiting VM only once its queued work is gone and only under delete-after-stop', () => {
+    const idle = input({
+      config: deleteAfterStop, permit: { ...permit, maxStarts: 3 },
+      queue: { complete: true, eligibleQueuedJobs: 0, ownedBusy: false, observedAtMs: NOW },
+      journal: { ...input().journal, state: 'stopped', startCount: 1, capacityWait: waiting(NOW + 600_000) },
+    });
+    expect(decideLifecycle(idle)).toMatchObject({ state: 'absent', effect: { type: 'delete-vm', generation: 1 } });
+    // A never-booted VM whose only start was refused (and handed back) is still cleaned up.
+    expect(decideLifecycle({ ...idle, journal: { ...idle.journal, startCount: 0 } }))
+      .toMatchObject({ state: 'absent', effect: { type: 'delete-vm', generation: 1 } });
+    // Still queued: the retained VM is left alone for the retried start.
+    expect(decideLifecycle({ ...idle, queue: { ...idle.queue, eligibleQueuedJobs: 1 } }).effect).toEqual({ type: 'none' });
+    // Incomplete queue evidence never deletes.
+    expect(decideLifecycle({ ...idle, queue: { ...idle.queue, complete: false } }).effect.type).not.toBe('delete-vm');
+    // Legacy retain policy keeps the stopped VM, as it keeps every stopped VM.
+    expect(decideLifecycle({ ...idle, config }).effect).toEqual({ type: 'none' });
+    // Without delete authority nothing is deleted.
+    expect(decideLifecycle({ ...idle, permit: { ...permit, operations: ['start'] } }).effect).toEqual({ type: 'none' });
+  });
+
+  it('backs off exponentially from two to sixteen minutes and never below the poll interval', () => {
+    let wait = nextCapacityWait(undefined, { quotas: ['vpc.ipv4-address.public.count'] }, 'start-vm', NOW, 30_000);
+    expect(wait).toEqual({
+      reasonCode: 'provider-capacity-wait', refusedEffect: 'start-vm', detail: 'vpc.ipv4-address.public.count',
+      firstRefusedAtMs: NOW, lastRefusedAtMs: NOW, refusals: 1, retryAtMs: NOW + 120_000,
+    });
+    const delays = [wait.retryAtMs - NOW];
+    for (let index = 0; index < 5; index += 1) {
+      const refusedAt = wait.retryAtMs + 60_000;
+      wait = nextCapacityWait(wait, { quotas: ['vpc.ipv4-address.public.count'] }, 'start-vm', refusedAt, 30_000);
+      delays.push(wait.retryAtMs - refusedAt);
+    }
+    expect(delays).toEqual([120_000, 240_000, 480_000, 960_000, 960_000, 960_000]);
+    expect(wait).toMatchObject({ refusals: 6, firstRefusedAtMs: NOW });
+    expect(nextCapacityWait(undefined, { quotas: [] }, 'create-vm', NOW, 600_000))
+      .toMatchObject({ retryAtMs: NOW + 600_000, detail: 'provider quota exhausted', refusedEffect: 'create-vm' });
+  });
+
+  it('starts a fresh backoff episode after a long gap without refusals', () => {
+    const old = nextCapacityWait(undefined, { quotas: ['q'] }, 'start-vm', NOW, 30_000);
+    const later = nextCapacityWait({ ...old, refusals: 5 }, { quotas: ['q'] }, 'start-vm', old.retryAtMs + 3_600_000, 30_000);
+    expect(later).toMatchObject({ refusals: 1, firstRefusedAtMs: old.retryAtMs + 3_600_000 });
+  });
+});

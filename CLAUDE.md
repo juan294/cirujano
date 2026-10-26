@@ -23,7 +23,7 @@ Aggregated, anonymized numbers are fine.
 
 ## Stack
 
-- TypeScript (pinned `^6`, typescript-eslint has no TS7 support), Node 22,
+- TypeScript (pinned `^6`, typescript-eslint has no TS7 support), Node 22.13 or newer (`.nvmrc` selects 24),
   pnpm, Vitest, ESLint flat config
 - LLM: NVIDIA Nemotron via Nebius Token Factory
   (OpenAI-compatible API, `https://api.tokenfactory.nebius.com/v1/`)
@@ -39,13 +39,16 @@ Aggregated, anonymized numbers are fine.
 
 This project follows Research-Plan-Implement (RPI).
 
-1. /research -- Understand the codebase as-is
-2. /plan -- Create a phased implementation spec
-3. /implement -- Execute one phase at a time with review gates
-4. /validate -- Verify implementation against the plan
+1. /rpi-research -- Understand the codebase as-is
+2. /rpi-plan -- Create a phased implementation spec
+3. /rpi-implement -- Execute one phase at a time with review gates
+4. /rpi-validate -- Verify implementation against the plan
 
 Each phase is its own conversation. STOP after each phase.
 Use /clear between tasks, /compact when context is heavy.
+Native `/plan` is a Claude mode, not the RPI artifact workflow.
+Shared RPI policy lives in the imported AGENTS.md; path-mapped rule
+bodies load from `.claude/rules/`.
 
 ## Key Commands
 
@@ -54,7 +57,7 @@ pnpm run test        # Vitest
 pnpm run typecheck   # tsc --noEmit
 pnpm run lint        # ESLint
 pnpm run build       # tsc + esbuild bundles
-pnpm run ci:fast     # pre-push mirror of ci.yml
+pnpm run ci:fast     # local typecheck, lint, bundle verification and tests
 ```
 
 ## Git Workflow
@@ -67,6 +70,10 @@ pnpm run ci:fast     # pre-push mirror of ci.yml
   `feat|fix|test|refactor|chore|docs(scope): description`
 - `packages/action/dist/index.cjs` is committed. Rebuild and commit it in the
   same commit as any `packages/core` or `packages/action` source change
+- `scripts/optimization/push-guard-harness.mjs` (the push-guard image harness)
+  is a committed bundle too: rebuild and commit it with any `packages/core` or
+  `packages/cli/src/optimization/push-guard-harness-entry.ts` change.
+  `scripts/verify-bundle.mjs` checks both
 
 ```bash
 # Commit before pulling (hook enforced)
@@ -107,4 +114,7 @@ Go directly to these paths -- never search for them.
 | Plans    | `docs/plans/YYYY-MM-DD-*.md`    | Phase files in `-phases/`   |
 | ADRs     | `docs/decisions/`               |                             |
 | PR descriptions | `docs/prs/{number}_description.md` |                   |
-| Release playbook | `docs/release/e2e-pro-playbook.md` | Wave A adopted; no release yet |
+| Release playbook | `docs/release/e2e-pro-playbook.md` | Wave A adopted; first release 0.1.0 |
+<!-- rpi:claude-import:start -->
+@AGENTS.md
+<!-- rpi:claude-import:end -->

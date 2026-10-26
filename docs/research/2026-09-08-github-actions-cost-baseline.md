@@ -15,7 +15,28 @@ verified numbers and a stated assumption).
 | --- | --- | --- | --- |
 | July 2026 | $442.75 | $370.64 | VERIFIED, billing page |
 | August 2026 | $546.90 | $401.78 | VERIFIED, billing page |
-| September 1 to 8, 2026 | $105.76 | $6.15 | VERIFIED, billing page |
+| September 2026 | $373.33 | $81.16 | VERIFIED, billing usage API, refreshed 2026-10-18 |
+| October 1 to 18, 2026 | $268.74 | $102.08 | VERIFIED, billing usage API, refreshed 2026-10-18 |
+
+Refresh note, 2026-10-18: the September and October rows come from the account billing
+usage API (`/users/{owner}/settings/billing/usage`), summed over every usage
+item for the month; the same sum reproduces the July and August billing-page
+figures to the cent. The gap between gross and billed widened from September
+because more of the minutes ran in public repositories, which bill $0, and
+because private activity fell on the new CI cadence. None of that drop is
+attributed to Cirujano in this note.
+
+Billed dollars per calendar day, so the partial October compares with the
+full months (billed amount divided by the days in the row):
+
+```mermaid
+xychart-beta
+    title "GitHub Actions billed, USD per day"
+    x-axis ["Jul 2026", "Aug 2026", "Sep 2026", "Oct 1-18, 2026"]
+    y-axis "USD per day" 0 --> 14
+    bar [11.96, 12.96, 2.71, 5.67]
+    line [11.96, 12.96, 2.71, 5.67]
+```
 
 Nearly all billed usage is the "Actions Linux" SKU, shown at $0.006 per
 minute after the plan's included minutes (VERIFIED, billing page grouped by

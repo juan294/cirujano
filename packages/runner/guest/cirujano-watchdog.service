@@ -1,0 +1,11 @@
+[Unit]
+Description=Cirujano immutable runner lifetime watchdog
+Before=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/opt/cirujano/watchdog
+Restart=no
+
+[Install]
+WantedBy=multi-user.target

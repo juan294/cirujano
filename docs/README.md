@@ -1,9 +1,14 @@
 # Cirujano documentation
 
+- [Demo recording script](demo/recording-script.md): a 2:55 pitch in Show and Say beats,
+  rehearsal steps, current evidence and [video cards](demo/video-cards/).
 - [Research](research/): dated findings. Start with the
   [2026-09-08 GitHub Actions cost baseline](research/2026-09-08-github-actions-cost-baseline.md).
-- [Plans](plans/): phased implementation specs produced by `/plan`.
+- [Plans](plans/): phased implementation specs produced by `/rpi-plan`.
 - [Decisions](decisions/): architecture decision records. First:
   [0001 Separate project from Sutura](decisions/0001-separate-project-from-sutura.md).
 - [Release](release/): the [E2E Pro release playbook](release/e2e-pro-playbook.md), Wave A adopted.
+- [Runbooks](runbooks/): operations for the
+  [Nebius runner](runbooks/nebius-runner.md) and
+  [fleet telemetry](runbooks/fleet-telemetry.md).
 - `agents/`: operational agent reports, gitignored on this public repository (Rule #70).

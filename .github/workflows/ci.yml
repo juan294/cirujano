@@ -20,9 +20,34 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
-      - uses: pnpm/action-setup@v6
+      - name: Capture actual checkout before verification
+        env:
+          SUTURA_NATIVE_JOB_KEY: "checks"
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in ${!GIT_@}; do unset "$name"; done
+          SUTURA_TESTED_SHA="$(git --no-replace-objects -c core.hooksPath=/dev/null -c core.fsmonitor=false rev-parse HEAD)"
+          export SUTURA_TESTED_SHA
+          env -u NODE_OPTIONS node --input-type=module <<'SUTURA_CHECKOUT'
+          import { mkdirSync, writeFileSync } from 'node:fs';
+          import { join } from 'node:path';
+          const { GITHUB_RUN_ID, GITHUB_RUN_ATTEMPT, RUNNER_TEMP, SUTURA_NATIVE_JOB_KEY, SUTURA_TESTED_SHA } = process.env;
+          const runId = Number(GITHUB_RUN_ID), attempt = Number(GITHUB_RUN_ATTEMPT);
+          if (!Number.isSafeInteger(runId) || runId <= 0 || !Number.isSafeInteger(attempt) || attempt <= 0 || !/^[a-f0-9]{40}$/.test(SUTURA_TESTED_SHA ?? '')) throw new Error('Invalid native checkout identity');
+          const directory = join(RUNNER_TEMP, 'sutura-native-checkout');
+          mkdirSync(directory, { mode: 0o700 });
+          writeFileSync(join(directory, 'checks.json'), JSON.stringify({ schemaVersion: 'sutura-native-checkout-v1', runId, attempt, jobKey: SUTURA_NATIVE_JOB_KEY, testedSha: SUTURA_TESTED_SHA }) + '\n', { flag: 'wx', mode: 0o600 });
+          SUTURA_CHECKOUT
+      - name: Preserve immutable checkout record before verification
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
-          version: 11.22.0
+          name: sutura-native-checkout-${{ github.run_id }}-${{ github.run_attempt }}-checks
+          path: ${{ runner.temp }}/sutura-native-checkout/checks.json
+          if-no-files-found: error
+          retention-days: 7
+          overwrite: false
+      - uses: pnpm/action-setup@v6
       - uses: actions/setup-node@v7
         with:
           node-version: 22
@@ -32,4 +57,106 @@ jobs:
       - run: pnpm run lint
       - run: pnpm run build
       - run: node scripts/verify-bundle.mjs
-      - run: pnpm run test
+      - run: pnpm run test:coverage
+
+  ubuntu_24_04:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      CIRUJANO_QEMU_CPUS: 2
+    steps:
+      - uses: actions/checkout@v7
+      - name: Capture actual checkout before verification
+        env:
+          SUTURA_NATIVE_JOB_KEY: "ubuntu_24_04"
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in ${!GIT_@}; do unset "$name"; done
+          SUTURA_TESTED_SHA="$(git --no-replace-objects -c core.hooksPath=/dev/null -c core.fsmonitor=false rev-parse HEAD)"
+          export SUTURA_TESTED_SHA
+          env -u NODE_OPTIONS node --input-type=module <<'SUTURA_CHECKOUT'
+          import { mkdirSync, writeFileSync } from 'node:fs';
+          import { join } from 'node:path';
+          const { GITHUB_RUN_ID, GITHUB_RUN_ATTEMPT, RUNNER_TEMP, SUTURA_NATIVE_JOB_KEY, SUTURA_TESTED_SHA } = process.env;
+          const runId = Number(GITHUB_RUN_ID), attempt = Number(GITHUB_RUN_ATTEMPT);
+          if (!Number.isSafeInteger(runId) || runId <= 0 || !Number.isSafeInteger(attempt) || attempt <= 0 || !/^[a-f0-9]{40}$/.test(SUTURA_TESTED_SHA ?? '')) throw new Error('Invalid native checkout identity');
+          const directory = join(RUNNER_TEMP, 'sutura-native-checkout');
+          mkdirSync(directory, { mode: 0o700 });
+          writeFileSync(join(directory, 'ubuntu_24_04.json'), JSON.stringify({ schemaVersion: 'sutura-native-checkout-v1', runId, attempt, jobKey: SUTURA_NATIVE_JOB_KEY, testedSha: SUTURA_TESTED_SHA }) + '\n', { flag: 'wx', mode: 0o600 });
+          SUTURA_CHECKOUT
+      - name: Preserve immutable checkout record before verification
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: sutura-native-checkout-${{ github.run_id }}-${{ github.run_attempt }}-ubuntu_24_04
+          path: ${{ runner.temp }}/sutura-native-checkout/ubuntu_24_04.json
+          if-no-files-found: error
+          retention-days: 7
+          overwrite: false
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: sudo apt-get update && sudo apt-get install --yes cloud-image-utils qemu-system-x86
+      - run: pnpm run verify:cloud-init-boot
+        env:
+          # The renderer resolves the latest actions/runner release; the job token avoids the
+          # unauthenticated rate limit shared by hosted runner addresses.
+          GITHUB_TOKEN: ${{ github.token }}
+
+  sutura-native-receipt:
+    name: Collect native verification receipt
+    needs: [checks, ubuntu_24_04]
+    if: >-
+      ${{ always() &&
+        ((github.event_name == 'push' && github.ref == 'refs/heads/develop') ||
+        (github.event_name == 'pull_request' && github.base_ref == 'develop' && github.event.pull_request.head.repo.id == github.event.repository.id)) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Fetch reviewed Sutura receipt helper only
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: juan294/sutura
+          ref: 900b69d2227254504f40fef9aec9a9d5cc6836ee
+          path: sutura-receipt-helper
+          persist-credentials: false
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            scripts/fleet-native-receipt.mjs
+            scripts/fleet-incident-evidence.mjs
+      - name: Download exact immutable checkout "checks"
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: sutura-native-checkout-${{ github.run_id }}-${{ github.run_attempt }}-checks
+          path: ${{ runner.temp }}/sutura-native-checkouts
+          digest-mismatch: error
+      - name: Download exact immutable checkout "ubuntu_24_04"
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: sutura-native-checkout-${{ github.run_id }}-${{ github.run_attempt }}-ubuntu_24_04
+          path: ${{ runner.temp }}/sutura-native-checkouts
+          digest-mismatch: error
+      - name: Bind checkout records to authenticated native jobs and protected policy
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SUTURA_NATIVE_REPOSITORY: ${{ github.repository }}
+          SUTURA_NATIVE_RUN: ${{ github.run_id }}
+          SUTURA_NATIVE_ATTEMPT: ${{ github.run_attempt }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          env -u NODE_OPTIONS node sutura-receipt-helper/scripts/fleet-native-receipt.mjs "$SUTURA_NATIVE_REPOSITORY" "$SUTURA_NATIVE_RUN" "$SUTURA_NATIVE_ATTEMPT" refs/heads/develop "$RUNNER_TEMP/sutura-native-checkouts" > "$RUNNER_TEMP/sutura-native-receipt.json"
+      - name: Preserve native receipt
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: sutura-native-v1-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/sutura-native-receipt.json
+          if-no-files-found: error
+          retention-days: 7
+          overwrite: false

@@ -10,8 +10,8 @@
 
 const MS_PER_MINUTE = 60_000;
 
-/** List price for a 2-core Linux hosted runner in a private repository. */
-export const GITHUB_HOSTED_LINUX_USD_PER_MINUTE = 0.008;
+/** GitHub list price for a standard 2-core Linux runner, verified 2026-09-13. */
+export const GITHUB_HOSTED_LINUX_USD_PER_MINUTE = 0.006;
 
 export interface JobTiming {
   name: string;
@@ -66,10 +66,10 @@ export function summarizeBillableMinutes(jobs: readonly JobTiming[]): BillableSu
 }
 
 /**
- * Parse the payload of `GET /repos/{owner}/{repo}/actions/runs/{run_id}/jobs`.
- * Fails closed: any job entry that is not an object with a string `name`
- * rejects the whole payload, so a truncated or unexpected response can never
- * be reported as a low bill.
+ * Parse a complete GitHub Actions jobs inventory. Reject malformed jobs and
+ * any declared `total_count` that differs from the `jobs` array length.
+ * Already-aggregated inputs may omit `total_count`; their completeness must
+ * be established by the caller.
  */
 export function parseGithubJobs(payload: unknown): JobTiming[] {
   if (typeof payload !== 'object' || payload === null || !('jobs' in payload)) {
@@ -78,6 +78,14 @@ export function parseGithubJobs(payload: unknown): JobTiming[] {
   const { jobs } = payload as { jobs: unknown };
   if (!Array.isArray(jobs)) {
     throw new BillingInputError('GitHub jobs payload field `jobs` must be an array.');
+  }
+  // Paginated consumers may supply an aggregate without total_count. A raw
+  // API page that declares it must contain the complete declared inventory.
+  if ('total_count' in payload) {
+    const total = payload.total_count;
+    if (typeof total !== 'number' || !Number.isSafeInteger(total) || total < 0 || total !== jobs.length) {
+      throw new BillingInputError('GitHub jobs payload `total_count` must equal the complete jobs array length; collect all pages before estimating.');
+    }
   }
   return jobs.map((entry, index) => {
     if (typeof entry !== 'object' || entry === null) {

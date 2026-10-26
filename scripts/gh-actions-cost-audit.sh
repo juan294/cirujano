@@ -36,5 +36,5 @@ done
 echo "est_min/${days}d | runs | min/run | repo | workflow"
 sort -t'|' -k1 -rn "$out" | awk -F'|' '{printf "%7d | %4d | %6s | %-16s | %s\n", $1, $2, $3, $4, $5}'
 tot=$(awk -F'|' '{s+=$1} END{print s+0}' "$out")
-echo "TOTAL est billable minutes: $tot  (~\$$(echo "scale=0; $tot * 0.008 / 1" | bc) at \$0.008/min list, before included minutes)"
+echo "TOTAL est billable minutes: $tot  (~\$$(echo "scale=0; $tot * 0.006 / 1" | bc) at \$0.006/min list, before included minutes)"
 rm -f "$out"

@@ -1,6 +1,6 @@
 {
   "name": "@cirujano/core",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
   "exports": {
@@ -8,12 +8,21 @@
       "types": "./src/index.ts",
       "development": "./src/index.ts",
       "default": "./dist/index.js"
+    },
+    "./billing": {
+      "types": "./src/billing.ts",
+      "development": "./src/billing.ts",
+      "default": "./dist/billing.js"
     }
   },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build": "tsc -p tsconfig.build.json && cp src/optimization/push-classifier.template.mjs src/optimization/push-classifier.template.d.mts dist/optimization/",
     "lint": "eslint .",
     "test": "vitest run",
+    "test:coverage": "vitest run --config ../../vitest.config.ts --coverage",
     "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "yaml": "2.9.1"
   }
 }

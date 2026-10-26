@@ -1,13 +1,7 @@
 {
-  "lastSyncCommit": "a423402540808c92292e0d7a6b4af80304594902",
+  "lastSyncCommit": "c4ef2ee395231869034e411e9ef7c9e862d31330",
   "lastSyncDate": "2026-09-08",
-  "blueprintVersion": "v1.29.0",
-  "agentsTemplateSynced": true,
-  "rulesSynced": [
-    "rpi-details.md",
-    "push-accountability.md",
-    "testing.md",
-    "deployment-safety.md"
-  ],
-  "rulesCustom": []
+  "blueprintVersion": "v2.0.2",
+  "supersededBy": ".rpi/manifest.json",
+  "note": "v1 sync metadata retained as a migration hint only; ownership and baselines now live in .rpi/manifest.json."
 }

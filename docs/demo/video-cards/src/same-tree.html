@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Same tree illustration</title>
+<link rel="stylesheet" href="base.css">
+<style>
+  .wrap { position: absolute; top: 170px; bottom: 80px; left: 120px; right: 120px; display: grid; grid-template-columns: 1.4fr 1fr; gap: 80px; align-items: center; }
+  .runs { display: grid; gap: 36px; }
+  .run { background: var(--sheet); border: 2px solid var(--line); border-radius: 20px; padding: 30px 36px; }
+  .run .head { display: flex; justify-content: space-between; align-items: baseline; font-size: 34px; font-weight: 700; }
+  .run .head span { font-family: var(--mono); font-size: 28px; font-weight: 500; color: var(--muted); }
+  .jobs { display: flex; gap: 20px; margin-top: 24px; }
+  .job { display: flex; align-items: center; gap: 14px; font-family: var(--mono); font-size: 30px; background: var(--code); border: 2px solid var(--line); border-radius: 12px; padding: 12px 22px; }
+  .job i { width: 22px; height: 22px; border-radius: 50%; background: var(--ok); display: inline-block; }
+  .run.again { border-color: var(--accent); }
+  .run.again .job { color: #ffc2b0; }
+  .run.again .job i { background: var(--accent); }
+  .note { font-size: 28px; color: var(--muted); margin-top: 20px; }
+  .msg { font-size: 60px; font-weight: 700; line-height: 1.15; }
+  .msg em { font-style: normal; color: var(--accent); }
+  .sub { font-size: 32px; color: var(--muted); line-height: 1.4; margin-top: 36px; }
+</style></head>
+<body>
+  <div class="tag">Illustration: where the minutes went</div>
+  <div class="wrap">
+    <div class="runs">
+      <div class="run">
+        <div class="head">Pull request checks <span>tree 7c2e…</span></div>
+        <div class="jobs"><div class="job"><i></i>lint</div><div class="job"><i></i>test</div><div class="job"><i></i>build</div></div>
+        <div class="note">All passed. The pull request merges.</div>
+      </div>
+      <div class="run again">
+        <div class="head">Merge push <span>same tree 7c2e…</span></div>
+        <div class="jobs"><div class="job"><i></i>lint</div><div class="job"><i></i>test</div><div class="job"><i></i>build</div></div>
+        <div class="note">The same checks run again, and bill again.</div>
+      </div>
+    </div>
+    <div>
+      <div class="msg">The same tree,<br><em>tested and billed twice.</em></div>
+      <div class="sub">Multiply by every merge,<br>in every repository,<br>every day.</div>
+    </div>
+  </div>
+</body></html>

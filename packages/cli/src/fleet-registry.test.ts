@@ -1,0 +1,159 @@
+import { mkdtemp, readFile, stat } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+import { describe, expect, it } from 'vitest';
+
+import {
+  FleetRegistryError,
+  LOCKED_EXCLUSIONS,
+  enrollmentLabelFor,
+  isExcludedRepository,
+  lockedExclusionRepositories,
+  parseFleetRegistry,
+  writeFleetRegistry,
+  type FleetEnrollment,
+  type FleetRegistry,
+} from './fleet-registry.js';
+
+const OWNER = 'example-owner';
+
+describe('fleet registry (phase 1 U1)', () => {
+  it('keeps the remaining named exclusions from the parent plan', () => {
+    expect(lockedExclusionRepositories()).toEqual([
+      'frivas/contribution-dashboard',
+      'behboud/opencode-rpi',
+      'juan294/home-network',
+    ]);
+    expect(LOCKED_EXCLUSIONS.lockedBy).toBe('fleet-telemetry plan 2026-09-13');
+  });
+
+  it('round-trips the placeholder fixture through write and parse with owner-only modes', async () => {
+    const registry = parseFleetRegistry(JSON.parse(await readFile(fixturePath(), 'utf8')));
+    expect(registry.enrollments.map(({ id, status }) => [id, status])).toEqual([['P1', 'cut-over'], ['P2', 'proposed']]);
+    const directory = await mkdtemp(join(tmpdir(), 'cirujano-fleet-registry-'));
+    const path = join(directory, 'fleet-registry.json');
+    await writeFleetRegistry(path, registry);
+    expect((await stat(path)).mode & 0o777).toBe(0o600);
+    expect(parseFleetRegistry(JSON.parse(await readFile(path, 'utf8')))).toEqual(registry);
+  });
+
+  it('accepts only the enrollment-owned label for an isolated controller', async () => {
+    const registry = parseFleetRegistry(JSON.parse(await readFile(fixturePath(), 'utf8')));
+    registry.enrollments[1]!.runnerLabel = 'cirujano-p2-actions_linux';
+    expect(parseFleetRegistry(JSON.parse(JSON.stringify(registry))).enrollments[1]!.runnerLabel)
+      .toBe('cirujano-p2-actions_linux');
+    registry.enrollments[1]!.runnerLabel = 'cirujano-p3-actions_linux';
+    expect(() => parseFleetRegistry(JSON.parse(JSON.stringify(registry))))
+      .toThrow(/runnerLabel .* is not enrolled for sku actions_linux/u);
+  });
+
+  it('round-trips an optional integration branch and rejects malformed branch names', async () => {
+    const registry = parseFleetRegistry(JSON.parse(await readFile(fixturePath(), 'utf8')));
+    registry.enrollments[1]!.targetBranch = 'develop';
+    expect(parseFleetRegistry(JSON.parse(JSON.stringify(registry))).enrollments[1]!.targetBranch).toBe('develop');
+    registry.enrollments[1]!.targetBranch = '../main';
+    expect(() => parseFleetRegistry(JSON.parse(JSON.stringify(registry)))).toThrow(/targetBranch must be a safe Git branch name/u);
+  });
+
+  it('rejects a shared active label within one repository, including a proposed enrollment', async () => {
+    const registry = parseFleetRegistry(JSON.parse(await readFile(fixturePath(), 'utf8')));
+    registry.enrollments[1]!.repository = registry.enrollments[0]!.repository;
+    expect(() => parseFleetRegistry(registry)).toThrow(/runner label .* already belongs to P1/u);
+    registry.enrollments[0]!.status = 'reverted';
+    expect(() => parseFleetRegistry(registry)).not.toThrow();
+  });
+
+  it('rejects an owned label for a runner platform the controller cannot provide', async () => {
+    const registry = parseFleetRegistry(JSON.parse(await readFile(fixturePath(), 'utf8')));
+    registry.enrollments[1]!.sku = 'actions_macos';
+    registry.enrollments[1]!.runnerLabel = 'cirujano-p2-actions_macos';
+    expect(() => parseFleetRegistry(registry)).toThrow(/runnerLabel .* is not enrolled for sku actions_macos/u);
+  });
+
+  it.each([
+    ['a missing locked exclusion', (registry: FleetRegistry) => {
+      registry.exclusions = registry.exclusions.filter(({ repository }) => repository !== 'behboud/opencode-rpi');
+    }, /locked exclusion behboud\/opencode-rpi is missing/u],
+    ['an enrollment of a named exclusion', (registry: FleetRegistry) => {
+      registry.exclusions.push({ repository: `${OWNER}/private-two`, reason: 'owner decision', lockedBy: 'owner' });
+    }, /private-two is excluded/u],
+    ['a SKU and label mismatch', (registry: FleetRegistry) => {
+      registry.enrollments[1]!.sku = 'actions_macos';
+    }, /runnerLabel .* is not enrolled for sku actions_macos/u],
+    ['an unknown SKU', (registry: FleetRegistry) => {
+      (registry.enrollments[1] as { sku: string }).sku = 'actions_gpu';
+    }, /sku must be one of/u],
+    ['a repository outside the owner', (registry: FleetRegistry) => {
+      registry.enrollments[1]!.repository = 'someone-else/private-two';
+    }, /must belong to example-owner/u],
+    ['a duplicate enrollment id', (registry: FleetRegistry) => {
+      registry.enrollments[1]!.id = 'P1';
+    }, /duplicate enrollment id P1/u],
+    ['a proposed enrollment that carries an after record', (registry: FleetRegistry) => {
+      registry.enrollments[1]!.after = registry.enrollments[0]!.after;
+    }, /proposed enrollment P2 must not carry an after record/u],
+    ['a cut-over enrollment without an after record', (registry: FleetRegistry) => {
+      registry.enrollments[0]!.after = null;
+    }, /cut-over enrollment P1 requires an after record/u],
+    ['a cut-over after record whose runs-on lacks the enrolled label', (registry: FleetRegistry) => {
+      registry.enrollments[0]!.after!.runsOn = ['self-hosted', 'linux', 'x64'];
+    }, /after\.runsOn must include self-hosted, linux, x64 and cirujano-baseline-actions_linux/u],
+    ['a window that ends before it starts', (registry: FleetRegistry) => {
+      registry.measurementWindow.through = '2026-09-01';
+    }, /measurementWindow\.since must not follow through/u],
+    ['a duplicate workflow job enrollment', (registry: FleetRegistry) => {
+      registry.enrollments[1]!.repository = registry.enrollments[0]!.repository;
+      registry.enrollments[1]!.workflowPath = registry.enrollments[0]!.workflowPath;
+      registry.enrollments[1]!.jobKey = registry.enrollments[0]!.jobKey;
+    }, /already enrolled as P1/u],
+  ])('rejects %s', async (_name, tamper, message) => {
+    const registry = parseFleetRegistry(JSON.parse(await readFile(fixturePath(), 'utf8')));
+    tamper(registry);
+    expect(() => parseFleetRegistry(JSON.parse(JSON.stringify(registry)))).toThrow(FleetRegistryError);
+    expect(() => parseFleetRegistry(JSON.parse(JSON.stringify(registry)))).toThrow(message);
+  });
+
+  it('lets a reverted enrollment coexist with a fresh enrollment of the same job', async () => {
+    const registry = parseFleetRegistry(JSON.parse(await readFile(fixturePath(), 'utf8')));
+    const reverted = { ...registry.enrollments[0]!, status: 'reverted' as const };
+    const fresh = { ...registry.enrollments[0]!, id: 'P3', status: 'proposed' as const, after: null, controller: null };
+    expect(() => parseFleetRegistry(JSON.parse(JSON.stringify({ ...registry, enrollments: [reverted, registry.enrollments[1], fresh] })))).not.toThrow();
+    expect(() => parseFleetRegistry(JSON.parse(JSON.stringify({ ...registry, enrollments: [registry.enrollments[0], fresh] })))).toThrow(/already enrolled as P1/u);
+  });
+
+  it('matches explicit exclusions only, including after a product freeze ends', async () => {
+    const registry = parseFleetRegistry(JSON.parse(await readFile(fixturePath(), 'utf8')));
+    expect(isExcludedRepository(registry, `${OWNER}/chapa`)).toBe(false);
+    expect(isExcludedRepository(registry, `${OWNER}/chapa-cli`)).toBe(false);
+    expect(isExcludedRepository(registry, `${OWNER}/spoken-letter`)).toBe(false);
+    expect(isExcludedRepository(registry, `${OWNER}/spoken-letter-alexa`)).toBe(false);
+    expect(isExcludedRepository(registry, 'juan294/home-network')).toBe(true);
+    expect(isExcludedRepository(registry, 'juan294/home-network-cli')).toBe(false);
+    expect(isExcludedRepository(registry, `${OWNER}/chapati`)).toBe(false);
+    expect(isExcludedRepository(registry, `${OWNER}/private-one`)).toBe(false);
+  });
+
+  it('keeps exclusions in an existing registry until they are explicitly removed', async () => {
+    const registry = parseFleetRegistry(JSON.parse(await readFile(fixturePath(), 'utf8')));
+    registry.exclusions.push({ repository: `${OWNER}/spoken-letter`, reason: 'old freeze', lockedBy: 'old plan' });
+    expect(isExcludedRepository(parseFleetRegistry(registry), `${OWNER}/spoken-letter`)).toBe(true);
+    registry.exclusions.pop();
+    expect(isExcludedRepository(parseFleetRegistry(registry), `${OWNER}/spoken-letter`)).toBe(false);
+  });
+
+  it('maps the Linux SKU to its enrolled baseline label and refuses a SKU without one', () => {
+    expect(enrollmentLabelFor('actions_linux')).toBe('cirujano-baseline-actions_linux');
+    expect(() => enrollmentLabelFor('actions_windows')).toThrow(/no enrolled Cirujano label/u);
+  });
+
+  it('rejects an unknown enrollment key so private records never carry stray fields', async () => {
+    const raw = JSON.parse(await readFile(fixturePath(), 'utf8')) as { enrollments: Array<FleetEnrollment & { extra?: boolean }> };
+    raw.enrollments[0]!.extra = true;
+    expect(() => parseFleetRegistry(raw)).toThrow(/enrollments\[0\] contains unknown key extra/u);
+  });
+});
+
+function fixturePath(): string {
+  return join(import.meta.dirname, '../fixtures/fleet-registry.example.json');
+}

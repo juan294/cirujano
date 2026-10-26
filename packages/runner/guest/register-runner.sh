@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+set -euo pipefail
+if (( EUID != 0 )) && [[ "${CIRUJANO_TEST_MODE:-0}" != 1 ]]; then exec sudo -n "$0"; fi
+IFS= read -r RUNNER_REPOSITORY
+IFS= read -r RUNNER_NAME
+IFS= read -r RUNNER_LABEL
+IFS= read -r RUNNER_GENERATION
+[[ "$RUNNER_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || { echo 'repository is invalid' >&2; exit 2; }
+[[ "$RUNNER_NAME" =~ ^[A-Za-z0-9_.-]+$ ]] || { echo 'runner name is invalid' >&2; exit 2; }
+[[ "$RUNNER_LABEL" =~ ^[A-Za-z0-9_.-]+$ ]] || { echo 'runner label is invalid' >&2; exit 2; }
+[[ "$RUNNER_GENERATION" =~ ^[1-9][0-9]*$ ]] || { echo 'runner generation is invalid' >&2; exit 2; }
+state_dir=${CIRUJANO_STATE_DIR:-/var/lib/cirujano}
+runner_root=${CIRUJANO_RUNNER_ROOT:-/var/lib/cirujano}
+runner_template=${CIRUJANO_RUNNER_TEMPLATE:-/opt/actions-runner}
+# Hosted-runner parity: GitHub checks out under /home/runner/work/<repo>/<repo>. A root such as
+# /var/lib/cirujano/... leaks common segments (lib) into absolute-path globs of enrolled workloads.
+runner_work=${CIRUJANO_RUNNER_WORK:-/home/runner/work}
+sudo_bin=${CIRUJANO_SUDO_BIN:-sudo}
+exec 9>"$state_dir/generation-${RUNNER_GENERATION}.lock"
+flock_bin=${CIRUJANO_FLOCK_BIN:-flock}
+"$flock_bin" -n 9 || { echo 'runner generation is draining' >&2; exit 3; }
+IFS= read -r RUNNER_TOKEN
+[[ -n "$RUNNER_TOKEN" ]] || { echo 'registration token missing' >&2; exit 1; }
+runner_dir="$runner_root/runner-${RUNNER_GENERATION}"
+[[ ! -e "$state_dir/admission-disabled" ]] || { echo 'runner admission is disabled' >&2; exit 3; }
+if [[ "${CIRUJANO_TEST_MODE:-0}" == 1 ]]; then install -d -m 0700 "$runner_dir" && install -d -m 0755 "$runner_work"; else install -d -m 0700 -o runner -g runner "$runner_dir" && install -d -m 0755 -o runner -g runner "$runner_work"; fi
+cp -a "$runner_template/." "$runner_dir/"
+printf '%s\n' 'ACTIONS_RUNNER_HOOK_JOB_STARTED=/opt/cirujano/job-start-hook.sh' > "$runner_dir/.env"
+[[ "${CIRUJANO_TEST_MODE:-0}" == 1 ]] || chown runner:runner "$runner_dir/.env"
+export ACTIONS_RUNNER_INPUT_TOKEN="$RUNNER_TOKEN"
+unset RUNNER_TOKEN
+"$sudo_bin" -u runner --preserve-env=ACTIONS_RUNNER_INPUT_TOKEN bash -c \
+  'cd "$1" && ./config.sh --unattended --ephemeral --disableupdate --url "$2" --name "$3" --labels "$4" --work "$5"' \
+  bash "$runner_dir" "https://github.com/${RUNNER_REPOSITORY}" "$RUNNER_NAME" "$RUNNER_LABEL" "$runner_work"
+unset ACTIONS_RUNNER_INPUT_TOKEN
+install -d -m 0700 "$state_dir/diag-${RUNNER_GENERATION}"
+nohup "$sudo_bin" -u runner bash -c 'cd "$1" && exec ./run.sh' bash "$runner_dir" \
+  </dev/null >>"$state_dir/diag-${RUNNER_GENERATION}/supervisor.log" 2>&1 &
+listener_pid=$!
+printf '%s\n' "$listener_pid" > "$state_dir/listener-${RUNNER_GENERATION}.pid"
+disown "$listener_pid" 2>/dev/null || true
+echo registered

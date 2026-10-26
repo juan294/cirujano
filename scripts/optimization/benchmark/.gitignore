@@ -1,0 +1,7 @@
+node_modules/
+raw-tests.json
+raw-coverage/
+normalized-tests.json
+normalized-coverage.json
+.reporter-receipt.json
+quality.json

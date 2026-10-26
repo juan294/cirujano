@@ -2,7 +2,11 @@ import { readFile } from 'node:fs/promises';
 
 import { BillingInputError, parseGithubJobs, summarizeBillableMinutes } from '@cirujano/core';
 
-import { ArgumentError, USAGE, VERSION, parseArguments } from './args.js';
+import { ArgumentError, USAGE, VERSION, parseArguments, type FleetArguments, type RunnerArguments, type TelemetryArguments } from './args.js';
+import { createFleetCommandService } from './fleet-service.js';
+import { createRunnerCommandService } from './runner-service.js';
+import { createTelemetryCommandService } from './telemetry-service.js';
+import { createOptimizationService, type OptimizationService } from './optimization/service.js';
 
 export interface CliIo {
   stdout: (text: string) => void;
@@ -14,8 +18,27 @@ const processIo: CliIo = {
   stderr: (text) => process.stderr.write(text),
 };
 
+export interface RunnerCommandService {
+  run(args: RunnerArguments, io: CliIo): Promise<0 | 1>;
+}
+
+export interface TelemetryCommandService {
+  run(args: TelemetryArguments, io: CliIo): Promise<0 | 1>;
+}
+
+export interface FleetCommandService {
+  run(args: FleetArguments, io: CliIo): Promise<0 | 1>;
+}
+
 /** Exit code contract: 0 success, 1 runtime failure, 2 usage error. */
-export async function runCli(argv: readonly string[], io: CliIo = processIo): Promise<number> {
+export async function runCli(
+  argv: readonly string[],
+  io: CliIo = processIo,
+  runnerService: RunnerCommandService = defaultRunnerCommandService,
+  telemetryService: TelemetryCommandService = defaultTelemetryCommandService,
+  fleetService: FleetCommandService = defaultFleetCommandService,
+  optimizationService: OptimizationService = defaultOptimizationService,
+): Promise<number> {
   let parsed;
   try {
     parsed = parseArguments(argv);
@@ -36,8 +59,41 @@ export async function runCli(argv: readonly string[], io: CliIo = processIo): Pr
       return 0;
     case 'estimate':
       return estimate(parsed.jobsPath, parsed.format, io);
+    case 'runner':
+      try {
+        return await runnerService.run(parsed, io);
+      } catch (error) {
+        io.stderr(`runner ${parsed.action} failed: ${error instanceof Error ? error.message : String(error)}\n`);
+        return 1;
+      }
+    case 'telemetry':
+      try {
+        return await telemetryService.run(parsed, io);
+      } catch (error) {
+        io.stderr(`telemetry ${parsed.action} failed: ${error instanceof Error ? error.message : String(error)}\n`);
+        return 1;
+      }
+    case 'fleet':
+      try {
+        return await fleetService.run(parsed, io);
+      } catch (error) {
+        io.stderr(`fleet ${parsed.action} failed: ${error instanceof Error ? error.message : String(error)}\n`);
+        return 1;
+      }
+    case 'optimize':
+      try {
+        return await optimizationService.run(parsed, io);
+      } catch {
+        io.stderr(`optimize ${parsed.action} failed: optimization-operation-failed\n`);
+        return 1;
+      }
   }
 }
+
+export const defaultRunnerCommandService: RunnerCommandService = createRunnerCommandService();
+export const defaultTelemetryCommandService: TelemetryCommandService = createTelemetryCommandService();
+export const defaultFleetCommandService: FleetCommandService = createFleetCommandService();
+export const defaultOptimizationService: OptimizationService = createOptimizationService();
 
 async function estimate(jobsPath: string, format: 'json' | 'text', io: CliIo): Promise<number> {
   let payload: unknown;

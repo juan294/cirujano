@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Sutura and Cirujano</title>
+<link rel="stylesheet" href="base.css">
+<style>
+  .wrap { position: absolute; top: 190px; left: 120px; right: 120px; display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 48px; }
+  .who { background: var(--sheet); border: 2px solid var(--line); border-radius: 22px; padding: 44px 40px; min-height: 520px; }
+  .who .role { font-family: var(--mono); font-size: 28px; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
+  .who h2 { font-size: 72px; font-weight: 800; margin: 18px 0 8px; letter-spacing: -.02em; }
+  .who .ci { font-size: 34px; font-weight: 600; }
+  .who p { font-size: 32px; line-height: 1.4; color: var(--muted); margin-top: 28px; }
+  .sutura .ci { color: var(--accent); }
+  .cirujano .ci { color: var(--ok); }
+  .dev { border-color: var(--blue); }
+  .dev .ci { color: var(--blue); }
+  .foot { position: absolute; left: 120px; right: 120px; bottom: 80px; font-size: 32px; color: var(--muted); }
+  .foot b { color: var(--ink); font-weight: 600; }
+</style></head>
+<body>
+  <div class="tag">Two entries, one evidence standard</div>
+  <div class="wrap">
+    <div class="who sutura"><div class="role">The nurse</div><h2>Sutura</h2><div class="ci">CI that breaks</div><p>Triages a failed run and requests a verified repair, or leaves a flaky failure alone.</p></div>
+    <div class="who dev"><div class="role">The doctor</div><h2>Developer</h2><div class="ci">Signs off</div><p>Reviews every pull request. Neither product merges.</p></div>
+    <div class="who cirujano"><div class="role">The surgeon</div><h2>Cirujano</h2><div class="ci">CI that wastes money</div><p>Cuts verified waste and runs heavy jobs on demand.</p></div>
+  </div>
+  <div class="foot"><b>Each works on its own today.</b> An automatic hand-off between them is not built yet.</div>
+</body></html>

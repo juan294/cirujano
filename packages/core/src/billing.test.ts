@@ -47,6 +47,18 @@ describe('summarizeBillableMinutes', () => {
 });
 
 describe('parseGithubJobs', () => {
+  it.each([0, 2, -1, 1.5, '1', null])('rejects an inconsistent or invalid declared total_count %s', (total_count) => {
+    expect(() => parseGithubJobs({ total_count, jobs: [{ name: 'checks', started_at: null, completed_at: null }] }))
+      .toThrow(/total_count/);
+  });
+
+  it('accepts already-paginated aggregates and preserves legitimately skipped jobs', () => {
+    const jobs = [{ name: 'skipped', started_at: null, completed_at: null }];
+    expect(summarizeBillableMinutes(parseGithubJobs({ jobs })))
+      .toEqual({ billableMinutes: 0, measuredJobs: 0, skippedJobs: 1 });
+    expect(parseGithubJobs({ total_count: 0, jobs: [] })).toEqual([]);
+  });
+
   it('maps the GitHub jobs payload and keeps missing timestamps as null', () => {
     const jobs = parseGithubJobs({
       total_count: 2,
@@ -84,7 +96,7 @@ describe('rankWorkflowUsage', () => {
 
 describe('estimateCostUsd', () => {
   it('prices minutes at the hosted Linux list price by default and rounds to cents', () => {
-    expect(estimateCostUsd(40_064)).toBe(320.51);
+    expect(estimateCostUsd(40_064)).toBe(240.38);
     expect(estimateCostUsd(1000, 0.006)).toBe(6);
   });
 

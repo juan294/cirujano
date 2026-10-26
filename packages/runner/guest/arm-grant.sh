@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+set -euo pipefail
+if (( EUID != 0 )) && [[ "${CIRUJANO_TEST_MODE:-0}" != 1 ]]; then exec sudo -n "$0"; fi
+
+state_dir=${CIRUJANO_STATE_DIR:-/var/lib/cirujano}
+grant_file="$state_dir/grant.env"
+# install -d re-applies the mode to an existing directory: keep the bootstrap's
+# 0755 so the runner's config.sh can still enumerate its ancestors.
+install -d -m 0755 "$state_dir"
+
+IFS= read -r generation
+IFS= read -r started_at_ms
+IFS= read -r deadline_ms
+IFS= read -r max_job_ms
+IFS= read -r shutdown_margin_ms
+IFS= read -r confirmed_stopped_generation
+for value in "$generation" "$started_at_ms" "$deadline_ms" "$max_job_ms" "$shutdown_margin_ms"; do
+  [[ "$value" =~ ^[0-9]+$ ]] || { echo 'grant contains a non-numeric field' >&2; exit 2; }
+done
+(( generation > 0 && deadline_ms > started_at_ms && max_job_ms > 0 && shutdown_margin_ms > 0 )) \
+  || { echo 'grant bounds are invalid' >&2; exit 2; }
+
+# The watchdog rewrites grant.env every tick; without a shared lock its write-back can
+# silently restore the previous generation over the one armed here.
+exec 9>"$state_dir/grant.lock"
+"${CIRUJANO_FLOCK_BIN:-flock}" -w "${CIRUJANO_GRANT_LOCK_WAIT_S:-10}" 9 || { echo 'grant lock busy' >&2; exit 4; }
+
+boot_id=${CIRUJANO_BOOT_ID:-$(cat /proc/sys/kernel/random/boot_id)}
+monotonic_ms=${CIRUJANO_MONOTONIC_MS:-$(awk '{ printf "%d", $1 * 1000 }' /proc/uptime)}
+monotonic_elapsed_ms=0
+
+if [[ -f "$grant_file" ]]; then
+  # shellcheck disable=SC1090 -- root-owned file created below
+  source "$grant_file"
+  if (( generation == grant_generation )); then
+    [[ "$started_at_ms" == "$grant_started_at_ms" && "$deadline_ms" == "$grant_deadline_ms" ]] \
+      || { echo 'existing generation cannot be extended' >&2; exit 3; }
+    exit 0
+  fi
+  (( generation == grant_generation + 1 )) || { echo 'grant generation must increment exactly once' >&2; exit 3; }
+  [[ "$confirmed_stopped_generation" == "$grant_generation" ]] \
+    || { echo 'new generation requires confirmed normal provider stop' >&2; exit 3; }
+  # Expiry is the running time the watchdog accumulated, never the guest wall clock.
+  (( monotonic_elapsed_ms < grant_deadline_ms - grant_started_at_ms )) || { echo 'expired grant requires fresh VM creation' >&2; exit 3; }
+fi
+# The controller sized the new generation's window from its remaining budget; its
+# running time starts from zero rather than inheriting the previous generation's.
+monotonic_elapsed_ms=0
+
+tmp=$(mktemp "$state_dir/.grant.XXXXXX")
+trap 'rm -f "$tmp"' EXIT
+{
+  printf 'grant_generation=%s\n' "$generation"
+  printf 'grant_started_at_ms=%s\n' "$started_at_ms"
+  printf 'grant_deadline_ms=%s\n' "$deadline_ms"
+  printf 'max_job_ms=%s\n' "$max_job_ms"
+  printf 'shutdown_margin_ms=%s\n' "$shutdown_margin_ms"
+  printf 'grant_boot_id=%q\n' "$boot_id"
+  printf 'last_monotonic_ms=%s\n' "$monotonic_ms"
+  printf 'monotonic_elapsed_ms=%s\n' "$monotonic_elapsed_ms"
+} > "$tmp"
+chmod 0644 "$tmp"
+[[ "${CIRUJANO_SKIP_SYNC:-0}" == 1 ]] || sync "$tmp"
+mv "$tmp" "$grant_file"
+rm -f "$state_dir/admission-disabled"
+[[ "${CIRUJANO_SKIP_SYNC:-0}" == 1 ]] || sync "$state_dir"
+trap - EXIT

@@ -1,0 +1,198 @@
+import { createHash, randomUUID } from 'node:crypto';
+import { constants } from 'node:fs';
+import { chmod, mkdir, open, readFile, rename, unlink } from 'node:fs/promises';
+import { createConnection, createServer, type Server } from 'node:net';
+import { tmpdir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
+
+// This module stays free of local imports: the lock test loads it directly under
+// --experimental-strip-types, which cannot resolve `.js` specifiers to `.ts` sources.
+
+export function redactSecrets(text: string, secrets: readonly string[]): string {
+  return secrets.filter((secret) => secret.length > 0).reduce(
+    (redacted, secret) => redacted.split(secret).join('[REDACTED]'),
+    text,
+  );
+}
+
+// Credential shapes the controller may never have been told about. Non-global so
+// `.test()` stays stateless; the scrubber below derives its own global copy.
+export const CREDENTIAL_SHAPE_PATTERN = /(?:\b(?:GITHUB_TOKEN|NEBIUS_API_KEY|AWS_SECRET_ACCESS_KEY)\s*=\s*[^\s]+|\bgithub_pat_[A-Za-z0-9_]+|\bgh[pousr]_[A-Za-z0-9_]{20,}|\bAKIA[0-9A-Z]{16}\b|-----BEGIN [A-Z ]*PRIVATE KEY-----(?:[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----)?)/u;
+const CREDENTIAL_SHAPE_SCRUBBER = new RegExp(CREDENTIAL_SHAPE_PATTERN.source, 'gu');
+
+export function redactCredentialShapes(text: string): string {
+  return text.replace(CREDENTIAL_SHAPE_SCRUBBER, '[REDACTED]');
+}
+
+export class ControllerLockError extends Error {
+  override readonly name = 'ControllerLockError';
+}
+
+export interface ControllerLock {
+  path: string;
+  release(): Promise<void>;
+}
+
+const heldLocks = new WeakSet<object>();
+
+export function assertControllerLock(lock: ControllerLock): void {
+  if (typeof lock !== 'object' || lock === null || !heldLocks.has(lock) || typeof lock.release !== 'function') {
+    throw new ControllerLockError('a held controller lock capability is required');
+  }
+}
+
+export async function writeJournalAtomic(path: string, value: unknown): Promise<void> {
+  const directory = dirname(resolve(path));
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  const temporary = join(directory, `.${path.split('/').at(-1) ?? 'state'}.tmp-${process.pid}-${randomUUID()}`);
+  const file = await open(temporary, 'wx', 0o600);
+  try {
+    await file.writeFile(`${JSON.stringify(value)}\n`, 'utf8');
+    await file.sync();
+  } finally {
+    await file.close();
+  }
+  await rename(temporary, resolve(path));
+  await chmod(resolve(path), 0o600);
+  const directoryHandle = await open(directory, constants.O_RDONLY);
+  try { await directoryHandle.sync(); } finally { await directoryHandle.close(); }
+}
+
+export async function readJournal<T>(path: string): Promise<T> {
+  return JSON.parse(await readFile(resolve(path), 'utf8')) as T;
+}
+
+export async function appendRedactedEvent(
+  path: string,
+  event: unknown,
+  options: { secrets?: readonly string[]; maxBytes?: number } = {},
+): Promise<void> {
+  const maximum = options.maxBytes ?? 64 * 1024;
+  if (!Number.isInteger(maximum) || maximum < 80) throw new RangeError('event maxBytes must be an integer of at least 80');
+  const sanitized = redactValue(event, options.secrets ?? []);
+  let line = `${JSON.stringify(sanitized)}\n`;
+  if (Buffer.byteLength(line) > maximum) {
+    const type = typeof event === 'object' && event !== null && 'type' in event && typeof event.type === 'string' ? event.type : 'event';
+    line = `${JSON.stringify({ schemaVersion: 1, type, redacted: '[REDACTED]', truncated: true })}\n`;
+  }
+  const directory = dirname(resolve(path));
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  const file = await open(resolve(path), 'a', 0o600);
+  try {
+    await file.writeFile(line, 'utf8');
+    await file.sync();
+  } finally {
+    await file.close();
+  }
+  await chmod(resolve(path), 0o600);
+}
+
+export async function acquireControllerLock(stateDirectory: string): Promise<ControllerLock> {
+  const directory = resolve(stateDirectory);
+  if (directory.startsWith('/Volumes/') || stateDirectory.startsWith('//')) {
+    throw new ControllerLockError('controller state must use a local filesystem');
+  }
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  const localSocket = join(directory, '.controller.sock');
+  const socketPath = Buffer.byteLength(localSocket) < 100
+    ? localSocket
+    : join(tmpdir(), `cirujano-${createHash('sha256').update(directory).digest('hex').slice(0, 24)}.sock`);
+
+  // SQLite owns the OS file lock until close or process death. Keep this file:
+  // unlinking it would let another process lock a different inode at the same path.
+  // Import only on acquisition so ordinary CLI help/reporting never loads SQLite.
+  const { DatabaseSync } = await import('node:sqlite');
+  const databasePath = join(directory, '.controller-lock.sqlite');
+  const database = new DatabaseSync(databasePath);
+  try {
+    await chmod(databasePath, 0o600);
+    // Reserve the single writer without rejecting transient opener/read locks.
+    database.exec('PRAGMA busy_timeout = 0; BEGIN IMMEDIATE');
+  } catch (error) {
+    database.close();
+    if (typeof error === 'object' && error !== null && 'errcode' in error
+      && (error.errcode === 5 || error.errcode === 6)) {
+      throw new ControllerLockError('another controller holds this state lock');
+    }
+    throw error;
+  }
+
+  // Retain the socket to refuse overlap with already-running older controllers.
+  // The file lock serializes stale-socket reclamation for current controllers.
+  let server = createServer();
+  try {
+    try {
+      await listen(server, socketPath);
+    } catch (error) {
+      if (!isAddressInUse(error)) throw error;
+      if (await socketIsHeld(socketPath)) throw new ControllerLockError('another controller holds this state lock');
+      await unlink(socketPath).catch((unlinkError: unknown) => {
+        if (!isMissing(unlinkError)) throw unlinkError;
+      });
+      server = createServer();
+      await listen(server, socketPath);
+    }
+    await chmod(socketPath, 0o600);
+  } catch (error) {
+    try { if (server.listening) await closeServer(server); } finally { database.close(); }
+    throw error;
+  }
+  let released = false;
+  const capability: ControllerLock = {
+    path: socketPath,
+    async release() {
+      if (released) return;
+      released = true;
+      heldLocks.delete(capability);
+      // server.close removes its socket. Never unlink again after another owner
+      // could bind; hold the file lock until socket cleanup has finished.
+      try { await closeServer(server); } finally { database.close(); }
+    },
+  };
+  heldLocks.add(capability);
+  return capability;
+}
+
+function closeServer(server: Server): Promise<void> {
+  return new Promise((resolveClose, reject) => server.close((error) => error ? reject(error) : resolveClose()));
+}
+
+function listen(server: Server, path: string): Promise<void> {
+  return new Promise((resolveListen, reject) => {
+    const onError = (error: Error) => { server.off('listening', onListening); reject(error); };
+    const onListening = () => { server.off('error', onError); resolveListen(); };
+    server.once('error', onError);
+    server.once('listening', onListening);
+    server.listen(path);
+  });
+}
+
+async function socketIsHeld(path: string): Promise<boolean> {
+  return new Promise((resolveHeld) => {
+    const socket = createConnection(path);
+    const timer = setTimeout(() => { socket.destroy(); resolveHeld(true); }, 250);
+    socket.once('connect', () => { clearTimeout(timer); socket.destroy(); resolveHeld(true); });
+    socket.once('error', (error: NodeJS.ErrnoException) => {
+      clearTimeout(timer);
+      resolveHeld(error.code !== 'ECONNREFUSED' && error.code !== 'ENOENT');
+    });
+  });
+}
+
+function redactValue(value: unknown, secrets: readonly string[], key = ''): unknown {
+  if (/token|secret|password|private.?key|cloud.?init|user.?data/iu.test(key)) return '[REDACTED]';
+  if (typeof value === 'string') return redactCredentialShapes(redactSecrets(value, secrets));
+  if (Array.isArray(value)) return value.map((entry) => redactValue(entry, secrets));
+  if (typeof value === 'object' && value !== null) {
+    return Object.fromEntries(Object.entries(value).map(([name, entry]) => [name, redactValue(entry, secrets, name)]));
+  }
+  return value;
+}
+
+function isAddressInUse(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && 'code' in error && error.code === 'EADDRINUSE';
+}
+
+function isMissing(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT';
+}

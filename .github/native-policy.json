@@ -1,0 +1,79 @@
+{
+  "schemaVersion": "sutura-native-policy-v1",
+  "obligations": {
+    "schemaVersion": "sutura-native-verification-v1",
+    "repositoryId": 1361548133,
+    "baseBranch": "develop",
+    "protected": true,
+    "fullRequired": true,
+    "stages": {
+      "proposal": {
+        "event": "pull_request",
+        "branchRole": "repair-head",
+        "requiredJobs": [
+          {
+            "workflowId": 353252305,
+            "jobKey": "checks"
+          },
+          {
+            "workflowId": 353252305,
+            "jobKey": "ubuntu_24_04"
+          },
+          {
+            "workflowId": 353252307,
+            "jobKey": "analyze (javascript-typescript)"
+          },
+          {
+            "workflowId": 353252309,
+            "jobKey": "dependency-review"
+          }
+        ]
+      },
+      "integration": {
+        "event": "push",
+        "branchRole": "base",
+        "requiredJobs": [
+          {
+            "workflowId": 353252305,
+            "jobKey": "checks"
+          },
+          {
+            "workflowId": 353252305,
+            "jobKey": "ubuntu_24_04"
+          },
+          {
+            "workflowId": 353252307,
+            "jobKey": "analyze (javascript-typescript)"
+          }
+        ]
+      }
+    }
+  },
+  "receiptProducers": [
+    {
+      "kind": "native",
+      "workflowId": 353252305,
+      "path": ".github/workflows/ci.yml",
+      "blobSha": "fc625b7db48b1cc83eb856137506bfc7b853cbe6"
+    },
+    {
+      "kind": "native",
+      "workflowId": 353252307,
+      "path": ".github/workflows/codeql.yml",
+      "blobSha": "c21148d4d6a749ad6fb127854b7169ccd4aa1e2b"
+    },
+    {
+      "kind": "native",
+      "workflowId": 353252309,
+      "path": ".github/workflows/dependency-review.yml",
+      "blobSha": "b28a19c7c0e0ea2b8f5c74dc2969e69cc2b6a792"
+    },
+    {
+      "kind": "publication",
+      "workflowId": 357063236,
+      "path": ".github/workflows/sutura.yml",
+      "blobSha": "232dd2d1a29eb05810026be6ba3e11c2ea49a421",
+      "actionSha": "900b69d2227254504f40fef9aec9a9d5cc6836ee"
+    }
+  ]
+}

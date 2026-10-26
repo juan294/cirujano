@@ -1,6 +1,6 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
-import { parseGithubJobs, summarizeBillableMinutes } from '@cirujano/core';
+import { parseGithubJobs, summarizeBillableMinutes } from '@cirujano/core/billing';
 
 import { ActionInputError, resolveInputs } from './inputs.js';
 

@@ -1,6 +1,6 @@
 {
   "name": "@cirujano/monorepo",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "private": true,
   "description": "Verified CI cost surgery for GitHub Actions: rank where the minutes go, verify workflow patches that cut cost without cutting coverage, and move heavy jobs onto on-demand Nebius runners.",
   "type": "module",
@@ -11,25 +11,33 @@
     "url": "https://github.com/juan294/cirujano.git"
   },
   "engines": {
-    "node": ">=22"
+    "node": ">=22.13"
   },
-  "packageManager": "pnpm@11.22.0",
+  "packageManager": "pnpm@11.28.6",
   "scripts": {
-    "test": "pnpm -r test",
+    "test": "pnpm -r --workspace-concurrency=1 test",
     "typecheck": "pnpm -r typecheck",
     "lint": "pnpm -r lint",
     "build": "pnpm -r build",
+    "verify:optimization-harness-linux": "node scripts/optimization/check-harness-linux.mjs",
+    "verify:optimization-actionlint": "node scripts/optimization/check-actionlint.mjs",
     "verify:bundle": "pnpm run build && node scripts/verify-bundle.mjs",
+    "test:coverage": "pnpm -r --workspace-concurrency=1 test:coverage",
     "ci:fast": "pnpm run typecheck && pnpm run lint && pnpm run verify:bundle && pnpm run test",
     "ci:local": "pnpm run ci:fast",
-    "prepare": "husky"
+    "verify:cloud-init-schema": "bash scripts/verify-runner-cloud-init-schema.sh",
+    "verify:cloud-init-boot": "bash scripts/test-runner-cloud-init-boot.sh",
+    "prepare": "husky",
+    "verify:ci-cadence": "node --test scripts/ci-cadence.test.mjs scripts/measure-ci-cadence.test.mjs scripts/validate-ci-cadence-fixtures.test.mjs && node scripts/validate-ci-cadence-fixtures.mjs",
+    "validate:ci-cadence-fixtures": "node scripts/validate-ci-cadence-fixtures.mjs"
   },
   "devDependencies": {
-    "@types/node": "^26.4.0",
-    "eslint": "^10.9.1",
+    "@types/node": "^26.6.5",
+    "@vitest/coverage-v8": "5.0.5",
+    "eslint": "^10.13.0",
     "husky": "^9.1.7",
     "typescript": "^6.0.3",
-    "typescript-eslint": "^8.68.0",
-    "vitest": "^4.1.11"
+    "typescript-eslint": "^8.72.0",
+    "vitest": "^5.0.5"
   }
 }
