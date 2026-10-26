@@ -676,9 +676,8 @@ function canRetireStoppedStart(pending: PendingEffect, input: LifecycleInput): b
     && validateCleanupPermit(input.permit, input.identity, input.nowMs).valid;
 }
 
-// Clearing the effect is safe because decideLifecycle rebuilds its decision from the observed
-// provider, guest and queue readings on the next tick rather than from the journal, so an effect
-// that did land is seen in those readings instead of being replayed.
+// Clearing the intent prevents replay. The next tick combines fresh provider, guest and
+// queue observations with the retained controller generation deadline to choose recovery.
 async function abandonPendingEffect(options: TickOptions, state: ControllerState): Promise<TickResult> {
   const pending = state.pendingEffect;
   if (pending === null) throw new Error('controller state invariant: abandonment has no pending effect');

@@ -16,6 +16,10 @@ candidate-bound Nebius cost recorded by the runner controller.
 
 ## Install and schedule
 
+Interactive telemetry and fleet commands use `CIRUJANO_GH_PATH` when set,
+otherwise `gh` from `PATH`. Scheduled wrappers keep their configured executable
+paths and environment.
+
 ```bash
 ./scripts/install-telemetry-agent.sh
 ```
@@ -46,8 +50,12 @@ use the current `gh` account, the paths above, a start date of 2026-09-13, a
 48-hour overlap, and the registry at `fleet-registry.json` in the store. When
 that registry exists, or `CIRUJANO_FLEET_REGISTRY` names one, the wrapper also
 writes the fleet report; a `CIRUJANO_FLEET_REGISTRY` that names a missing file
-fails every run after `latest.md` is written. A failed report exits non-zero, and the error log names
-the conflicting job key and the fields that differ.
+fails every run after `latest.md` is written. A failed report exits non-zero.
+Conflicting records name the job key and differing fields; a coverage gap names
+the missing interval's start and end. Reporting requires continuous daily
+snapshot coverage from `--since` through the latest observation, capped by the
+registry's `measurementWindow.through` when supplied. Partial backfills do not
+fill coverage gaps.
 
 Collection is all or nothing: one failed GitHub read fails the day's snapshot.
 Each read is therefore retried twice, after 2 and 8 seconds, when the failure is
@@ -58,11 +66,13 @@ the first attempt and 4 minutes for each retry. The wrapper's owner lookup retri
 the same way; setting `CIRUJANO_TELEMETRY_OWNER` skips it. A read that still fails
 is logged with its endpoint and attempt count.
 
-A job seen in several snapshots must match in every field. Two drifts are
-accepted. A retry's `createdAt` can be corrected to the attempt's own time. A
-repository whose visibility changed reprices its old jobs (`visibility` and the
-two cost fields); the report keeps the earliest observation, which records the
-visibility the job ran under.
+A job seen in several snapshots must match except for three bounded updates.
+A retry's `createdAt` can be corrected to the attempt's own time. A repository
+visibility change retains the original visibility and pricing. An incomplete
+observation can become measured when missing timing arrives, provided identity,
+conclusion, runner attribution and already-known timestamps agree. The report
+recomputes timing and cost from those fields and retains the original visibility.
+Other differences, including divergent complete records, remain errors.
 
 GitHub lists runs by the workflow run's original creation time. A retry of an
 older run can fall outside that overlap even when its jobs ran today. The

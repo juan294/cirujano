@@ -98,7 +98,11 @@ The private state directory contains:
 - `helper-diagnostics.jsonl`: bounded, redacted stderr and stdout tails for guest
   helper and fatal SSH failures (transient boot refusals stay in the journal readbacks).
 - `known_hosts`: the exact controller-generated VM host key for the current IP.
-- `.controller.sock`: the local single-controller lock, removed on clean exit.
+- `.controller-lock.sqlite`: the persistent file used for the OS-backed exclusive
+  lock, held until the controller releases it or exits. Keep the file in place;
+  deleting it can let processes lock different files at the same path.
+- `.controller.sock`: compatibility protection against an already-running older
+  controller, removed on clean exit.
 
 After an interrupted `stop` or `cleanup`, inspect `direct-action-state.json`.
 Restart the same command with the same permit and paths. An `intent` stage means
@@ -223,13 +227,17 @@ A healthy agent shows `state = running` (KeepAlive restarts it after the
 bounded poll limit exits) and a recent `decision`, `dry-run` or
 `effect-reconciled` event. A `blocked` decision that persists for more than one
 poll interval needs its recorded reason resolved. The controller does not retry
-an uncertain provider mutation blindly. An expired `begin-drain` intent is
-cleared under matching recovery authority, and an idle guest that did not
-drain receives a new attempt while its grant and permit allow it.
+an uncertain provider mutation blindly. After permit expiry, stale drain,
+registration and resume-admission intents can be cleared under matching recovery
+authority. A stale dispatched start can also be cleared under that authority
+when complete provider evidence proves the same generation's owned VM is running
+with no operation in flight; the next tick can enforce its deadline. Other
+expired-authorization intents remain blocked. An idle guest that did not drain receives a new
+attempt while its grant and permit allow it.
 
 Expired-generation recovery: when the provider reports the owned VM `stopped`
 while the journal believed the guest was up, and the journaled grant deadline
-(`grantDeadlineMs`, persisted when the start reconciles) has passed, the
+(`grantDeadlineMs`, persisted with the start intent before provider I/O) has passed, the
 controller treats the stop as the expected end of the immutable lifetime. It
 removes the offline runner registration, emits `delete-vm` under the permit's
 `delete` authority (including an expired permit with recovery enabled),

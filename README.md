@@ -3,10 +3,10 @@
 [![CI](https://github.com/juan294/cirujano/actions/workflows/ci.yml/badge.svg?branch=develop&event=push)](https://github.com/juan294/cirujano/actions/workflows/ci.yml?query=branch%3Adevelop+event%3Apush)
 [![CodeQL](https://github.com/juan294/cirujano/actions/workflows/codeql.yml/badge.svg?branch=develop&event=push)](https://github.com/juan294/cirujano/actions/workflows/codeql.yml?query=branch%3Adevelop+event%3Apush)
 ![TypeScript](https://img.shields.io/badge/TypeScript-6.0.3-3178C6?logo=typescript&logoColor=white)
-![Node.js](https://img.shields.io/badge/Node.js-22-43853D?logo=node.js&logoColor=white)
-![pnpm](https://img.shields.io/badge/pnpm-11.22.0-F69220?logo=pnpm&logoColor=white)
-![Vitest](https://img.shields.io/badge/Vitest-4.1.11-6E9F18?logo=vitest&logoColor=white)
-![ESLint](https://img.shields.io/badge/ESLint-10.10.0-4B32C3?logo=eslint&logoColor=white)
+![Node.js](https://img.shields.io/badge/Node.js-22.13%2B-43853D?logo=node.js&logoColor=white)
+![pnpm](https://img.shields.io/badge/pnpm-11.28.6-F69220?logo=pnpm&logoColor=white)
+![Vitest](https://img.shields.io/badge/Vitest-5.0.5-6E9F18?logo=vitest&logoColor=white)
+![ESLint](https://img.shields.io/badge/ESLint-10.13.0-4B32C3?logo=eslint&logoColor=white)
 ![esbuild](https://img.shields.io/badge/esbuild-0.28.2-FFCF00?logo=esbuild&logoColor=black)
 [![GitHub Actions](https://img.shields.io/badge/GitHub-Actions-2088FF?logo=githubactions&logoColor=white)](https://docs.github.com/en/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -114,7 +114,7 @@ Three movements:
 
 | Service | Runtime role |
 | --- | --- |
-| NVIDIA Nemotron on Nebius Token Factory | Selects the supported pnpm cache operation or abstains from bounded structural facts and collected evidence. The live optimizer proof is pending. |
+| NVIDIA Nemotron on Nebius Token Factory | Selects a supported pnpm-cache or skip-validated-push operation, or abstains, from bounded structural facts and collected evidence. Live results and limits are recorded above. |
 | Nebius AI Cloud / Token Factory Sandboxes | Hosts on-demand runners; the optimizer uses separately authorized paired offline Sandboxes. |
 | GitHub Actions API | Source of runs, jobs, and timings; target of the verified PRs. |
 
@@ -169,7 +169,7 @@ and savings table, including active repositories with zero jobs. See
 
 ## Contributor setup
 
-Requires Node 22.13 or newer and pnpm 11.
+Requires Node 22.13 or newer and pnpm 11. The workspace selects Node 24 through `.nvmrc`.
 
 ```bash
 pnpm install
@@ -179,9 +179,11 @@ pnpm run test
 pnpm run build
 ```
 
-`pnpm run ci:fast` mirrors `.github/workflows/ci.yml` and runs on every push
-through the pre-push hook. `packages/action/dist/index.cjs` is committed;
-rebuild and commit it together with any source change.
+`pnpm run ci:fast` runs the local typecheck, lint, bundle verification and tests
+through the pre-push hook. CI also runs coverage, Ubuntu boot verification and
+native verification receipts. Rebuild and commit `packages/action/dist/index.cjs`
+with core or Action source changes, and `scripts/optimization/push-guard-harness.mjs`
+with core or push-harness entry changes.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md).
 

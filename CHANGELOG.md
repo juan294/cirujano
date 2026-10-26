@@ -9,3 +9,25 @@
 - Add the `cirujano estimate --jobs <file>` CLI command.
 - Add a GitHub Action that reports the billable minutes of a workflow run from its job timings.
 - Record the anonymized GitHub Actions cost baseline measured on 2026-09-08 and the decision to keep Cirujano separate from Sutura.
+- Add the on-demand Nebius runner controller, guest watchdog, bounded permits, durable recovery and per-enrollment operation.
+- Add fleet enrollment, daily Actions telemetry, controller-cost attribution and sanitized savings reports.
+- Add bounded Nemotron workflow optimization: pnpm-cache and skip-validated-push proposals, paired Sandbox verification, measured cohorts and permitted unmerged PR delivery.
+- Add offline/live evaluation tools, a public benchmark, cadence policy oracles and read-only event/branch measurement lanes.
+
+### Changed
+
+- Require Node 22.13 or newer; use Node 24 for the workspace and update pnpm, Vitest and other dependencies.
+- Resolve the Actions runner release and archive digest at installation/render time, while retaining paired explicit version/digest overrides.
+- Update Sutura integration, repository-scoped App authentication and native verification receipts. CI routing remains Sutura-owned.
+
+### Fixed
+
+- Serialize concurrent controller crash recovery with an OS-backed lock and preserve exclusion through release.
+- Enforce controller-owned runtime deadlines and accounting when guest evidence is missing or changed, including bounded recovery of expired pending starts.
+- Reject telemetry reports with gaps in daily observation coverage; accept validated missing-timing completion while preserving original visibility pricing and strict conflict checks.
+- Reject estimator inputs whose declared job count differs from the complete inventory, and document pagination.
+- Resolve interactive telemetry/fleet `gh` commands through PATH unless explicitly overridden.
+- Locate setup-node by its actual workflow step instead of a stale positional test fixture.
+- Repair runner bootstrap, registration, drain/restart recovery, provider-capacity backoff and GitHub polling headroom.
+- Correct retry-attempt attribution, skipped-job measurement and transient telemetry reads.
+- Repair Sandbox payload/install handling, image provenance, operation polling and hosted evidence parsing.

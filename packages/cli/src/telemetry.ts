@@ -389,7 +389,8 @@ export function aggregateTelemetry(
   let throughMs = sinceMs;
   // With a registry the measurement window bounds the report; jobs created after it are out.
   const windowEndMs = registry === undefined ? Number.POSITIVE_INFINITY : Date.parse(`${registry.measurementWindow.through}T23:59:59.999Z`);
-  // Merge in collection order, so the job already kept is always the earlier observation.
+  // Merge in collection order, preserving original visibility while accepting validated
+  // timing completion and retry timestamp corrections.
   const chronological = [...snapshots].sort((left, right) => Date.parse(left.collectedAt) - Date.parse(right.collectedAt));
   for (const snapshot of chronological) {
     throughMs = Math.max(throughMs, Math.min(windowEndMs, Date.parse(snapshot.collectedAt)));

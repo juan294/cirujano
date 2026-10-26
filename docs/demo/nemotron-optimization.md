@@ -11,7 +11,8 @@ On 2026-10-02 the complete live chain ran on the proof repository: an NVIDIA Nem
 
 ## Try the local evaluation
 
-Requires Node 22 and the installed workspace dependencies:
+Requires Node 22.13 or newer and the installed workspace dependencies; `.nvmrc`
+selects Node 24 for the workspace:
 
 ```sh
 pnpm run build

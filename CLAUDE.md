@@ -23,7 +23,7 @@ Aggregated, anonymized numbers are fine.
 
 ## Stack
 
-- TypeScript (pinned `^6`, typescript-eslint has no TS7 support), Node 22,
+- TypeScript (pinned `^6`, typescript-eslint has no TS7 support), Node 22.13 or newer (`.nvmrc` selects 24),
   pnpm, Vitest, ESLint flat config
 - LLM: NVIDIA Nemotron via Nebius Token Factory
   (OpenAI-compatible API, `https://api.tokenfactory.nebius.com/v1/`)
@@ -57,7 +57,7 @@ pnpm run test        # Vitest
 pnpm run typecheck   # tsc --noEmit
 pnpm run lint        # ESLint
 pnpm run build       # tsc + esbuild bundles
-pnpm run ci:fast     # pre-push mirror of ci.yml
+pnpm run ci:fast     # local typecheck, lint, bundle verification and tests
 ```
 
 ## Git Workflow

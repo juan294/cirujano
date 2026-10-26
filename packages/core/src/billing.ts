@@ -66,10 +66,10 @@ export function summarizeBillableMinutes(jobs: readonly JobTiming[]): BillableSu
 }
 
 /**
- * Parse the payload of `GET /repos/{owner}/{repo}/actions/runs/{run_id}/jobs`.
- * Fails closed: any job entry that is not an object with a string `name`
- * rejects the whole payload, so a truncated or unexpected response can never
- * be reported as a low bill.
+ * Parse a complete GitHub Actions jobs inventory. Reject malformed jobs and
+ * any declared `total_count` that differs from the `jobs` array length.
+ * Already-aggregated inputs may omit `total_count`; their completeness must
+ * be established by the caller.
  */
 export function parseGithubJobs(payload: unknown): JobTiming[] {
   if (typeof payload !== 'object' || payload === null || !('jobs' in payload)) {
