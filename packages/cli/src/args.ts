@@ -2,7 +2,7 @@ import { SHA_PATTERN } from './fleet-registry.js';
 import { HOSTED_SKUS, type HostedSku } from './telemetry.js';
 import { parseOptimizeArguments, type OptimizeArguments } from './optimization/arguments.js';
 
-export const VERSION = '0.0.1';
+export const VERSION = '0.1.0';
 
 export const USAGE = [
   'Usage:',
