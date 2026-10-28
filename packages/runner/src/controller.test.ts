@@ -507,11 +507,13 @@ function createInput(): LifecycleInput {
 
 function waitForChildText(child: ReturnType<typeof spawn>, expected: string): Promise<void> {
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`child did not reach ${expected}`)), 5_000);
+    let diagnostic = '';
+    child.stderr?.on('data', (chunk: Buffer) => { diagnostic += chunk.toString(); });
+    const timer = setTimeout(() => reject(new Error(`child did not reach ${expected}: ${diagnostic}`)), 5_000);
     child.stdout?.on('data', (chunk: Buffer) => {
       if (chunk.toString().includes(expected)) { clearTimeout(timer); resolve(); }
     });
-    child.once('exit', (code) => { clearTimeout(timer); reject(new Error(`child exited ${String(code)} before ${expected}`)); });
+    child.once('exit', (code) => { clearTimeout(timer); reject(new Error(`child exited ${String(code)} before ${expected}: ${diagnostic}`)); });
   });
 }
 
