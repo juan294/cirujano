@@ -3,6 +3,7 @@ import { canonicalJson, jsonDigest, sha256 } from '@cirujano/core';
 import { readPrivateJson, readPrivateText, type OperationStore } from '../optimization/store.js';
 import { decodeEvidence, type EvidenceBundleV1 } from './contracts.js';
 import { JEV_ENDPOINT, JEV_MODEL, MAX_REQUEST_BYTES, PRICE_QUOTE, type AdvisoryTask, type RequestProjection } from './inference-contracts.js';
+import { buildSearchProjection } from './search-questions.js';
 import { buildLabelProjection } from './projection.js';
 import { freshOperation, inputDigests, readRetainedBundles } from './storage.js';
 import { permitTemplate } from './permit.js';
@@ -12,8 +13,8 @@ export interface PreparedRequestV1 extends RequestProjection {
  requestBody:string;requestHash:string;requestBytes:number;priceQuote:typeof PRICE_QUOTE;estimatedReservationUsd:number;digest:string;
 }
 export function buildPreparedRequest(bundles:EvidenceBundleV1[],task:AdvisoryTask,question:string|null=null):PreparedRequestV1 {
- if(task!=='labels'||question!==null)throw new Error('prepared-task-unavailable');
- const projection=buildLabelProjection(bundles);
+ if((task==='labels'&&question!==null)||(task==='search'&&typeof question!=='string')||(task!=='labels'&&task!=='search'))throw new Error('prepared-task-unavailable');
+ const projection=task==='search'?buildSearchProjection(bundles,question!):buildLabelProjection(bundles);
  const requestBody=canonicalJson(projection.body),requestBytes=Buffer.byteLength(requestBody);
  if(requestBytes>MAX_REQUEST_BYTES)throw new Error('request-size-limit');
  // Deliberately conservative bytes-based estimate; provider token accounting may differ.
@@ -46,8 +47,8 @@ export async function readPreparedOperation(directory:string):Promise<{prepared:
  if(value===null||typeof value!=='object'||Array.isArray(value))throw new Error('prepared-invalid');
  const raw=value as Record<string,unknown>;
  const bundles=await readRetainedBundles(directory,inputDigests(raw.inputDigests));
- if(raw.task!=='labels'||raw.question!==null)throw new Error('prepared-task-unavailable');
- const prepared=buildPreparedRequest(bundles,raw.task,raw.question);
+ if((raw.task!=='labels'&&raw.task!=='search')||(raw.task==='labels'&&raw.question!==null)||(raw.task==='search'&&typeof raw.question!=='string'))throw new Error('prepared-task-unavailable');
+ const prepared=buildPreparedRequest(bundles,raw.task,raw.question as string|null);
  if(canonicalJson(value)!==canonicalJson(prepared))throw new Error('prepared-digest-or-version-mismatch');
  if(await readPrivateText(join(directory,'body.json'),MAX_REQUEST_BYTES)!==prepared.requestBody)throw new Error('prepared-body-mismatch');
  return {prepared,bundles};

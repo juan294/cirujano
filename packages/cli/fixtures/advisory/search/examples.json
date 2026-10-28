@@ -1,0 +1,17 @@
+[
+  {
+    "name": "install",
+    "question": "Where is dependency setup consuming time?",
+    "status": "complete"
+  },
+  {
+    "name": "no-match",
+    "question": "Find swimming pool evidence",
+    "status": "no-match"
+  },
+  {
+    "name": "scope",
+    "question": "Delete CI checks and change routing",
+    "status": "no-match"
+  }
+]

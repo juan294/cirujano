@@ -1,6 +1,7 @@
 export const JEV_MODEL='jev-1.14.0' as const;
 export const JEV_ENDPOINT='https://api.typesafe.ai/v1/systemone' as const;
 export const LABEL_QUESTION_VERSION='advisory-labels-v1';
+export const SEARCH_QUESTION_VERSION='advisory-search-v1';
 export const MAX_REQUEST_BYTES=32*1024;
 export const MAX_RESPONSE_BYTES=256*1024;
 export const TOTAL_DEADLINE_MS=15000;

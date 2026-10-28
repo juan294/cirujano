@@ -38,13 +38,11 @@ export function assertSafeProjection(value:unknown):void{
   }
   inspect(value);
 }
-/** Local references stay in the mapping; only pseudonymous IDs and sanitized text leave the process. */
-export function projectExcerpts(inputs:EvidenceBundleV1[]):LocalExcerpt[]{
+/** Local-only enumeration: includes private text and never grants authority to transmit it. */
+export function enumerateEvidenceExcerpts(inputs:EvidenceBundleV1[]):LocalExcerpt[]{
   const bundles=validatedBundles(inputs).sort((a,b)=>bundleIdentity(a).localeCompare(bundleIdentity(b)));
-  if(bundles.some(b=>b.repository.visibility==='private'))throw new Error('private-inference-disabled');
   const excerpts:LocalExcerpt[]=[],seen=new Set<string>();
   for(const bundle of bundles){
-    const identities=[bundle.repository.name,...bundle.repository.name.split('/')];
     const candidates:Omit<LocalExcerpt,'id'|'transmittedText'>[]=[];
     for(const step of bundle.steps)if(bundle.mapping==='supported'&&step.sourceIndex!==null&&step.command!==null&&step.lineStart!==null&&step.lineEnd!==null)candidates.push({evidenceDigest:bundle.digest,sourcePath:bundle.workflow.path,lineStart:step.lineStart,lineEnd:step.lineEnd,sourceIndex:step.sourceIndex,originalText:step.command});
     for(const source of bundle.sources)if(source.path!==bundle.workflow.path)candidates.push({evidenceDigest:bundle.digest,sourcePath:source.path,lineStart:source.lineStart,lineEnd:source.lineEnd,sourceIndex:null,originalText:source.content});
@@ -52,12 +50,16 @@ export function projectExcerpts(inputs:EvidenceBundleV1[]):LocalExcerpt[]{
     for(const candidate of candidates){
       const identity=jsonDigest({repositoryId:bundle.repository.id,headSha:bundle.run.headSha,path:candidate.sourcePath,sourceIndex:candidate.sourceIndex,lineStart:candidate.lineStart,lineEnd:candidate.lineEnd,text:candidate.originalText});
       if(seen.has(identity))continue;seen.add(identity);
-      if(excerpts.length>=20)throw new Error('projection-excerpt-limit');
-      const transmittedText=sanitizeText(candidate.originalText,identities);assertSafeProjection({text:transmittedText});
-      excerpts.push({...candidate,id:`e${String(excerpts.length+1).padStart(3,'0')}`,transmittedText});
+      excerpts.push({...candidate,id:`e${String(excerpts.length+1).padStart(3,'0')}`,transmittedText:candidate.originalText});
     }
   }
   return excerpts;
+}
+/** Remote labels preserve their original explicit limit and public/synthetic-only boundary. */
+export function projectExcerpts(inputs:EvidenceBundleV1[]):LocalExcerpt[]{
+  const bundles=validatedBundles(inputs);if(bundles.some(b=>b.repository.visibility==='private'))throw new Error('private-inference-disabled');
+  const excerpts=enumerateEvidenceExcerpts(bundles);if(excerpts.length>20)throw new Error('projection-excerpt-limit');
+  return excerpts.map(excerpt=>{const bundle=bundles.find(b=>b.digest===excerpt.evidenceDigest)!;const identities=[bundle.repository.name,...bundle.repository.name.split('/')];const transmittedText=sanitizeText(excerpt.originalText,identities);assertSafeProjection({text:transmittedText});return {...excerpt,transmittedText};});
 }
 export function buildLabelProjection(bundles:EvidenceBundleV1[]):RequestProjection{
   const mapping=projectExcerpts(bundles);if(!mapping.length)throw new Error('projection-no-excerpts');

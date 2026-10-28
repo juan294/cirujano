@@ -19,3 +19,15 @@ it('renders semantic support and probability with the pinned selected source pat
  card.semanticLabels=[{excerptId:'e001',category:'build',probability:0.85,support:'supported',requestHash:'a'.repeat(64),sourcePath:'scripts/build file.sh',sourceIndex:null,lineStart:2,lineEnd:4}];
  const text=renderReport(value);expect(text).toContain('probability 0.85');expect(text).toContain('/scripts/build%20file.sh#L2-L4');
 });
+it('renders local search as concise pinned evidence rather than a generated answer',async()=>{
+ const {searchEvidence}=await import('./search.js');const result=searchEvidence([evidenceFixture()],'dependency installation');
+ const text=renderReport(result);expect(text).toContain('lexical');expect(text).toContain('[source](');expect(text).toContain('pnpm install');expect(text).toContain('Observed job duration: 120 seconds');
+ expect(renderReport(searchEvidence([evidenceFixture()],'swimming pools'))).toContain('No matching evidence');
+});
+it('preserves source line breaks and tabs in inert fences and escapes terminal controls',async()=>{
+ const {gitBlobSha}=await import('@cirujano/core');const {sealEvidence}=await import('./contracts.js');const {searchEvidence}=await import('./search.js');
+ const b=evidenceFixture(),content='warning\n\t````<script>inert</script>\nterminal \u001b[31m\n';
+ b.sources.push({path:'notes/warning.txt',blobSha:gitBlobSha(content),content,lineStart:1,lineEnd:content.split('\n').length});
+ const output=renderReport(searchEvidence([sealEvidence(b)],'warning'));
+ expect(output).toContain('warning\n\t````<script>inert</script>');expect(output).toContain('`````text\n');expect(output).toContain('\\u001b');expect(output).not.toContain('\u001b');
+});

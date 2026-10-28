@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -7,6 +8,8 @@ import { shellQuote } from '../optimization/stage-output.js';
 import { readPrivateJson } from '../optimization/store.js';
 import { prepareOperation } from './prepare.js';
 import { enrichOperation, inspectAdvisoryOperation, readEnrichmentOperation, type EnrichOptions } from './enrich.js';
+import { actionScopeQuery, validateSearchQuery } from './search-candidates.js';
+import { searchEvidence } from './search.js';
 import { LABEL_CATEGORIES, supportState } from './questions.js';
 import type { CliIo } from '../cli.js';
 import type { GitHubPageRunner } from '../github-api.js';
@@ -23,7 +26,7 @@ export interface AdvisoryServiceOptions extends EnrichOptions {pageRunner?:GitHu
 export function emitReport(args:AdvisoryArguments,io:CliIo,value:AdvisoryReport):void {io.stdout(args.format==='json'?JSON.stringify(value)+'\n':renderReport(value));}
 export function failureReason(error:unknown):string {
   const message=error instanceof Error?error.message:'';
-  if(/^(?:unsafe-source|invalid-evidence|contradictory-evidence|duplicate-evidence|advisory|github|evidence|permit|private|secret|request|response|cohort|enrichment|prepared|projection|jev)-[a-z0-9-]+$/u.test(message))return message;
+  if(/^(?:unsafe-source|invalid-evidence|contradictory-evidence|duplicate-evidence|advisory|github|evidence|permit|private|secret|request|response|cohort|enrichment|prepared|projection|jev|search)-[a-z0-9-]+$/u.test(message))return message;
   if(message.startsWith('permit-exhausted:'))return 'permit-exhausted';
   if(/symlink/u.test(message))return 'advisory-unsafe-path';
   if(/another controller/u.test(message))return 'advisory-active-lock';
@@ -37,6 +40,7 @@ async function sourceSha(options:AdvisoryServiceOptions):Promise<string>{
 }
 export function createAdvisoryService(options:AdvisoryServiceOptions={}):AdvisoryService {
   return {async run(args,io){
+    let safeQuestion:string|null=null;
     let affectedInput:string|null=args.flags.operation??args.flags.output??null;
     try{
       if(args.action==='collect'){
@@ -48,13 +52,20 @@ export function createAdvisoryService(options:AdvisoryServiceOptions={}):Advisor
       }
       if(args.action==='prepare'){
         const bundles:EvidenceBundleV1[]=[];for(const input of args.inputs){affectedInput=input;bundles.push(...await readEvidenceInputs(input,20-bundles.length));}
-        const prepared=await prepareOperation(bundles,'labels',null,args.flags.output!,options.now);
+        const prepared=await prepareOperation(bundles,args.flags.task as 'labels'|'search',args.flags.question??null,args.flags.output!,options.now);
         emitReport(args,io,report('complete',{requestHash:prepared.requestHash,requestBytes:prepared.requestBytes,estimatedReservationUsd:prepared.estimatedReservationUsd,preview:args.flags.output!+'/preview.md'},['prepared-not-sent']));return 0;
       }
       if(args.action==='enrich'){
         affectedInput=args.flags.permit!;const permit=await readPrivateJson(args.flags.permit!);affectedInput=args.flags.request!;
         const receipt=await enrichOperation(args.flags.request!,permit,args.flags.output!,{...options,apiKey:options.apiKey??process.env.TYPESAFE_API_KEY??''});
         const value=await inspectAdvisoryOperation(args.flags.output!);emitReport(args,io,value);return receipt.status==='completed'?0:1;
+      }
+      if(args.action==='ask'){
+        validateSearchQuery(args.flags.question!);safeQuestion=args.flags.question!;
+        const bundles:EvidenceBundleV1[]=[];for(const input of args.inputs){affectedInput=input;bundles.push(...await readEvidenceInputs(input,20-bundles.length));}
+        if(args.enrichments[0])affectedInput=args.enrichments[0];
+        const retained=args.enrichments[0]?await readEnrichmentOperation(args.enrichments[0]):undefined;
+        const value=searchEvidence(bundles,args.flags.question!,retained);emitReport(args,io,value);return 0;
       }
       if(args.action==='inbox'){
         const bundles:EvidenceBundleV1[]=[];for(const input of args.inputs){affectedInput=input;bundles.push(...await readEvidenceInputs(input,20-bundles.length));}
@@ -87,6 +98,15 @@ export function createAdvisoryService(options:AdvisoryServiceOptions={}):Advisor
       value.nextActions=['Inspect the affected input or advisory status --operation <directory>; select a fresh dedicated output directory.', 'Run advisory inbox with previously retained valid --input directories for local-only access.'];
       const localInput=args.inputs[0]??args.flags.request;
       if(localInput)value.nextActions.unshift(`cirujano advisory inbox --input ${shellQuote(localInput)} --format markdown`);
+      if(args.action==='ask'&&safeQuestion!==null){
+        const selected=args.inputs.map(input=>`--input ${shellQuote(input)}`).join(' ');
+        value.nextActions.unshift(`cirujano advisory ask ${selected} --question ${shellQuote(safeQuestion)} --format markdown`);
+        if(args.inputs.length&&!actionScopeQuery(safeQuestion)&&reason!=='private-inference-disabled'){
+          const fresh=join(dirname(args.enrichments[0]??args.inputs[0]!),`advisory-search-${randomUUID()}`);
+          value.nextActions.push(`cirujano advisory prepare ${selected} --task search --question ${shellQuote(safeQuestion)} --output ${shellQuote(fresh)}`);
+        }
+      }
+      if(reason==='search-sensitive-query')value.nextActions.push('Use a question without credential values; the refused question is never echoed.');
       if(reason==='jev-key-required')value.nextActions.push('Supply TYPESAFE_API_KEY as a nonempty token of at most 2048 characters without whitespace. This preflight sent no request or consumed authority.');
       if(args.flags.request&&args.flags.permit)value.nextActions.push(`Owner authorization must be a reviewed single-use jev-advisory-permit at ${shellQuote(args.flags.permit)} matching ${shellQuote(join(args.flags.request,'body.json'))}; template creation grants no permission. Consumed authority needs a fresh permit ID.`);
       emitReport(args,io,value);return 1;

@@ -35,3 +35,12 @@ Search/retrieval and its private fixtures [batch-eligible]; search question/resp
 ## Verification and acceptance
 
 Run the main plan's full sequential local gates after review, repair and simplify; retain exact commit/tree and outcomes. No hosted runs, provider inference or publication occurs implicitly. Stop for phase acceptance. Manual criterion: optional owner inspection of the generated fixture report for clarity; all correctness/recovery criteria are automated. Proposed test/artifact paths below must be created in this phase, not treated as existing evidence.
+
+## Implementation acceptance — 2026-10-28
+
+- [x] Private/local lexical search and bounded public/synthetic semantic preparation.
+- [x] Exact retained identity, independent existence/relevance gates, inert pinned excerpts and zero implicit sends.
+- [x] Independent review P3-R1–P3-R7 resolved; simplify complete; three actual CLI examples checked.
+- [x] Full sequential local gates passed, 1,992 passing tests across all packages.
+
+Exact candidate/check identity and dispositions are in [implementation notes](../2026-10-28-jev-advisory-notes.md). Native semantic qualification remains UNMEASURED. Owner authorized continuation to phase 4.

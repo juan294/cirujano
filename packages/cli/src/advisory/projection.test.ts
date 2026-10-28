@@ -29,4 +29,9 @@ describe('local-to-inference projection boundary',()=>{
   expect(sanitizeText('pnpm install --frozen-lockfile')).toBe('pnpm install --frozen-lockfile');
  });
 
+ it('preserves label excerpt bytes when another bundle has a command token as its repository name',()=>{
+  const first=evidenceFixture(),other=evidenceFixture({repository:{id:2,name:'owner/install',visibility:'public'}});
+  const original=projectExcerpts([first])[0]!,combined=projectExcerpts([first,other]);expect(combined.find(e=>e.evidenceDigest===first.digest)!.transmittedText).toBe(original.transmittedText);expect(original.transmittedText).toBe('pnpm install --frozen-lockfile');
+ });
+
 });

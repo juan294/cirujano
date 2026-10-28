@@ -20,3 +20,8 @@ it('requires explicit preparation and enrichment and rejects incompatible option
  expect(parseArguments(['advisory','enrich','--request','a','--permit','permit.json','--output','b'])).toMatchObject({action:'enrich'});
  for(const args of [['prepare','--task','labels','--output','b'],['prepare','--input','a','--task','routing','--output','b'],['enrich','--request','a','--output','b'],['enrich','--input','a','--permit','x','--output','b']])expect(()=>parseArguments(['advisory',...args])).toThrow();
 });
+it('keeps questions local unless explicitly prepared and allows only compatible search flags',()=>{
+ expect(parseArguments(['advisory','ask','--question','Where is dependency setup?','--input','evidence'])).toMatchObject({action:'ask',flags:{question:'Where is dependency setup?'}});
+ expect(parseArguments(['advisory','prepare','--task','search','--question','Find build work','--input','evidence','--output','request'])).toMatchObject({action:'prepare',flags:{task:'search'}});
+ for(const args of [['ask'],['ask','--question','q','--enrichment','a','--enrichment','b'],['prepare','--task','search','--input','e','--output','x'],['prepare','--task','labels','--question','q','--input','e','--output','x']])expect(()=>parseArguments(['advisory',...args])).toThrow();
+});
