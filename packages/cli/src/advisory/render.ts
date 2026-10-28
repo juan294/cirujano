@@ -3,8 +3,8 @@ import type { AdvisoryReport, EvidenceCard } from './rules.js';
 export function escapeMarkdown(value:string):string {
   return value.replace(/[\u0000-\u001f\u007f-\u009f]/gu,' ').replace(/&/gu,'&amp;').replace(/</gu,'&lt;').replace(/>/gu,'&gt;').replace(/[\\`*_{}[\]()#+.!|]/gu,'\\$&');
 }
-export function sourceUrl(card:EvidenceCard,lineStart=1,lineEnd=lineStart):string {
-  const b=card.evidence;return `https://github.com/${b.repository.name}/blob/${b.run.headSha}/${b.workflow.path.split('/').map(encodeURIComponent).join('/')}#L${lineStart}-L${lineEnd}`;
+export function sourceUrl(card:EvidenceCard,lineStart=1,lineEnd=lineStart,path=card.evidence.workflow.path):string {
+  const b=card.evidence;return `https://github.com/${b.repository.name}/blob/${b.run.headSha}/${path.split('/').map(encodeURIComponent).join('/')}#L${lineStart}-L${lineEnd}`;
 }
 export function renderCard(card:EvidenceCard):string {
   const b=card.evidence,run=`https://github.com/${b.repository.name}/actions/runs/${b.run.id}/attempts/${b.run.attempt}`;
@@ -14,6 +14,7 @@ export function renderCard(card:EvidenceCard):string {
   for(const step of card.steps){
     lines.push(`- ${escapeMarkdown(step.name)}: ${step.category}; ${step.durationMs===null?'unavailable':`${step.durationMs/1000}s`}; share ${step.share===null?'unavailable':`${(step.share*100).toFixed(1)}%`}${step.investigate?'; investigate dependency installation':''}${step.lineStart!==null&&step.lineEnd!==null?` ([source](${sourceUrl(card,step.lineStart,step.lineEnd)}))`:''}.`);
   }
+  if(card.semanticLabels?.length){lines.push('Optional Jev observations (native quality UNMEASURED):');for(const label of card.semanticLabels)if(label.support!=='absent')lines.push(`- ${escapeMarkdown(label.category)}: ${label.support}, probability ${label.probability}; excerpt ${escapeMarkdown(label.excerptId)} ([source](${sourceUrl(card,label.lineStart,label.lineEnd,label.sourcePath)})).`);}
   if(card.repeated.length)lines.push('Byte-identical repeated commands observed; this does not establish redundant work.');
   if(b.reasonCodes.length)lines.push(`Missing or limited evidence: ${b.reasonCodes.map(escapeMarkdown).join(', ')}.`);
   return lines.join('\n\n');

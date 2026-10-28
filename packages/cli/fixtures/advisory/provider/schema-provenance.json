@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "source": "https://api.typesafe.ai/openapi.json",
+  "retrievedDate": "2026-10-28",
+  "openapiVersion": "0.2.0",
+  "openapiSha256": "3ca93b6e6b9aa8d7820531b78c66ed7a9798b11e6e163ad96b140fb3d75fbcf4",
+  "model": "jev-1.14.0",
+  "fixture": "jev-1.14.0-response.synthetic.json",
+  "origin": "synthetic-contract-example; no native inference performed"
+}

@@ -1,0 +1,21 @@
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, expect, it } from 'vitest';
+import { prepareOperation } from './prepare.js';
+import { permitTemplate } from './permit.js';
+import { runCli } from '../cli.js';
+import { shellQuote } from '../optimization/stage-output.js';
+import { evidenceFixture } from './fixture.js';
+import { enrichOperation, inspectAdvisoryOperation } from './enrich.js';
+const roots:string[]=[];afterEach(async()=>{for(const p of roots.splice(0))await rm(p,{recursive:true,force:true});});
+it.each(['after-reservation','after-intent','after-response','after-receipt'])('never replays a crash at %s and provides local recovery',async(boundary)=>{
+ const root=await mkdtemp(join(tmpdir(),'advisory-crash-'));roots.push(root);const now=()=>new Date('2026-10-28T12:00:00Z');
+ const request=join(root,'request'),out=join(root,'out'),p=await prepareOperation([evidenceFixture()],'labels',null,request,now),permit={...permitTemplate(p,now()),kind:'jev-advisory-permit',payloadReviewed:true};let sends=0;
+ const options={now,apiKey:'test-key',permitLedger:join(root,'ledger'),fetch:async(_url:unknown,init?:RequestInit)=>{sends++;const body=JSON.parse(init!.body as string);return new Response(JSON.stringify({model:'jev-1.14.0',answers:Object.fromEntries(Object.keys(body.questions).map(id=>[id,{type:'noul',noul:0.5}])),usage:{input_tokens:100,output_tokens:10}}));},checkpoint:async(stage:string)=>{if(stage===boundary)throw new Error('injected-crash');}};
+ await expect(enrichOperation(request,permit,out,options)).rejects.toThrow('injected-crash');
+ const report=await inspectAdvisoryOperation(out);expect(report.status).toBe('outcome-unknown');expect(report.nextActions[0]).toBe(`cirujano advisory inbox --input ${shellQuote(out)} --format markdown`);
+ const output:string[]=[];expect(await runCli(['advisory','inbox','--input',out,'--format','json'],{stdout:s=>output.push(s),stderr:s=>output.push(s)})).toBe(0);expect(JSON.parse(output.pop()!).payload.cards[0].durationMs).toBe(120000);
+ const prior=sends;await expect(enrichOperation(request,permit,join(root,'new'),{...options,checkpoint:async()=>{}})).rejects.toThrow('permit-exhausted');expect(sends).toBe(prior);
+ expect((await inspectAdvisoryOperation(request)).reasonCodes).toContain('prepared-not-sent');
+});

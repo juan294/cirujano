@@ -38,4 +38,9 @@ describe('advisory evidence integrity',()=>{
   const value=evidenceFixture();expect(()=>sealEvidence({...value,sources:[...value.sources,{path:'config.txt',blobSha:gitBlobSha(content),content,lineStart:1,lineEnd:content.split('\n').length}]})).toThrow(/unsafe-source/);
  });
 
+ it.each(['{"clientSecret":"literal-value"}', 'const accessToken = "literal"', 'apiKey: "literal"'])('refuses raw camelCase credential source while corrected public input succeeds: %s',content=>{
+  const value=evidenceFixture();expect(()=>sealEvidence({...value,sources:[...value.sources,{path:'public.txt',blobSha:gitBlobSha(content),content,lineStart:1,lineEnd:1}]})).toThrow('unsafe-source-credential-or-environment');
+  expect(decodeEvidence(evidenceFixture()).mapping).toBe('supported');
+ });
+
 });

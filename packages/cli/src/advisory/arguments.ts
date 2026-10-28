@@ -5,6 +5,8 @@ const options = {
   collect: ['repository','run','attempt','workflow','job-key','job-id','output','source-file'],
   inbox: ['input','enrichment','format','sort'],
   status: ['operation','format'],
+  prepare: ['input','task','output'],
+  enrich: ['request','permit','output'],
 } as const;
 export type AdvisoryAction = keyof typeof options;
 export interface AdvisoryArguments {
@@ -13,7 +15,7 @@ export interface AdvisoryArguments {
 }
 export function parseAdvisoryArguments(argv:readonly string[]):AdvisoryArguments {
   const action=argv[0];
-  if(!action||!Object.hasOwn(options,action)) throw new ArgumentError('advisory requires collect, inbox or status.');
+  if(!action||!Object.hasOwn(options,action)) throw new ArgumentError('advisory requires collect, inbox, prepare, enrich or status.');
   const allowed:readonly string[]=options[action as AdvisoryAction];
   const flags:Record<string,string>={},inputs:string[]=[],enrichments:string[]=[],sourceFiles:string[]=[];
   for(let i=1;i<argv.length;i+=2){
@@ -24,8 +26,9 @@ export function parseAdvisoryArguments(argv:readonly string[]):AdvisoryArguments
     else if(flag==='source-file') {try{safeRelativePath(value);}catch{throw new ArgumentError('advisory source-file requires a safe relative path.');}sourceFiles.push(value);}
     else { if(Object.hasOwn(flags,flag)) throw new ArgumentError(`Duplicate advisory option --${flag}.`);flags[flag]=value; }
   }
-  const required=action==='collect'?['repository','run','attempt','workflow','job-key','job-id','output']:action==='status'?['operation']:[];
+  const required=action==='collect'?['repository','run','attempt','workflow','job-key','job-id','output']:action==='status'?['operation']:action==='prepare'?['task','output']:action==='enrich'?['request','permit','output']:[];
   for(const key of required) if(!flags[key]) throw new ArgumentError(`advisory ${action} requires --${key}.`);
+  if(action==='prepare'&&(flags.task!=='labels'||inputs.length===0))throw new ArgumentError('advisory prepare requires public evidence --input and --task labels.');
   if(action==='collect'){
     if(!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u.test(flags.repository!)||flags.repository!.split('/').some(p=>p==='.'||p==='..')) throw new ArgumentError('Invalid advisory repository.');
     for(const key of ['run','attempt','job-id']) if(!/^[1-9]\d*$/u.test(flags[key]!)||!Number.isSafeInteger(Number(flags[key]))) throw new ArgumentError(`Invalid advisory --${key}.`);

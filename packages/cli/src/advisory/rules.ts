@@ -5,7 +5,7 @@ export const RULES_VERSION='advisory-rules-v1';
 export const POLICY_VERSION='advisory-policy-v1';
 export type Category='install'|'build'|'test'|'artifact'|'unknown';
 export interface AdvisoryReport<T=unknown> {schemaVersion:1;status:'complete'|'partial'|'no-match'|'uncertain'|'unavailable'|'outcome-unknown';reasonCodes:string[];limitations:string[];nextActions:string[];payload:T}
-export function report<T>(status:AdvisoryReport['status'],payload:T,reasonCodes:string[]=[]):AdvisoryReport<T>{return {schemaVersion:1,status,reasonCodes,limitations:['Read-only advisory evidence; no optimization proof, causal conclusion or permission to change CI.','CI routing belongs to Sutura. Unknown prices remain unavailable.'],nextActions:['Inspect pinned evidence; use advisory collect into a fresh directory to complete missing evidence.'],payload};}
+export function report<T>(status:AdvisoryReport['status'],payload:T,reasonCodes:string[]=[]):AdvisoryReport<T>{return {schemaVersion:1,status,reasonCodes,limitations:['Read-only advisory evidence; no optimization proof, causal conclusion or permission to change CI.','CI routing belongs to Sutura. Unknown prices remain unavailable.',...(status==='outcome-unknown'?['The outcome is unknown; a charge may have occurred. Never replay this operation.']:[])],nextActions:['Inspect pinned evidence; use advisory collect into a fresh directory to complete missing evidence.'],payload};}
 export function classifyCommand(command:string|null):Category {
   if(command===null||/[\n\r;&|`$<>]/u.test(command))return 'unknown';
   const tokens=command.trim().split(/\s+/u),[tool,verb,third]=tokens;
@@ -35,7 +35,8 @@ export function observeBundle(input:EvidenceBundleV1){
   const repeated=steps.filter((s,i)=>s.command!==null&&s.sourceIndex!==null&&steps.some((t,j)=>i!==j&&t.sourceIndex!==null&&s.command===t.command)).map(s=>({sourceIndex:s.sourceIndex,command:s.command}));
   return {identity:bundleIdentity(b),inputDigest:b.digest,evidence:b,durationMs,roundedMinutes,githubHostedChargeUsd:b.repository.visibility==='public'&&b.job.labels.some(label=>['ubuntu-latest','ubuntu-22.04','ubuntu-24.04','ubuntu-24.04-arm','windows-latest','windows-2022','windows-2025','macos-latest','macos-14','macos-15'].includes(label))&&!b.job.labels.includes('self-hosted')?0:null,steps,repeated,automation:'advisory-only' as const};
 }
-export type EvidenceCard=ReturnType<typeof observeBundle>;
+export interface SemanticLabel {excerptId:string;category:string;probability:number;support:'supported'|'absent'|'uncertain';requestHash:string;sourcePath:string;sourceIndex:number|null;lineStart:number;lineEnd:number}
+export type EvidenceCard=ReturnType<typeof observeBundle>&{semanticLabels?:SemanticLabel[]};
 export function evidenceStatus(bundle:EvidenceBundleV1):'complete'|'partial' {
   return bundle.mapping!=='supported'||bundle.reasonCodes.length>0||bundle.job.startedAt===null||bundle.job.completedAt===null||bundle.job.conclusion===null||bundle.steps.some(step=>step.startedAt===null||step.completedAt===null||step.conclusion===null)?'partial':'complete';
 }
@@ -46,6 +47,6 @@ export function validatedBundles(inputs:EvidenceBundleV1[]):EvidenceBundleV1[]{
   return [...seen.values()];
 }
 export function buildInbox(inputs:EvidenceBundleV1[],sort:'duration'|'minutes'='duration'){
- const cards=validatedBundles(inputs).map(observeBundle).sort((a,b)=>((sort==='duration'?b.durationMs:b.roundedMinutes)??-1)-((sort==='duration'?a.durationMs:a.roundedMinutes)??-1)||(a.identity<b.identity?-1:a.identity>b.identity?1:0));
+ const cards:EvidenceCard[]=validatedBundles(inputs).map(observeBundle).sort((a,b)=>((sort==='duration'?b.durationMs:b.roundedMinutes)??-1)-((sort==='duration'?a.durationMs:a.roundedMinutes)??-1)||(a.identity<b.identity?-1:a.identity>b.identity?1:0));
  return report(cards.some(c=>evidenceStatus(c.evidence)==='partial')?'partial':'complete',{rulesVersion:RULES_VERSION,policyVersion:POLICY_VERSION,cards},cards.length?[]:['empty-inventory']);
 }

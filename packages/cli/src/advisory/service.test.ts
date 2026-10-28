@@ -64,3 +64,16 @@ it('names unsafe source refusal and the affected output without provider text',a
  const code=await runCli(['advisory','collect','--repository','example/project','--run','10','--attempt','2','--workflow','.github/workflows/ci.yml','--job-key','check','--job-id','20','--output',dir],{stdout:s=>output.push(s),stderr:s=>output.push(s)},undefined,undefined,undefined,undefined,createAdvisoryService(options(fake.pageRunner)));
  expect(code).toBe(1);expect(output.join('')).toContain('unsafe-source-credential-or-environment');expect(output.join('')).toContain(dir.replaceAll('_','\\_'));
 });
+it('prepares locally, makes one explicitly permitted request and reuses bound labels without network',async()=>{
+ const {writeFile}=await import('node:fs/promises');const {permitTemplate}=await import('./permit.js');const {readPreparedOperation}=await import('./prepare.js');
+ const root=await mkdtemp(join(tmpdir(),'advisory-cli-enrich-'));roots.push(root);const input=join(root,'evidence');
+ await withOperationStore(input,async store=>store.writeText('evidence.json',canonicalJson(evidenceFixture())));
+ let sends=0;const now=()=>new Date('2026-10-28T12:00:00Z');const service=createAdvisoryService({now,apiKey:'test-bearer',permitLedger:join(root,'ledger'),fetch:async(_url,init)=>{sends++;const body=JSON.parse(init!.body as string);return new Response(JSON.stringify({model:'jev-1.14.0',answers:Object.fromEntries(Object.keys(body.questions).map(id=>[id,{type:'noul',noul:0.9}])),usage:{input_tokens:120,output_tokens:10}}));}});
+ const output:string[]=[];const io={stdout:(s:string)=>output.push(s),stderr:(s:string)=>output.push(s)};const request=join(root,'prepared'),enriched=join(root,'result');
+ expect(await runCli(['advisory','prepare','--input',input,'--task','labels','--output',request],io,undefined,undefined,undefined,undefined,service)).toBe(0);expect(sends).toBe(0);
+ const {prepared}=await readPreparedOperation(request);const permit=join(root,'permit.json');await writeFile(permit,JSON.stringify({...permitTemplate(prepared,now()),kind:'jev-advisory-permit',payloadReviewed:true}),{mode:0o600});
+ expect(await runCli(['advisory','enrich','--request',request,'--permit',permit,'--output',enriched],io,undefined,undefined,undefined,undefined,service)).toBe(0);expect(sends).toBe(1);
+ expect(await runCli(['advisory','inbox','--input',input,'--enrichment',enriched,'--format','json'],io,undefined,undefined,undefined,undefined,service)).toBe(0);
+ const card=JSON.parse(output.pop()!).payload.cards[0];expect(card.durationMs).toBe(120000);expect(card.semanticLabels[0]).toMatchObject({support:'supported',probability:0.9});expect(sends).toBe(1);
+ expect(await runCli(['advisory','status','--operation',enriched,'--format','json'],io,undefined,undefined,undefined,undefined,service)).toBe(0);expect(sends).toBe(1);
+});

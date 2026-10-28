@@ -15,3 +15,8 @@ describe('advisory grammar', () => {
     ['inbox','--input','a\u0000b'], ['inbox','--input','a','--format','text'], ['bogus'], ['inbox','--unknown','x'], ['status'],
   ])('rejects invalid usage %j', (...args) => { expect(() => parseArguments(['advisory',...args])).toThrow(); });
 });
+it('requires explicit preparation and enrichment and rejects incompatible options',()=>{
+ expect(parseArguments(['advisory','prepare','--input','a','--task','labels','--output','b'])).toMatchObject({action:'prepare',inputs:['a'],flags:{task:'labels',output:'b'}});
+ expect(parseArguments(['advisory','enrich','--request','a','--permit','permit.json','--output','b'])).toMatchObject({action:'enrich'});
+ for(const args of [['prepare','--task','labels','--output','b'],['prepare','--input','a','--task','routing','--output','b'],['enrich','--request','a','--output','b'],['enrich','--input','a','--permit','x','--output','b']])expect(()=>parseArguments(['advisory',...args])).toThrow();
+});

@@ -45,11 +45,15 @@ export function mapWorkflowSteps(workflow: EvidenceSource, jobKey: string, jobNa
     return observed.map(step=>{const index=names.indexOf(step.name);if(index<0)return {...step,sourceIndex:null,command:null,lineStart:null,lineEnd:null};const original=source[index]!;return {...step,sourceIndex:index,command:typeof original.run==='string'?original.run:null,lineStart:1,lineEnd:workflow.lineEnd};});
   } catch {return null;}
 }
+/** Known credential assignment forms, including camelCase keys in raw source text. */
+export function hasCredentialAssignment(content:string):boolean {
+  return /\b["']?[A-Za-z0-9_-]*(?:token|password|passwd|secret|api[_-]?key|authorization|credential)[A-Za-z0-9_-]*["']?\s*[:=]/i.test(content);
+}
 /** Conservative refusal, not a claim that regex detection proves confidentiality. */
 export function assertSafeEvidenceSource(content: string, path: string): void {
   const dangerousKey=/(?:^|[\n,{])\s*["']?(?:env(?:ironment)?|(?:[A-Za-z0-9]+[_-])?(?:token|password|secret|api[_-]?key|authorization))["']?\s*[:=]/im;
   const environmentAssignment=/(?:^|[\s;])(?:export\s+)?[A-Z_][A-Z0-9_]*\s*=\s*[^\s]/m;
-  if (/(?:^|\/)\.env(?:\.|$)/i.test(path) || redactCredentialShapes(content)!==content || dangerousKey.test(content) || environmentAssignment.test(content) || /\b(?:Bearer|Basic)\s+[A-Za-z0-9+/_=.-]+/i.test(content) || /https?:\/\/[^\s/@]+:[^\s/@]+@/i.test(content) || /\$\{\{\s*secrets(?:[.\[])/i.test(content)) evidenceFail('unsafe-source-credential-or-environment');
+  if (/(?:^|\/)\.env(?:\.|$)/i.test(path) || redactCredentialShapes(content)!==content || hasCredentialAssignment(content) || dangerousKey.test(content) || environmentAssignment.test(content) || /\b(?:Bearer|Basic)\s+[A-Za-z0-9+/_=.-]+/i.test(content) || /https?:\/\/[^\s/@]+:[^\s/@]+@/i.test(content) || /\$\{\{\s*secrets(?:[.\[])/i.test(content)) evidenceFail('unsafe-source-credential-or-environment');
 }
 function datumStatuses(value: Pick<EvidenceBundleV1,'workflow'|'job'|'steps'|'mapping'>): EvidenceBundleV1['datumStatus'] {
   const states: EvidenceBundleV1['datumStatus']={'workflow.blobSha':value.workflow.blobSha===null?'missing':'present','workflow.executedSource':value.mapping==='supported'?'present':'ambiguous'};

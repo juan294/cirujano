@@ -1,0 +1,13 @@
+{
+  "model": "jev-1.14.0",
+  "answers": {
+    "install": { "type": "noul", "noul": 0.9 },
+    "rank": {
+      "type": "choice",
+      "choice": "candidate_a",
+      "confidence": 0.6,
+      "probabilities": { "candidate_a": 0.7, "candidate_b": 0.3 }
+    }
+  },
+  "usage": { "input_tokens": 120, "output_tokens": 12 }
+}

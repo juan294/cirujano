@@ -36,3 +36,12 @@ Owner freezes contracts and command grammar. Projection/questions tests [batch-e
 ## Verification and acceptance
 
 Run the main plan's full sequential local gates after review, repair and simplify; retain exact commit/tree and outcomes. No hosted runs, provider inference or publication occurs implicitly. Stop for phase acceptance. Manual criterion: optional owner inspection of the generated fixture report for clarity; all correctness/recovery criteria are automated. Proposed test/artifact paths below must be created in this phase, not treated as existing evidence.
+
+## Implementation acceptance — 2026-10-28
+
+- [x] Sanitized exact prepared bodies, invalid authorization template and fixed single-use permit ledger.
+- [x] Bounded one-shot transport, strict native schema validation, local result readback and crash recovery.
+- [x] Independent review P2-R1–P2-R6 resolved; simplify complete.
+- [x] Full applicable local gates pass, 1,964 passing tests across all packages.
+
+Native provider qualification remains UNMEASURED; mock transport tests do not prove native quality/latency. Exact candidate, deviations and check history are in [implementation notes](../2026-10-28-jev-advisory-notes.md). Owner authorized continuation to phase 3.
