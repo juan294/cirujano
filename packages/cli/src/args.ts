@@ -1,3 +1,4 @@
+import { parseAdvisoryArguments, type AdvisoryArguments } from './advisory/arguments.js';
 import { SHA_PATTERN } from './fleet-registry.js';
 import { HOSTED_SKUS, type HostedSku } from './telemetry.js';
 import { parseOptimizeArguments, type OptimizeArguments } from './optimization/arguments.js';
@@ -6,6 +7,9 @@ export const VERSION = '0.1.0';
 
 export const USAGE = [
   'Usage:',
+  '  cirujano advisory collect --repository <owner/name> --run <id> --attempt <n> --workflow <path> --job-key <key> --job-id <id> --output <directory> [--source-file <path>]...',
+  '  cirujano advisory inbox [--input <directory>]... [--format json|markdown] [--sort duration|minutes]',
+  '  cirujano advisory status --operation <directory> [--format json|text]',
   '  cirujano optimize collect --repository <owner/name> --ref <sha> --workflow <path> --job <key> --run <id>... --output <directory>',
   '  cirujano optimize collect --family skip-validated-push --repository <owner/name> --ref <sha> --workflow <path> --branch <name> --output <directory>',
   '  cirujano optimize diagnose --input <input.json> --config <config.json> --output <directory> [--permit <permit.json>]',
@@ -170,7 +174,7 @@ export type FleetArguments = FleetInitArguments | FleetEnrollArguments | FleetCu
   | FleetControllerConfigArguments | FleetPermitProposalArguments | FleetPublishArguments;
 
 export type RunnerArguments = RunnerInspectArguments | RunnerWatchArguments | RunnerMutationArguments | RunnerReportArguments;
-export type ParsedArguments = EstimateArguments | HelpArguments | VersionArguments | RunnerArguments | TelemetryArguments | FleetArguments | OptimizeArguments;
+export type ParsedArguments = EstimateArguments | HelpArguments | VersionArguments | RunnerArguments | TelemetryArguments | FleetArguments | OptimizeArguments | AdvisoryArguments;
 
 export class ArgumentError extends Error {
   override readonly name = 'ArgumentError';
@@ -184,6 +188,7 @@ export function parseArguments(argv: readonly string[]): ParsedArguments {
   if (first === '--version' || first === '-v') {
     return { command: 'version' };
   }
+  if (first === 'advisory') return parseAdvisoryArguments(rest);
   if (first === 'runner') return parseRunnerArguments(rest);
   if (first === 'optimize') return parseOptimizeArguments(rest);
   if (first === 'telemetry') return parseTelemetryArguments(rest);
