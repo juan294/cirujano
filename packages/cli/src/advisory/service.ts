@@ -6,6 +6,7 @@ import { promisify } from 'node:util';
 import { canonicalJson } from '@cirujano/core';
 import { shellQuote } from '../optimization/stage-output.js';
 import { readPrivateJson } from '../optimization/store.js';
+import { compareCohorts, readCohort } from './compare.js';
 import { prepareOperation } from './prepare.js';
 import { enrichOperation, inspectAdvisoryOperation, readEnrichmentOperation, type EnrichOptions } from './enrich.js';
 import { actionScopeQuery, validateSearchQuery } from './search-candidates.js';
@@ -26,7 +27,7 @@ export interface AdvisoryServiceOptions extends EnrichOptions {pageRunner?:GitHu
 export function emitReport(args:AdvisoryArguments,io:CliIo,value:AdvisoryReport):void {io.stdout(args.format==='json'?JSON.stringify(value)+'\n':renderReport(value));}
 export function failureReason(error:unknown):string {
   const message=error instanceof Error?error.message:'';
-  if(/^(?:unsafe-source|invalid-evidence|contradictory-evidence|duplicate-evidence|advisory|github|evidence|permit|private|secret|request|response|cohort|enrichment|prepared|projection|jev|search)-[a-z0-9-]+$/u.test(message))return message;
+  if(/^(?:unsafe-source|invalid-evidence|contradictory-evidence|duplicate-evidence|advisory|github|evidence|permit|private|secret|request|response|cohort|comparison|enrichment|prepared|projection|jev|search)-[a-z0-9-]+$/u.test(message))return message;
   if(message.startsWith('permit-exhausted:'))return 'permit-exhausted';
   if(/symlink/u.test(message))return 'advisory-unsafe-path';
   if(/another controller/u.test(message))return 'advisory-active-lock';
@@ -51,9 +52,21 @@ export function createAdvisoryService(options:AdvisoryServiceOptions={}):Advisor
         emitReport(args,io,report(evidenceStatus(b),{digest:b.digest,operation:args.flags.output},b.reasonCodes));return 0;
       }
       if(args.action==='prepare'){
-        const bundles:EvidenceBundleV1[]=[];for(const input of args.inputs){affectedInput=input;bundles.push(...await readEvidenceInputs(input,20-bundles.length));}
-        const prepared=await prepareOperation(bundles,args.flags.task as 'labels'|'search',args.flags.question??null,args.flags.output!,options.now);
+        const bundles:EvidenceBundleV1[]=[];let comparison:import('./prepare.js').ComparisonContext|undefined;
+        if(args.flags.task==='compare'){
+          affectedInput=args.flags.baseline!;const baseline=await readCohort(args.flags.baseline!,20-3);
+          affectedInput=args.flags.candidate!;const candidate=await readCohort(args.flags.candidate!,20-baseline.bundles.length);
+          bundles.push(...baseline.bundles,...candidate.bundles);comparison={baselineDigests:baseline.bundles.map(b=>b.digest),candidateDigests:candidate.bundles.map(b=>b.digest)};
+        }else for(const input of args.inputs){affectedInput=input;bundles.push(...await readEvidenceInputs(input,20-bundles.length));}
+        const prepared=await prepareOperation(bundles,args.flags.task as 'labels'|'search'|'compare',args.flags.question??null,args.flags.output!,options.now,comparison);
         emitReport(args,io,report('complete',{requestHash:prepared.requestHash,requestBytes:prepared.requestBytes,estimatedReservationUsd:prepared.estimatedReservationUsd,preview:args.flags.output!+'/preview.md'},['prepared-not-sent']));return 0;
+      }
+      if(args.action==='compare'){
+        affectedInput=args.flags.baseline!;const baseline=await readCohort(args.flags.baseline!,20-3);
+        affectedInput=args.flags.candidate!;const candidate=await readCohort(args.flags.candidate!,20-baseline.bundles.length);
+        if(args.enrichments[0])affectedInput=args.enrichments[0];
+        const retained=args.enrichments[0]?await readEnrichmentOperation(args.enrichments[0]):undefined;
+        emitReport(args,io,compareCohorts(baseline.bundles,candidate.bundles,retained));return 0;
       }
       if(args.action==='enrich'){
         affectedInput=args.flags.permit!;const permit=await readPrivateJson(args.flags.permit!);affectedInput=args.flags.request!;
@@ -105,6 +118,10 @@ export function createAdvisoryService(options:AdvisoryServiceOptions={}):Advisor
           const fresh=join(dirname(args.enrichments[0]??args.inputs[0]!),`advisory-search-${randomUUID()}`);
           value.nextActions.push(`cirujano advisory prepare ${selected} --task search --question ${shellQuote(safeQuestion)} --output ${shellQuote(fresh)}`);
         }
+      }
+      if(args.flags.baseline&&args.flags.candidate){
+        value.nextActions.unshift(`cirujano advisory compare --baseline ${shellQuote(args.flags.baseline)} --candidate ${shellQuote(args.flags.candidate)} --format markdown`);
+        value.nextActions.push('Select complete successful compatible cohorts: at least 3 runs each, at most 20 bundles combined, matching workflow/job/event/runner labels, with baseline before candidate.');
       }
       if(reason==='search-sensitive-query')value.nextActions.push('Use a question without credential values; the refused question is never echoed.');
       if(reason==='jev-key-required')value.nextActions.push('Supply TYPESAFE_API_KEY as a nonempty token of at most 2048 characters without whitespace. This preflight sent no request or consumed authority.');

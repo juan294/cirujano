@@ -10,6 +10,8 @@ export const USAGE = [
   '  cirujano advisory collect --repository <owner/name> --run <id> --attempt <n> --workflow <path> --job-key <key> --job-id <id> --output <directory> [--source-file <path>]...',
   '  cirujano advisory inbox [--input <directory>]... [--format json|markdown] [--sort duration|minutes]',
   '  cirujano advisory prepare --input <directory>... --task labels|search [--question <text>] --output <directory>',
+  '  cirujano advisory prepare --task compare --baseline <cohort.json> --candidate <cohort.json> --output <directory>',
+  '  cirujano advisory compare --baseline <cohort.json> --candidate <cohort.json> [--enrichment <directory>] [--format json|markdown]',
   '  cirujano advisory enrich --request <directory> --permit <file> --output <directory>',
   '  cirujano advisory ask --input <directory>... --question <text> [--enrichment <directory>] [--format json|markdown]',
   '  cirujano advisory status --operation <directory> [--format json|text]',

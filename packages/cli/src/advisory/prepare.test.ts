@@ -24,3 +24,13 @@ it('refuses private snapshots before constructing requests, then allows correcte
  expect(()=>buildPreparedRequest([b],'labels')).toThrow('private-inference-disabled');
  expect(buildPreparedRequest([evidenceFixture()],'labels').task).toBe('labels');
 });
+it('binds comparison preparation to exact cohort membership while retaining old task shapes',async()=>{
+ const {writeCohortFixtures}=await import('./cohort-fixture.js');const root=await mkdtemp(join(tmpdir(),'advisory-compare-prepare-'));roots.push(root);
+ const f=await writeCohortFixtures(root),bundles=[...f.baselineBundles,...f.candidateBundles],comparison={baselineDigests:f.baselineBundles.map(b=>b.digest),candidateDigests:f.candidateBundles.map(b=>b.digest)};
+ const p=await prepareOperation(bundles,'compare',null,join(root,'request'),()=>new Date('2026-10-28T12:00:00Z'),comparison);
+ expect(p.task).toBe('compare');expect(p.comparison?.baselineDigests).toHaveLength(3);expect(p.requestBody).not.toContain('example/project');
+ expect((await readPreparedOperation(join(root,'request'))).prepared).toEqual(p);
+ expect(()=>buildPreparedRequest(bundles,'compare',null,{...comparison,candidateDigests:comparison.baselineDigests})).toThrow();
+ expect(Object.hasOwn(buildPreparedRequest([evidenceFixture()],'labels'),'comparison')).toBe(false);
+ const altered=JSON.parse(await readFile(join(root,'request','prepared.json'),'utf8'));altered.comparison.baselineDigests.reverse();await writeFile(join(root,'request','prepared.json'),JSON.stringify(altered));await expect(readPreparedOperation(join(root,'request'))).rejects.toThrow('prepared-digest-or-version-mismatch');
+});

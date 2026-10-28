@@ -102,3 +102,34 @@ it('refuses a sensitive local query before reading enrichment and never echoes i
  expect(refusal).not.toContain('literal-sensitive-canary');
  expect(await runCli(['advisory','ask','--question','ordinary dependency query','--format','json'],io)).toBe(0);expect(JSON.parse(output.pop()!).status).toBe('no-match');
 });
+it('compares real cohorts locally and keeps retained hypotheses separate from exact arithmetic',async()=>{
+ const {writeFile}=await import('node:fs/promises');const {writeCohortFixtures}=await import('./cohort-fixture.js');const {readPreparedOperation}=await import('./prepare.js');const {permitTemplate}=await import('./permit.js');
+ const root=await mkdtemp(join(tmpdir(),'advisory-compare-cli-'));roots.push(root);const f=await writeCohortFixtures(root);let sends=0;const now=()=>new Date('2026-10-28T12:00:00Z');
+ const service=createAdvisoryService({now,apiKey:'test-key',permitLedger:join(root,'ledger'),fetch:async(_url,init)=>{sends++;const body=JSON.parse(init!.body as string);return new Response(JSON.stringify({model:'jev-1.14.0',answers:Object.fromEntries(Object.keys(body.questions).map(id=>[id,{type:'noul',noul:0.9}])),usage:{input_tokens:100,output_tokens:10}}));}});
+ const output:string[]=[];const io={stdout:(s:string)=>output.push(s),stderr:(s:string)=>output.push(s)};
+ const args=['advisory','compare','--baseline',f.baselinePath,'--candidate',f.candidatePath,'--format','json'];
+ expect(await runCli(args,io,undefined,undefined,undefined,undefined,service)).toBe(0);const local=JSON.parse(output.pop()!);expect(local.payload.delta.durationMs).toBe(30000);expect(local.payload.baseline.sampleCount).toBe(3);expect(sends).toBe(0);
+ const request=join(root,'request');expect(await runCli(['advisory','prepare','--task','compare','--baseline',f.baselinePath,'--candidate',f.candidatePath,'--output',request],io,undefined,undefined,undefined,undefined,service)).toBe(0);expect(sends).toBe(0);
+ const {prepared}=await readPreparedOperation(request),permit=join(root,'permit.json'),enrichment=join(root,'enriched');await writeFile(permit,JSON.stringify({...permitTemplate(prepared,now()),kind:'jev-advisory-permit',payloadReviewed:true}),{mode:0o600});
+ expect(await runCli(['advisory','enrich','--request',request,'--permit',permit,'--output',enrichment],io,undefined,undefined,undefined,undefined,service)).toBe(0);expect(sends).toBe(1);
+ expect(await runCli([...args,'--enrichment',enrichment],io,undefined,undefined,undefined,undefined,service)).toBe(0);const semantic=JSON.parse(output.pop()!);expect(semantic.payload.delta).toEqual(local.payload.delta);expect(semantic.payload.hypotheses.length).toBeGreaterThan(0);expect(sends).toBe(1);
+ expect(await runCli(['advisory','compare','--baseline',f.baselinePath,'--candidate',f.candidatePath],io,undefined,undefined,undefined,undefined,service)).toBe(0);const human=output.pop()!;expect(human).toContain('Observations');expect(human).toContain('Hypotheses');expect(human).toContain('not causal');
+});
+it('shows an actionable no-excerpt refusal while action-only cohorts remain locally comparable',async()=>{
+ const {writeCohortFixture,cohortFixture}=await import('./cohort-fixture.js');const {sealEvidence}=await import('./contracts.js');const {gitBlobSha}=await import('@cirujano/core');
+ const root=await mkdtemp(join(tmpdir(),'advisory-actions-'));roots.push(root);
+ const actionOnly=(bundles:ReturnType<typeof cohortFixture>)=>bundles.map(b=>{const source=b.sources[0]!,content=source.content.replace('run: pnpm install --frozen-lockfile','uses: actions/checkout@v6');return sealEvidence({...b,workflow:{...b.workflow,blobSha:gitBlobSha(content)},sources:[{...source,content,blobSha:gitBlobSha(content)}],steps:b.steps.map(s=>({...s,command:null}))});});
+ const base=await writeCohortFixture(join(root,'baseline'),actionOnly(cohortFixture())),candidate=await writeCohortFixture(join(root,'candidate'),actionOnly(cohortFixture([130,140,150],{offset:3,headSha:'3'.repeat(40)})));
+ const output:string[]=[];const io={stdout:(s:string)=>output.push(s),stderr:(s:string)=>output.push(s)};
+ expect(await runCli(['advisory','prepare','--task','compare','--baseline',base.path,'--candidate',candidate.path,'--output',join(root,'request')],io)).toBe(1);
+ expect(output.pop()).toContain('comparison-no-excerpts');
+ expect(await runCli(['advisory','compare','--baseline',base.path,'--candidate',candidate.path,'--format','json'],io)).toBe(0);
+ const payload=JSON.parse(output.pop()!).payload;expect(payload.delta.durationMs).toBe(30000);expect(payload.matchedSteps).toEqual([]);expect(payload.categoryDeltas).toEqual([]);
+});
+it('names an incompatible cohort and succeeds after the real manifest is corrected',async()=>{
+ const {writeFile}=await import('node:fs/promises');const {writeCohortFixtures}=await import('./cohort-fixture.js');
+ const root=await mkdtemp(join(tmpdir(),'advisory-cohort-recovery-'));roots.push(root);const f=await writeCohortFixtures(root),original=await readFile(f.candidatePath,'utf8'),changed=JSON.parse(original);changed.samples=changed.samples.slice(0,2);await writeFile(f.candidatePath,JSON.stringify(changed));
+ const output:string[]=[];const io={stdout:(s:string)=>output.push(s),stderr:(s:string)=>output.push(s)};const args=['advisory','compare','--baseline',f.baselinePath,'--candidate',f.candidatePath,'--format','json'];
+ expect(await runCli(args,io)).toBe(1);const failure=JSON.parse(output.pop()!);expect(failure.payload.affectedInput).toBe(f.candidatePath);expect(failure.nextActions[0]).toContain('cirujano advisory compare');
+ await writeFile(f.candidatePath,original);expect(await runCli(args,io)).toBe(0);expect(JSON.parse(output.pop()!).payload.delta.durationMs).toBe(30000);
+});

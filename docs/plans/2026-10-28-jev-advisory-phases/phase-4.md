@@ -35,3 +35,12 @@ Pure cohort validator/arithmetic and tests [batch-eligible]; compare question pr
 ## Verification and acceptance
 
 Run the main plan's full sequential local gates after review, repair and simplify; retain exact commit/tree and outcomes. No hosted runs, provider inference or publication occurs implicitly. Stop for phase acceptance. Manual criterion: optional owner inspection of the generated fixture report for clarity; all correctness/recovery criteria are automated. Proposed test/artifact paths below must be created in this phase, not treated as existing evidence.
+
+## Implementation acceptance — 2026-10-28
+
+- [x] Strict complete comparable cohorts and exact per-job/median arithmetic.
+- [x] Unambiguous command-step matching, bounded optional hypotheses and explicit missing facts/causal limits.
+- [x] Independent review P4-R1–P4-R3 resolved; simplify complete; generated regression example and recovery checks pass.
+- [x] Full sequential local gates pass, 2,025 passing tests across all packages.
+
+Exact candidate/check identity and dispositions are in [implementation notes](../2026-10-28-jev-advisory-notes.md). Owner authorized continuation to phase 5; native provider budget remains ungranted.

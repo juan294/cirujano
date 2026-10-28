@@ -31,3 +31,9 @@ it('preserves source line breaks and tabs in inert fences and escapes terminal c
  const output=renderReport(searchEvidence([sealEvidence(b)],'warning'));
  expect(output).toContain('warning\n\t````<script>inert</script>');expect(output).toContain('`````text\n');expect(output).toContain('\\u001b');expect(output).not.toContain('\u001b');
 });
+it('separates comparison observations from hypotheses and keeps zero percentages undefined',async()=>{
+ const {cohortFixture}=await import('./cohort-fixture.js');const {compareCohorts}=await import('./compare.js');
+ const base=cohortFixture([100,110,120]),candidate=cohortFixture([130,140,150],{offset:3,headSha:'3'.repeat(40)});
+ const output=renderReport(compareCohorts(base,candidate));expect(output).toContain('Observations');expect(output).toContain('110 → 140 seconds');expect(output).toContain('+30 seconds');expect(output).toContain('Hypotheses');expect(output).toContain('not causal');expect(output).toContain('/blob/');
+ const zero=renderReport(compareCohorts(cohortFixture([0,0,0]),cohortFixture([10,20,30],{offset:3,headSha:'3'.repeat(40)})));expect(zero).toContain('undefined (zero baseline)');expect(zero).toContain('0 → 20 seconds');
+});
