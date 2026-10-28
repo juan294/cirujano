@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { evidenceFixture } from './fixture.js';
 import { buildInbox, classifyCommand, observeBundle } from './rules.js';
 import { sealEvidence } from './contracts.js';
+import { fileURLToPath } from 'node:url';
+import { runCli } from '../cli.js';
 
 describe('deterministic advisory rules', () => {
   it('uses exact tokens, never misleading step names or wrappers', () => {
@@ -39,4 +41,15 @@ it('reports partial for a mapped job with missing step evidence',()=>{
 it('derives completeness from null conclusions even without a reason code',()=>{
  const b=evidenceFixture();b.steps[0]!.conclusion=null;
  expect(buildInbox([sealEvidence(b)]).status).toBe('partial');
+});
+it('classifies one YAML block-scalar command while retaining the exact original evidence',async()=>{
+ const output:string[]=[];
+ const input=fileURLToPath(new URL('../../fixtures/advisory/evaluation/labels/label-dev-install-01/',import.meta.url));
+ expect(await runCli(['advisory','inbox','--input',input,'--format','json'],{stdout:s=>output.push(s),stderr:s=>output.push(s)})).toBe(0);
+ const card=JSON.parse(output.join('')).payload.cards[0];
+ expect(card.steps[0]).toMatchObject({command:'npm ci\n',category:'install',durationMs:60000,share:0.5,investigate:true});
+ expect(card.evidence.steps[0].command).toBe('npm ci\n');
+ expect(card.durationMs).toBe(120000);
+ for(const command of ['\n npm ci\n','pnpm build\r\n','\tnpm test\n'])expect(classifyCommand(command)).not.toBe('unknown');
+ for(const command of ['npm ci\nnpm test','npm\nci','npm ci\n# comment','npm ci; npm test'])expect(classifyCommand(command)).toBe('unknown');
 });

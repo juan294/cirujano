@@ -167,6 +167,27 @@ login and stores raw snapshots and the cumulative `latest.md` report under
 and savings table, including active repositories with zero jobs. See
 [the fleet telemetry runbook](docs/runbooks/fleet-telemetry.md).
 
+## Local advisory evidence
+
+The advisory CLI retains an exact GitHub Actions job selection, ranks code-computed
+observations, searches retained source and compares compatible baseline/candidate
+cohorts. Local commands work without inference:
+
+```bash
+node packages/cli/dist/bin.js advisory inbox --input ./retained-job --format markdown
+node packages/cli/dist/bin.js advisory ask --input ./retained-job \
+  --question 'Where are dependencies installed?'
+node packages/cli/dist/bin.js advisory compare \
+  --baseline ./baseline/cohort.json --candidate ./candidate/cohort.json
+```
+
+Optional Jev labels, search ranking and regression hypotheses require exact payload
+review and an explicit single-use owner permit. Native usefulness remains
+**UNMEASURED / NOT QUALIFIED**. These reports do not authorize workflow changes or
+establish savings; Sutura owns CI cadence and routing. See the
+[advisory runbook](docs/runbooks/advisory.md) for collection, limits, recovery,
+generated examples and the frozen evaluation design.
+
 ## Contributor setup
 
 Requires Node 22.13 or newer and pnpm 11. The workspace selects Node 24 through `.nvmrc`.
@@ -175,8 +196,8 @@ Requires Node 22.13 or newer and pnpm 11. The workspace selects Node 24 through 
 pnpm install
 pnpm run typecheck
 pnpm run lint
-pnpm run test
 pnpm run build
+pnpm run test
 ```
 
 `pnpm run ci:fast` runs the local typecheck, lint, bundle verification and tests

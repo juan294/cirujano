@@ -7,8 +7,10 @@ export type Category='install'|'build'|'test'|'artifact'|'unknown';
 export interface AdvisoryReport<T=unknown> {schemaVersion:1;status:'complete'|'partial'|'no-match'|'uncertain'|'unavailable'|'outcome-unknown';reasonCodes:string[];limitations:string[];nextActions:string[];payload:T}
 export function report<T>(status:AdvisoryReport['status'],payload:T,reasonCodes:string[]=[]):AdvisoryReport<T>{return {schemaVersion:1,status,reasonCodes,limitations:['Read-only advisory evidence; no optimization proof, causal conclusion or permission to change CI.','CI routing belongs to Sutura. Unknown prices remain unavailable.',...(status==='outcome-unknown'?['The outcome is unknown; a charge may have occurred. Never replay this operation.']:[])],nextActions:['Inspect pinned evidence; use advisory collect into a fresh directory to complete missing evidence.'],payload};}
 export function classifyCommand(command:string|null):Category {
-  if(command===null||/[\n\r;&|`$<>]/u.test(command))return 'unknown';
-  const tokens=command.trim().split(/\s+/u),[tool,verb,third]=tokens;
+  if(command===null)return 'unknown';
+  const normalized=command.trim();
+  if(/[\n\r;&|`$<>]/u.test(normalized))return 'unknown';
+  const tokens=normalized.split(/\s+/u),[tool,verb,third]=tokens;
   if(['pnpm','npm','yarn'].includes(tool??'')){
     if((verb==='install'||(tool==='npm'&&verb==='ci'))&&tokens.slice(2).every(t=>['--frozen-lockfile','--immutable','--ignore-scripts','--prefer-offline'].includes(t)))return 'install';
     if((verb==='build'&&tokens.length===2)||(verb==='run'&&third==='build'&&tokens.length===3))return 'build';

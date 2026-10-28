@@ -29,3 +29,14 @@ Evaluator implementation/tests [batch-eligible] and runbook/examples [batch-elig
 ## Verification and acceptance
 
 Run the main plan's full sequential local gates after review, repair and simplify; retain exact commit/tree and outcomes. No hosted runs, provider inference or publication occurs implicitly. Stop for phase acceptance. Manual criterion: optional owner inspection of the generated fixture report for clarity; all correctness/recovery criteria are automated. Proposed test/artifact paths below must be created in this phase, not treated as existing evidence.
+
+## Implementation acceptance — 2026-10-28
+
+- [x] Frozen 60-case label and 36-query search corpus; independent blind audit passed before scoring.
+- [x] Real CLI evaluation, invariant/refusal oracles, numerical shadow comparison and explicitly projected cascade.
+- [x] Complete 121-request future experiment proposal, estimated $0.0564190258 within the proposed $1 allowance; no live authorization or native calls.
+- [x] Local 20-bundle benchmark with estimator baseline, one first-process observation and five warm repeats per command; hardware/runtime and cache limits recorded.
+- [x] Developer runbook, generated complete/partial/no-match/regression reports, independent review P5-R1–P5-R6 resolved and simplify complete.
+- [x] Full sequential local gates pass, 2,065 passing tests across all packages; native qualification remains UNMEASURED.
+
+Exact candidate/check identity and dispositions are in [implementation notes](../2026-10-28-jev-advisory-notes.md). All five phases are complete; the owner's integration/push/cleanup instruction governs the remaining git operations. Live inference still requires separate authorization.

@@ -1,6 +1,6 @@
 # Jev advisory features implementation plan
 
-Date: 2026-10-28. Repository `/Users/juan/code/cirujano`; integration branch `develop`; baseline `37e7e33a0ba15d24eaa6433e9a4fa7f00613fb1f`. Status: reviewed local implementation specification; implementation has not started. The owner confirmed all five phases during planning. Each phase still ends at its acceptance gate unless continuation is explicitly authorized.
+Date: 2026-10-28. Repository `/Users/juan/code/cirujano`; integration branch `develop`; baseline `37e7e33a0ba15d24eaa6433e9a4fa7f00613fb1f`. Status: all five implementation phases accepted locally after independent review and full verification; see [implementation notes](2026-10-28-jev-advisory-notes.md). Native qualification remains UNMEASURED. The owner authorized all-phase continuation, integration into `develop`, one push and task-worktree cleanup. The approved planning contract below is retained as history.
 
 ## Objective and accepted scope
 

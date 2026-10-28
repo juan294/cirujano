@@ -25,6 +25,7 @@
     "test:coverage": "pnpm -r --workspace-concurrency=1 test:coverage",
     "ci:fast": "pnpm run typecheck && pnpm run lint && pnpm run verify:bundle && pnpm run test",
     "ci:local": "pnpm run ci:fast",
+    "advisory:evaluate": "node scripts/advisory/evaluate.mjs",
     "verify:cloud-init-schema": "bash scripts/verify-runner-cloud-init-schema.sh",
     "verify:cloud-init-boot": "bash scripts/test-runner-cloud-init-boot.sh",
     "prepare": "husky",
