@@ -36,7 +36,9 @@ Run the main plan's full sequential local gates after review, repair and simplif
 - [x] Real CLI evaluation, invariant/refusal oracles, numerical shadow comparison and explicitly projected cascade.
 - [x] Complete 121-request future experiment proposal, estimated $0.0564190258 within the proposed $1 allowance; no live authorization or native calls.
 - [x] Local 20-bundle benchmark with estimator baseline, one first-process observation and five warm repeats per command; hardware/runtime and cache limits recorded.
-- [x] Developer runbook, generated complete/partial/no-match/regression reports, independent review P5-R1–P5-R6 resolved and simplify complete.
+- [x] Developer runbook, generated complete/partial/no-match/regression reports, independent review P5-R1–P5-R7 resolved and simplify complete.
 - [x] Full sequential local gates pass, 2,065 passing tests across all packages; native qualification remains UNMEASURED.
 
 Exact candidate/check identity and dispositions are in [implementation notes](../2026-10-28-jev-advisory-notes.md). All five phases are complete; the owner's integration/push/cleanup instruction governs the remaining git operations. Live inference still requires separate authorization.
+
+Integration validation addendum: the local pre-push hook exposed default parallel-test contention before publishing. P5-R7 aligns the CLI normal-test command with its existing shared serial configuration; all 1,064 CLI tests then passed unchanged. Coverage/runtime inputs, timeouts, assertions, workflows and Sutura routing are unchanged. The original failed hook and repair evidence remain preserved.
