@@ -39,6 +39,8 @@ export const USAGE = [
   '  cirujano fleet enroll --registry <file> --repository <owner/name> --workflow <path> --job <key> [--job-name <name>]... [--sku actions_linux] [--branch <name>]',
   '  cirujano fleet cutover --registry <file> --id <P#> --commit <sha>',
   '  cirujano fleet runs-on --registry <file> --id <P#>',
+  '  cirujano fleet health --registry <file> [--format json|markdown] [--now <ISO>]',
+  '  cirujano fleet release --registry <file> --id <P#> [--cancel-stranded]',
   '  cirujano fleet verify --registry <file>',
   '  cirujano fleet show --registry <file>',
   '  cirujano fleet controller-config --registry <file> --id <P#> --state-root <dir> --template <config.json> [--allowed-branch <branch>] (admission is same-repository; the branch matters for integration pushes)',
@@ -186,7 +188,25 @@ export interface FleetRunsOnArguments {
 }
 
 export type FleetArguments = FleetInitArguments | FleetEnrollArguments | FleetCutoverArguments | FleetReadArguments
-  | FleetControllerConfigArguments | FleetPermitProposalArguments | FleetPublishArguments | FleetRunsOnArguments;
+  | FleetControllerConfigArguments | FleetPermitProposalArguments | FleetPublishArguments | FleetRunsOnArguments
+  | FleetHealthArguments | FleetReleaseArguments;
+
+export interface FleetHealthArguments {
+  command: 'fleet';
+  action: 'health';
+  registryPath: string;
+  format: 'json' | 'markdown';
+  /** Rehearsal and tests only; the output always says when it was used. */
+  now?: string;
+}
+
+export interface FleetReleaseArguments {
+  command: 'fleet';
+  action: 'release';
+  registryPath: string;
+  id: string;
+  cancelStranded: boolean;
+}
 
 export type RunnerArguments = RunnerInspectArguments | RunnerWatchArguments | RunnerMutationArguments | RunnerReportArguments;
 export type ParsedArguments = EstimateArguments | HelpArguments | VersionArguments | RunnerArguments | TelemetryArguments | FleetArguments | OptimizeArguments | AdvisoryArguments;
@@ -284,13 +304,15 @@ function parseTelemetryArguments(argv: readonly string[]): TelemetryArguments {
     : { command: 'telemetry', action, storePath, since, format, registryPath };
 }
 
-const FLEET_ACTIONS = ['init', 'enroll', 'cutover', 'runs-on', 'verify', 'show', 'controller-config', 'permit-proposal', 'publish'] as const;
+const FLEET_ACTIONS = ['init', 'enroll', 'cutover', 'runs-on', 'verify', 'show', 'health', 'release', 'controller-config', 'permit-proposal', 'publish'] as const;
 type FleetAction = typeof FLEET_ACTIONS[number];
 const FLEET_OPTIONS: Record<FleetAction, readonly string[]> = {
   init: ['--registry', '--owner', '--since', '--through'],
   enroll: ['--registry', '--repository', '--workflow', '--job', '--job-name', '--sku', '--branch'],
   cutover: ['--registry', '--id', '--commit'],
   'runs-on': ['--registry', '--id'],
+  health: ['--registry', '--format', '--now'],
+  release: ['--registry', '--id', '--cancel-stranded'],
   verify: ['--registry'],
   show: ['--registry'],
   'controller-config': ['--registry', '--id', '--state-root', '--template', '--allowed-branch'],
@@ -305,10 +327,15 @@ function parseFleetArguments(argv: readonly string[]): FleetArguments {
   const allowed = FLEET_OPTIONS[action];
   const values = new Map<string, string>();
   const jobNames: string[] = [];
+  let cancelStranded = false;
   for (let index = 0; index < rest.length; index += 1) {
     const flag = rest[index];
     const value = rest[index + 1];
     if (flag === undefined || !allowed.includes(flag)) throw new ArgumentError(`Unknown option "${flag ?? ''}" for fleet ${action}.`);
+    if (flag === '--cancel-stranded') {
+      cancelStranded = true;
+      continue;
+    }
     if (value === undefined || value.startsWith('--')) throw new ArgumentError(`${flag} requires a value.`);
     index += 1;
     if (flag === '--job-name') jobNames.push(value);
@@ -317,6 +344,13 @@ function parseFleetArguments(argv: readonly string[]): FleetArguments {
   const registryPath = values.get('--registry');
   if (registryPath === undefined) throw new ArgumentError(`fleet ${action} requires --registry <file>.`);
   if (action === 'verify' || action === 'show') return { command: 'fleet', action, registryPath };
+  if (action === 'health') {
+    const format = values.get('--format') ?? 'json';
+    const now = values.get('--now');
+    if (format !== 'json' && format !== 'markdown') throw new ArgumentError('fleet health --format must be "json" or "markdown".');
+    if (now !== undefined && !Number.isFinite(Date.parse(now))) throw new ArgumentError('fleet health --now must be an ISO timestamp.');
+    return now === undefined ? { command: 'fleet', action, registryPath, format } : { command: 'fleet', action, registryPath, format, now };
+  }
   if (action === 'init') {
     const owner = values.get('--owner');
     if (owner === undefined) throw new ArgumentError('fleet init requires --owner <login>.');
@@ -334,10 +368,11 @@ function parseFleetArguments(argv: readonly string[]): FleetArguments {
     if (outputPath === undefined) throw new ArgumentError('fleet publish requires --output <report.md>.');
     return { command: 'fleet', action, registryPath, storePath, since, outputPath };
   }
-  if (action === 'runs-on' || action === 'controller-config' || action === 'permit-proposal') {
+  if (action === 'runs-on' || action === 'release' || action === 'controller-config' || action === 'permit-proposal') {
     const id = values.get('--id');
     if (id === undefined) throw new ArgumentError(`fleet ${action} requires --id <P#>.`);
     if (action === 'runs-on') return { command: 'fleet', action, registryPath, id };
+    if (action === 'release') return { command: 'fleet', action, registryPath, id, cancelStranded };
     if (action === 'controller-config') {
       const stateRoot = values.get('--state-root');
       const templatePath = values.get('--template');

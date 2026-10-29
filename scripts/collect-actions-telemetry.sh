@@ -16,6 +16,9 @@ REPORT_TEMP="$REPORT_PATH.$$.tmp"
 REGISTRY_PATH="${CIRUJANO_FLEET_REGISTRY:-$STORE_PATH/fleet-registry.json}"
 FLEET_REPORT_PATH="$STORE_PATH/fleet-latest.md"
 FLEET_REPORT_TEMP="$FLEET_REPORT_PATH.$$.tmp"
+FLEET_HEALTH_PATH="$STORE_PATH/fleet-health.md"
+FLEET_HEALTH_TEMP="$FLEET_HEALTH_PATH.$$.tmp"
+NOTIFY_COMMAND="${CIRUJANO_NOTIFY_COMMAND:-/usr/bin/osascript}"
 
 mkdir -p "$STORE_PATH"
 
@@ -33,7 +36,7 @@ if [ "${CIRUJANO_TELEMETRY_LOCKED:-0}" != "1" ]; then
 fi
 
 cleanup() {
-  rm -f "$REPORT_TEMP" "$FLEET_REPORT_TEMP"
+  rm -f "$REPORT_TEMP" "$FLEET_REPORT_TEMP" "$FLEET_HEALTH_TEMP"
 }
 trap cleanup EXIT
 
@@ -82,4 +85,21 @@ if [ -n "${CIRUJANO_FLEET_REGISTRY:-}" ] || [ -e "$REGISTRY_PATH" ]; then
     --registry "$REGISTRY_PATH" > "$FLEET_REPORT_TEMP"
   mv "$FLEET_REPORT_TEMP" "$FLEET_REPORT_PATH"
   echo "telemetry: fleet report updated at $FLEET_REPORT_PATH"
+
+  # Routing-switch health: exit 1 means a red row (the report is still valid); any other
+  # failure keeps the previous report. Neither fails collection, and both notify the owner.
+  HEALTH_STATUS=0
+  node "$CLI_PATH" fleet health --registry "$REGISTRY_PATH" --format markdown > "$FLEET_HEALTH_TEMP" || HEALTH_STATUS=$?
+  if [ "$HEALTH_STATUS" -le 1 ]; then
+    mv "$FLEET_HEALTH_TEMP" "$FLEET_HEALTH_PATH"
+    echo "telemetry: fleet health updated at $FLEET_HEALTH_PATH (exit $HEALTH_STATUS)"
+    NOTIFY_MESSAGE="Cirujano fleet health is red; see fleet-health.md"
+  else
+    echo "telemetry: fleet health check failed with exit $HEALTH_STATUS" >&2
+    NOTIFY_MESSAGE="Cirujano fleet health check failed; see the telemetry log"
+  fi
+  if [ "$HEALTH_STATUS" -ne 0 ]; then
+    "$NOTIFY_COMMAND" -e "display notification \"$NOTIFY_MESSAGE\" with title \"Cirujano\"" ||
+      echo "telemetry: fleet health notification failed" >&2
+  fi
 fi

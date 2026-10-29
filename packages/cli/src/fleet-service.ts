@@ -4,6 +4,7 @@ import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 
 import {
+  GitHubAdapter,
   OPERATING_PERMIT_BOUNDS,
   buildOperatingPermitProposal,
   calculateOperatingQuoteMaximum,
@@ -11,6 +12,7 @@ import {
   parsePermit,
   parseRunnerConfig,
   renderOperatingPermit,
+  runProcess,
   runnerConfigHash,
   verifySshPublicKeyFingerprint,
   type Permit,
@@ -35,6 +37,7 @@ import {
   type FleetRegistry,
   type WorkflowIdentity,
 } from './fleet-registry.js';
+import { fleetHealth, fleetRelease, renderHealthMarkdown, type RoutingGitHub } from './fleet-health.js';
 import { FleetRoutingError, parseGatedRunsOn, renderGatedRunsOn, yamlScalar, type RoutingGate } from './fleet-routing.js';
 import {
   absolutePath,
@@ -78,6 +81,7 @@ export interface GitHubFleetSource {
 export function createFleetCommandService(
   environment: NodeJS.ProcessEnv = process.env,
   pageRunner: GitHubPageRunner = defaultGitHubPageRunner,
+  routingGitHub: () => RoutingGitHub = () => defaultRoutingGitHub(environment),
 ): FleetCommandService {
   const source = githubFleetSource(githubCliPath(environment), pageRunner);
   return {
@@ -92,12 +96,31 @@ export function createFleetCommandService(
       if (args.action === 'enroll') return enroll(args, registry, registryPath, source, io);
       if (args.action === 'cutover') return cutover(args, registry, registryPath, source, io);
       if (args.action === 'runs-on') return runsOn(args, registry, source, io);
+      if (args.action === 'health') {
+        const report = await fleetHealth({
+          registry, registryPath, source, github: routingGitHub(), defaultTiming: OPERATING_TIMING,
+          nowMs: args.now === undefined ? Date.now() : Date.parse(args.now), nowOverridden: args.now !== undefined,
+        });
+        io.stdout(args.format === 'markdown' ? renderHealthMarkdown(report) : `${JSON.stringify(report)}\n`);
+        return report.status === 'red' ? 1 : 0;
+      }
+      if (args.action === 'release') return fleetRelease({ registry, registryPath, id: args.id, cancelStranded: args.cancelStranded, github: routingGitHub(), io });
       if (args.action === 'controller-config') return controllerConfig(args, registry, registryPath, source, environment, io);
       if (args.action === 'permit-proposal') return permitProposal(args, registry, io);
       if (args.action === 'publish') return publish(args, registry, io);
       return verify(registry, registryPath, source, io);
     },
   };
+}
+
+/** The owner's authenticated gh, through the same adapter the runner controller uses. */
+function defaultRoutingGitHub(environment: NodeJS.ProcessEnv): RoutingGitHub {
+  return new GitHubAdapter({
+    async run(command, args, options) {
+      const result = await runProcess({ command, args, timeoutMs: options.timeoutMs, maxOutputBytes: 64 * 1024 * 1024, env: environment });
+      return { exitCode: result.exitCode ?? 1, stdout: result.stdout, stderr: result.stderr };
+    },
+  }, { ghPath: absolutePath(environment['CIRUJANO_GH_PATH'] ?? '/opt/homebrew/bin/gh', 'GitHub CLI'), timeoutMs: 60_000 });
 }
 
 async function init(args: Extract<FleetArguments, { action: 'init' }>, registryPath: string, io: CliIo): Promise<0> {
