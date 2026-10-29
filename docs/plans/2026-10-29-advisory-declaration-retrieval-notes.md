@@ -1,0 +1,25 @@
+# Declaration retrieval implementation notes
+
+Base develop `bd3032616af50d650759b05b1b9eb97c83f3bb8f`; owned branch `fix/advisory-declaration-retrieval`, worktree `/Users/juan/code/cirujano-advisory-retrieval`. User approved the repair/fresh comparison, then requested lean processes and essential tasks only. Delivery is local; no push, model, provider, paid runner or routing action.
+
+Implemented strict read-only YAML field/range inspection and source search v3. Actual command/action/configuration paths replace arbitrary line candidates; declaration intents take precedence. Command boundaries respect quotes/comments; unsupported heredocs abstain. Multi-line semantic matches retain their physical span, capped at 20 lines/8KiB; oversized excerpts are explicit unavailable matches. Source admission policies, execution search and numeric logic remain unchanged.
+
+Independent review found artifact/test intent confusion, citations omitting folded-field matches and nonspecific shell-predicate matches. All were reproduced with failing regressions and repaired. Complete physical spans also fix the multi-term tie and multi-line action-input variants. The positive assertion fixture was strengthened to use exit_code in the predicate itself; a directory predicate now explicitly fails the exit-code query. Final review passed. Simplify reused the parser/path lookup and removed duplicate per-fact tokenization; its bounded readback passed.
+
+Verification: full typecheck/lint passed. Full core586, runner420 and Action6 coverage tests passed. After the owner's lean-process request, unrelated full-CLI optimization coverage was interrupted (exit143, preserved, not claimed green). Focused CLI coverage passed194tests in9files, scoped to source-advisory modules: statements90.85%, branches88.86%, functions96.87%, lines97.54%; thresholds/config unchanged. Build/bundle verification passed; both committed generated bundles were unchanged. Raw checks/reviews are preserved under `docs/agents/source-retrieval-2026-10-29/`.
+
+Fresh selection was fixed before scores. The first frozen24cases admitted only2sources, so a separately preregistered backup cohort added24cases without replacing any refusals. Total48selected,18admitted,30unavailable/refused;20agent-authored questions include14supported,4evaluable no-match,2empty-input unavailable. Acquisition used125read-only public GitHub GETs within the240budget. Blind label audit corrected two incomplete reference sets through a separately frozen additive overlay; original corpus bytes remain unchanged. Implementation did not see fresh questions/source contents before candidate lock. The prepared comparison runs once after lock, with original36questions kept separate from fresh results. No human/native/time-savings qualification is implied.
+
+## Deviations
+
+Review proved one five-line anchor cannot ground distributed folded/quoted matches. Multi-line commands and scalar/sequence values now quote the complete relevant physical span within explicit bounds or abstain. The owner-directed verification scope replaces the unrelated full-CLI fixture stage with focused source-advisory coverage; all failures/interruption and completed checks remain visible. No additional audit round or expanded release work is included.
+
+## Outcome and disposition
+
+Locked candidate `f4d0c2c9a6f39d4efc8fdd7ef28b901990e6d20b`, archived CLI SHA-256 `b7cab843c7a5ca364dc91b7db3cc17c02b4b5c87a848b20d2981521a80335367`. Actual prepared comparison completed111CLIcalls once, with no acquisition/model calls and no post-result tuning. All previous/fresh input freezes verified before and afterward. Old navigation hits improved11→16/27, but with six gains and one loss; all three earlier lost declaration forms were recovered. Fresh navigation improved5→8/14 with three gains and no losses, but pooled relevant-hit precision fell13/21(61.9%)→16/31(51.6%). All fresh31and old64candidate citations were exact; no-match false hits remained0/4fresh and0/9old. All45numeric pairs stayed unchanged. Two fresh questions with empty inputs remain unavailable, not successful abstentions.
+
+The preregistered precision rule failed: retrieval quality is unqualified. Per the owner's lean instruction, stop this iteration without further tuning or audit expansion. Preserve the candidate on local branch `fix/advisory-declaration-retrieval` and its exact archived binary; do not integrate its code into develop or promote it for release. Deliver only these results/plan notes locally, then remove the clean task worktree while retaining its unmerged branch. Further retrieval work needs a new decision; human/native effectiveness and time saved remain unmeasured.
+
+## Delivery adjustment
+
+The plan proposed local code integration after acceptance. The fixed fresh-set precision gate failed, so code integration is withheld. This is a measured rejection of the candidate, not a waived check. Develop receives only the concise results and handoff documents; its product code remains at the previous version. The branch is intentionally retained because it is unmerged. No push or release action was performed.
