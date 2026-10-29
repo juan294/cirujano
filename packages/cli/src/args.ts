@@ -38,6 +38,7 @@ export const USAGE = [
   '  cirujano fleet init --registry <file> --owner <login> [--since <YYYY-MM-DD>] [--through <YYYY-MM-DD>]',
   '  cirujano fleet enroll --registry <file> --repository <owner/name> --workflow <path> --job <key> [--job-name <name>]... [--sku actions_linux] [--branch <name>]',
   '  cirujano fleet cutover --registry <file> --id <P#> --commit <sha>',
+  '  cirujano fleet runs-on --registry <file> --id <P#>',
   '  cirujano fleet verify --registry <file>',
   '  cirujano fleet show --registry <file>',
   '  cirujano fleet controller-config --registry <file> --id <P#> --state-root <dir> --template <config.json> [--allowed-branch <branch>] (admission is same-repository; the branch matters for integration pushes)',
@@ -177,8 +178,15 @@ export interface FleetPublishArguments {
   outputPath: string;
 }
 
+export interface FleetRunsOnArguments {
+  command: 'fleet';
+  action: 'runs-on';
+  registryPath: string;
+  id: string;
+}
+
 export type FleetArguments = FleetInitArguments | FleetEnrollArguments | FleetCutoverArguments | FleetReadArguments
-  | FleetControllerConfigArguments | FleetPermitProposalArguments | FleetPublishArguments;
+  | FleetControllerConfigArguments | FleetPermitProposalArguments | FleetPublishArguments | FleetRunsOnArguments;
 
 export type RunnerArguments = RunnerInspectArguments | RunnerWatchArguments | RunnerMutationArguments | RunnerReportArguments;
 export type ParsedArguments = EstimateArguments | HelpArguments | VersionArguments | RunnerArguments | TelemetryArguments | FleetArguments | OptimizeArguments | AdvisoryArguments;
@@ -276,12 +284,13 @@ function parseTelemetryArguments(argv: readonly string[]): TelemetryArguments {
     : { command: 'telemetry', action, storePath, since, format, registryPath };
 }
 
-const FLEET_ACTIONS = ['init', 'enroll', 'cutover', 'verify', 'show', 'controller-config', 'permit-proposal', 'publish'] as const;
+const FLEET_ACTIONS = ['init', 'enroll', 'cutover', 'runs-on', 'verify', 'show', 'controller-config', 'permit-proposal', 'publish'] as const;
 type FleetAction = typeof FLEET_ACTIONS[number];
 const FLEET_OPTIONS: Record<FleetAction, readonly string[]> = {
   init: ['--registry', '--owner', '--since', '--through'],
   enroll: ['--registry', '--repository', '--workflow', '--job', '--job-name', '--sku', '--branch'],
   cutover: ['--registry', '--id', '--commit'],
+  'runs-on': ['--registry', '--id'],
   verify: ['--registry'],
   show: ['--registry'],
   'controller-config': ['--registry', '--id', '--state-root', '--template', '--allowed-branch'],
@@ -325,9 +334,10 @@ function parseFleetArguments(argv: readonly string[]): FleetArguments {
     if (outputPath === undefined) throw new ArgumentError('fleet publish requires --output <report.md>.');
     return { command: 'fleet', action, registryPath, storePath, since, outputPath };
   }
-  if (action === 'controller-config' || action === 'permit-proposal') {
+  if (action === 'runs-on' || action === 'controller-config' || action === 'permit-proposal') {
     const id = values.get('--id');
     if (id === undefined) throw new ArgumentError(`fleet ${action} requires --id <P#>.`);
+    if (action === 'runs-on') return { command: 'fleet', action, registryPath, id };
     if (action === 'controller-config') {
       const stateRoot = values.get('--state-root');
       const templatePath = values.get('--template');

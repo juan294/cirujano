@@ -29,11 +29,13 @@ import {
   parseFleetRegistry,
   requiredSelfHostedLabels,
   SHA_PATTERN,
+  switchVariableFor,
   writeFleetRegistry,
   type FleetEnrollment,
   type FleetRegistry,
   type WorkflowIdentity,
 } from './fleet-registry.js';
+import { FleetRoutingError, parseGatedRunsOn, renderGatedRunsOn, yamlScalar, type RoutingGate } from './fleet-routing.js';
 import {
   absolutePath,
   array,
@@ -70,6 +72,7 @@ export interface GitHubFleetSource {
   workflows(repository: string): Promise<Array<{ id: number; name: string; path: string }>>;
   workflowFile(repository: string, path: string, ref: string): Promise<{ sha: string; content: string }>;
   isOnBranch(repository: string, commit: string, branch: string): Promise<boolean>;
+  userId(login: string): Promise<number>;
 }
 
 export function createFleetCommandService(
@@ -88,6 +91,7 @@ export function createFleetCommandService(
       }
       if (args.action === 'enroll') return enroll(args, registry, registryPath, source, io);
       if (args.action === 'cutover') return cutover(args, registry, registryPath, source, io);
+      if (args.action === 'runs-on') return runsOn(args, registry, source, io);
       if (args.action === 'controller-config') return controllerConfig(args, registry, registryPath, source, environment, io);
       if (args.action === 'permit-proposal') return permitProposal(args, registry, io);
       if (args.action === 'publish') return publish(args, registry, io);
@@ -190,10 +194,13 @@ async function cutover(
     const head = await source.branchHead(enrollment.repository, targetBranch);
     if (args.commit !== head) throw new Error(`refresh commit ${args.commit} is not the current ${targetBranch} head ${head}`);
   }
-  const live = await readLiveIdentity(source, enrollment, args.commit);
+  const { identity: live, routingSwitch } = await readLiveIdentity(source, enrollment, args.commit, await source.userId(registry.owner));
   const missing = requiredSelfHostedLabels(enrollment.runnerLabel).filter((label) => !live.runsOn.includes(label));
   if (missing.length > 0) {
     throw new Error(`job ${enrollment.jobKey} at ${args.commit} runs-on lacks ${missing.join(', ')}: ${JSON.stringify(live.runsOn)}; cutover not recorded`);
+  }
+  if (routingSwitch === undefined) {
+    throw new Error(`job ${enrollment.jobKey} at ${args.commit} has an ungated self-hosted selection; generate it with cirujano fleet runs-on --id ${enrollment.id}`);
   }
   const previous = enrollment.after;
   if (previous?.workflowBlobSha === live.workflowBlobSha) {
@@ -202,6 +209,7 @@ async function cutover(
   const updated: FleetEnrollment = {
     ...enrollment,
     status: 'cut-over',
+    routingSwitch,
     after: previous === null ? live : { ...live, recordedAt: previous.recordedAt },
     notes: previous === null ? enrollment.notes : [
       ...enrollment.notes,
@@ -217,15 +225,31 @@ async function cutover(
 async function verify(registry: FleetRegistry, registryPath: string, source: GitHubFleetSource, io: CliIo): Promise<0 | 1> {
   const problems: string[] = [];
   let next = registry;
+  let ownerUserId: number | undefined;
   for (const enrollment of registry.enrollments) {
-    const repository = await source.repository(enrollment.repository);
-    const head = await source.branchHead(enrollment.repository, enrollment.targetBranch ?? repository.defaultBranch);
-    const live = await readLiveIdentity(source, enrollment, head);
+    // A later enrollment of this job owns the current workflow, gate included. Keep the
+    // reverted entry as history without reading the successor's selection for it.
+    if (enrollment.status === 'reverted' && findActiveEnrollment(registry, enrollment.repository, enrollment.workflowPath, enrollment.jobKey)) continue;
+    ownerUserId ??= await source.userId(registry.owner);
+    // One unreadable enrollment is reported and skipped; it never hides the others.
+    let head: string | undefined;
+    let read: Awaited<ReturnType<typeof readLiveIdentity>>;
+    try {
+      const repository = await source.repository(enrollment.repository);
+      head = await source.branchHead(enrollment.repository, enrollment.targetBranch ?? repository.defaultBranch);
+      read = await readLiveIdentity(source, enrollment, head, ownerUserId);
+    } catch (error) {
+      problems.push(`${enrollment.id}: cannot read the runner selection${head === undefined ? '' : ` at ${head}`}: ${error instanceof Error ? error.message : String(error)}`);
+      continue;
+    }
+    const { identity: live, routingSwitch } = read;
     const labelled = requiredSelfHostedLabels(enrollment.runnerLabel).every((label) => live.runsOn.includes(label));
     if (enrollment.status === 'proposed') {
       if (live.workflowBlobSha === enrollment.before.workflowBlobSha) continue;
       if (labelled) {
-        problems.push(`${enrollment.id}: live workflow already carries ${enrollment.runnerLabel} at ${head}; record it with fleet cutover`);
+        problems.push(routingSwitch === undefined
+          ? `${enrollment.id}: live workflow carries ${enrollment.runnerLabel} at ${head} without the routing switch; generate it with cirujano fleet runs-on --id ${enrollment.id}`
+          : `${enrollment.id}: live workflow already carries ${enrollment.runnerLabel} at ${head}; record it with fleet cutover`);
         continue;
       }
       next = replaceEnrollment(next, {
@@ -236,16 +260,16 @@ async function verify(registry: FleetRegistry, registryPath: string, source: Git
       continue;
     }
     if (enrollment.status === 'reverted') {
-      // A later enrollment of this job owns the current workflow. Keep the
-      // reverted entry as history without reporting its successor as drift.
-      const successor = findActiveEnrollment(registry, enrollment.repository, enrollment.workflowPath, enrollment.jobKey);
-      if (labelled && !successor) problems.push(`${enrollment.id}: reverted enrollment carries ${enrollment.runnerLabel} again at ${head}; enroll it afresh`);
+      if (labelled) problems.push(`${enrollment.id}: reverted enrollment carries ${enrollment.runnerLabel} again at ${head}; enroll it afresh`);
       continue;
     }
+    if (enrollment.routingSwitch === undefined) problems.push(`${enrollment.id}: ungated enrollment; the runner cannot be released without a workflow push`);
     const after = enrollment.after!;
     if (live.workflowBlobSha === after.workflowBlobSha) continue;
     if (labelled) {
-      problems.push(`${enrollment.id}: live workflow blob ${live.workflowBlobSha} differs from the recorded after blob ${after.workflowBlobSha} at ${head}; review the edit and re-run fleet cutover --commit ${head} if it is intended`);
+      problems.push(routingSwitch === undefined
+        ? `${enrollment.id}: live runner selection at ${head} is ungated; generate it with cirujano fleet runs-on --id ${enrollment.id}`
+        : `${enrollment.id}: live workflow blob ${live.workflowBlobSha} differs from the recorded after blob ${after.workflowBlobSha} at ${head}; review the edit and re-run fleet cutover --commit ${head} if it is intended`);
       continue;
     }
     problems.push(`${enrollment.id}: enrolled label ${enrollment.runnerLabel} is gone from the live workflow at ${head}; recorded as reverted`);
@@ -260,6 +284,20 @@ async function verify(registry: FleetRegistry, registryPath: string, source: Git
   io.stdout(`${JSON.stringify({ status: problems.length === 0 ? 'verified' : 'mismatch', enrollments: summary })}\n`);
   for (const problem of problems) io.stderr(`${problem}\n`);
   return problems.length === 0 ? 0 : 1;
+}
+
+async function runsOn(args: Extract<FleetArguments, { action: 'runs-on' }>, registry: FleetRegistry, source: GitHubFleetSource, io: CliIo): Promise<0> {
+  const enrollment = requireEnrollment(registry, args.id);
+  if (enrollment.status === 'reverted') throw new Error(`enrollment ${args.id} is reverted; enroll it afresh before generating its runner selection`);
+  const selection = renderGatedRunsOn(routingGate(enrollment, await source.userId(registry.owner)));
+  const switchVariable = switchVariableFor(enrollment.id);
+  io.stdout(`${JSON.stringify({
+    status: 'generated', id: enrollment.id, repository: enrollment.repository, workflowPath: enrollment.workflowPath, job: enrollment.jobKey,
+    switchVariable, yaml: `runs-on: ${selection}`,
+    enableCommand: `gh variable set ${switchVariable} --body on --repo ${enrollment.repository}`,
+    note: 'owner action: replace the job runs-on line, merge it, record it with fleet cutover, and run enableCommand only when an operating controller and permit are in place',
+  })}\n`);
+  return 0;
 }
 
 async function controllerConfig(
@@ -593,10 +631,16 @@ export function assertPublishable(markdown: string, registry: FleetRegistry): vo
   if (resourceId !== null) throw new Error(`refusing to publish: output contains resource identity ${resourceId[0]}`);
 }
 
-async function readLiveIdentity(source: GitHubFleetSource, enrollment: FleetEnrollment, commit: string): Promise<WorkflowIdentity> {
+function routingGate(enrollment: FleetEnrollment, ownerUserId: number): RoutingGate {
+  return { enrollmentId: enrollment.id, repository: enrollment.repository, workflowPath: enrollment.workflowPath, runnerLabel: enrollment.runnerLabel, ownerUserId };
+}
+
+async function readLiveIdentity(
+  source: GitHubFleetSource, enrollment: FleetEnrollment, commit: string, ownerUserId: number,
+): Promise<{ identity: WorkflowIdentity; routingSwitch: string | undefined }> {
   const file = await source.workflowFile(enrollment.repository, enrollment.workflowPath, commit);
-  const job = extractJobRunsOn(file.content, enrollment.jobKey);
-  return { commit, workflowBlobSha: file.sha, runsOn: job.runsOn, recordedAt: new Date().toISOString() };
+  const job = extractJobRunsOn(file.content, enrollment.jobKey, routingGate(enrollment, ownerUserId));
+  return { identity: { commit, workflowBlobSha: file.sha, runsOn: job.runsOn, recordedAt: new Date().toISOString() }, routingSwitch: job.routingSwitch };
 }
 
 function requireEnrollment(registry: FleetRegistry, id: string): FleetEnrollment {
@@ -630,9 +674,10 @@ async function exists(path: string): Promise<boolean> {
 /**
  * Reads `jobs.<key>.runs-on` (scalar, flow list or block list) and `jobs.<key>.name` from a
  * workflow file without a YAML dependency. Expressions and matrices are refused: the registry
- * records exact runner selections, never guesses.
+ * records exact runner selections, never guesses. The one exception is the Cirujano gated
+ * selection of the enrollment named by `gate` (fleet-routing.ts), which yields its labels and switch.
  */
-export function extractJobRunsOn(workflow: string, jobKey: string): { runsOn: string[]; name: string | null; matrix: boolean } {
+export function extractJobRunsOn(workflow: string, jobKey: string, gate?: RoutingGate): { runsOn: string[]; routingSwitch?: string; name: string | null; matrix: boolean } {
   const lines = workflow.split(/\r?\n/u);
   const jobsIndex = lines.findIndex((line) => /^jobs:\s*(?:#.*)?$/u.test(line));
   if (jobsIndex === -1) throw new Error('workflow has no jobs block');
@@ -643,6 +688,7 @@ export function extractJobRunsOn(workflow: string, jobKey: string): { runsOn: st
   const bodyIndent = indentOf(lines, jobStart + 1, jobIndent);
   if (bodyIndent === null) throw new Error(`job ${jobKey} has no body`);
   let runsOn: string[] | null = null;
+  let routingSwitch: string | undefined;
   let name: string | null = null;
   let matrix = false;
   for (let index = jobStart + 1; index < lines.length; index += 1) {
@@ -676,6 +722,13 @@ export function extractJobRunsOn(workflow: string, jobKey: string): { runsOn: st
     } else if (value.startsWith('[')) {
       if (!value.endsWith(']')) throw new Error(`job ${jobKey} runs-on flow list is not closed on one line`);
       runsOn = value.slice(1, -1).split(',').map((item) => unquote(item.trim())).filter((item) => item.length > 0);
+    } else if (gate !== undefined && value.includes('${{')) {
+      try {
+        ({ runsOn, routingSwitch } = parseGatedRunsOn(yamlScalar(value), gate));
+      } catch (error) {
+        if (!(error instanceof FleetRoutingError)) throw error;
+        throw new Error(`job ${jobKey} runs-on is not the Cirujano gated selection (${error.message}); generate it with cirujano fleet runs-on --id ${gate.enrollmentId}`);
+      }
     } else {
       runsOn = [unquote(value)];
     }
@@ -684,7 +737,7 @@ export function extractJobRunsOn(workflow: string, jobKey: string): { runsOn: st
   if (runsOn.length === 0) throw new Error(`job ${jobKey} runs-on is empty`);
   if (runsOn.some((label) => label.includes('${{') || label.startsWith('{'))) throw new Error(`job ${jobKey} runs-on uses an expression or matrix; enroll a job with a literal runner selection`);
   if (name !== null && name.includes('${{')) name = null;
-  return { runsOn, name, matrix };
+  return { runsOn, ...(routingSwitch === undefined ? {} : { routingSwitch }), name, matrix };
 }
 
 function yamlKey(key: string): string {
@@ -764,6 +817,9 @@ function githubFleetSource(ghPath: string, pageRunner: GitHubPageRunner): GitHub
       const value = await single(`/repos/${repository}/compare/${commit}...${encodeURIComponent(branch)}?per_page=1`, 'compare');
       const status = text(value['status'], 'compare.status');
       return status === 'ahead' || status === 'identical';
+    },
+    async userId(login) {
+      return positiveInteger((await single(`/users/${encodeURIComponent(login)}`, 'user'))['id'], 'user.id');
     },
   };
 }

@@ -48,6 +48,8 @@ export interface FleetEnrollment {
   sku: HostedSku;
   runnerLabel: string;
   status: EnrollmentStatus;
+  /** Absent on proposed enrollments and on legacy cut-overs recorded before the switch existed. */
+  routingSwitch?: string;
   before: WorkflowIdentity;
   after: WorkflowIdentity | null;
   controller: EnrollmentController | null;
@@ -90,6 +92,12 @@ export function enrollmentLabelFor(sku: HostedSku): string {
 /** Plan phase 1 `fleetCutover`: the migrated selection is `[self-hosted, linux, x64, <label>]`. */
 export function requiredSelfHostedLabels(runnerLabel: string): string[] {
   return ['self-hosted', 'linux', 'x64', runnerLabel];
+}
+
+/** The repository variable that routes one enrollment's job to its Cirujano runner while it is `on`. */
+export function switchVariableFor(enrollmentId: string): string {
+  if (!ENROLLMENT_ID_PATTERN.test(enrollmentId)) throw new FleetRegistryError(`enrollment id ${enrollmentId} must look like P1`);
+  return `CIRUJANO_RUNNER_${enrollmentId}`;
 }
 
 /** The live (not reverted) enrollment of one workflow job, if any. */
@@ -143,7 +151,7 @@ export function parseFleetRegistry(input: unknown): FleetRegistry {
 }
 
 function parseEnrollment(input: unknown, name: string, registry: Pick<FleetRegistry, 'owner' | 'exclusions'>): FleetEnrollment {
-  const root = strictObject(input, [...ENROLLMENT_KEYS, 'targetBranch'], name, ['targetBranch']);
+  const root = strictObject(input, [...ENROLLMENT_KEYS, 'targetBranch', 'routingSwitch'], name, ['targetBranch', 'routingSwitch']);
   const id = text(root['id'], `${name}.id`);
   if (!ENROLLMENT_ID_PATTERN.test(id)) throw new FleetRegistryError(`${name}.id must look like P1`);
   const repository = text(root['repository'], `${name}.repository`);
@@ -169,6 +177,10 @@ function parseEnrollment(input: unknown, name: string, registry: Pick<FleetRegis
   const after = root['after'] === null ? null : parseWorkflowIdentity(root['after'], `${name}.after`);
   if (status === 'proposed' && after !== null) throw new FleetRegistryError(`proposed enrollment ${id} must not carry an after record`);
   if (status !== 'proposed' && after === null) throw new FleetRegistryError(`${status} enrollment ${id} requires an after record`);
+  const routingSwitch = root['routingSwitch'] === undefined ? undefined : text(root['routingSwitch'], `${name}.routingSwitch`);
+  if (routingSwitch !== undefined && status === 'proposed') throw new FleetRegistryError(`proposed enrollment ${id} must not carry a routing switch`);
+  const expectedSwitch = switchVariableFor(id);
+  if (routingSwitch !== undefined && routingSwitch !== expectedSwitch) throw new FleetRegistryError(`${name}.routingSwitch must be ${expectedSwitch}`);
   if (after !== null && requiredSelfHostedLabels(runnerLabel).some((label) => !after.runsOn.includes(label))) {
     throw new FleetRegistryError(`${name}.after.runsOn must include self-hosted, linux, x64 and ${runnerLabel}`);
   }
@@ -197,6 +209,7 @@ function parseEnrollment(input: unknown, name: string, registry: Pick<FleetRegis
     sku: sku as HostedSku,
     runnerLabel,
     status: status as EnrollmentStatus,
+    ...(routingSwitch === undefined ? {} : { routingSwitch }),
     before,
     after,
     controller,

@@ -1,8 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
-import { ArgumentError, parseArguments } from './args.js';
+import { ArgumentError, USAGE, parseArguments } from './args.js';
 
 describe('parseArguments', () => {
+  it('documents fleet runs-on in the usage text', () => {
+    expect(USAGE).toContain('  cirujano fleet runs-on --registry <file> --id <P#>');
+  });
+
   it('treats no arguments and --help as help, and --version as version', () => {
     expect(parseArguments([])).toEqual({ command: 'help' });
     expect(parseArguments(['--help'])).toEqual({ command: 'help' });
@@ -78,6 +82,7 @@ describe('parseArguments', () => {
       command: 'fleet', action: 'cutover', registryPath: 'r', id: 'P1', commit: 'a'.repeat(40),
     });
     expect(parseArguments(['fleet', 'verify', '--registry', 'r'])).toEqual({ command: 'fleet', action: 'verify', registryPath: 'r' });
+    expect(parseArguments(['fleet', 'runs-on', '--registry', 'r', '--id', 'P1'])).toEqual({ command: 'fleet', action: 'runs-on', registryPath: 'r', id: 'P1' });
     expect(parseArguments(['fleet', 'show', '--registry', 'r'])).toEqual({ command: 'fleet', action: 'show', registryPath: 'r' });
     expect(parseArguments(['fleet', 'controller-config', '--registry', 'r', '--id', 'P1', '--state-root', '/tmp/runner', '--template', '/tmp/t.json'])).toEqual({
       command: 'fleet', action: 'controller-config', registryPath: 'r', id: 'P1', stateRoot: '/tmp/runner', templatePath: '/tmp/t.json',
@@ -121,6 +126,8 @@ describe('parseArguments', () => {
     [['fleet', 'enroll', '--registry', 'r', '--repository', 'app', '--workflow', 'w.yml', '--job', 'j'], /owner\/name/],
     [['fleet', 'enroll', '--registry', 'r', '--repository', 'juan294/app', '--workflow', 'w.yml', '--job', 'j', '--sku', 'actions_gpu'], /--sku must be one of/],
     [['fleet', 'enroll', '--registry', 'r', '--repository', 'juan294/app', '--workflow', 'w.yml', '--job', 'j', '--branch', '../main'], /--branch must be a safe Git branch name/],
+    [['fleet', 'runs-on', '--registry', 'r'], /fleet runs-on requires --id/],
+    [['fleet', 'runs-on', '--registry', 'r', '--id', 'P1', '--commit', 'a'], /Unknown option "--commit" for fleet runs-on/],
     [['fleet', 'cutover', '--registry', 'r', '--id', 'P1'], /requires --commit/],
     [['fleet', 'cutover', '--registry', 'r', '--id', 'P1', '--commit', 'abc'], /40-character/],
     [['fleet', 'cutover', '--registry', 'r', '--commit', 'a'.repeat(40)], /requires --id/],
