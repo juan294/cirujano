@@ -10,7 +10,7 @@ export const OPERATING_PERMIT_BOUNDS = {
   fleetCeilingUsd: 440,
 } as const;
 
-const OPERATIONS: readonly PermitOperation[] = ['create', 'start', 'register', 'stop', 'delete'];
+const OPERATIONS: readonly PermitOperation[] = ['create', 'start', 'register', 'stop', 'delete', 'release-routing'];
 const DISK_SIZE_GIB = 80;
 const HOURS_PER_MONTH = 730;
 

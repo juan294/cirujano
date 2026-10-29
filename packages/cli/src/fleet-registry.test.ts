@@ -147,6 +147,21 @@ describe('fleet registry (phase 1 U1)', () => {
     expect(() => enrollmentLabelFor('actions_windows')).toThrow(/no enrolled Cirujano label/u);
   });
 
+  it('records the routing switch of a cut-over enrollment and keeps legacy entries without one', async () => {
+    const registry = parseFleetRegistry(JSON.parse(await readFile(fixturePath(), 'utf8')));
+    expect(registry.enrollments[0]!.routingSwitch).toBeUndefined();
+    registry.enrollments[0]!.routingSwitch = 'CIRUJANO_RUNNER_P1';
+    expect(parseFleetRegistry(JSON.parse(JSON.stringify(registry))).enrollments[0]!.routingSwitch).toBe('CIRUJANO_RUNNER_P1');
+    registry.enrollments[0]!.routingSwitch = 'CIRUJANO_RUNNER_P2';
+    expect(() => parseFleetRegistry(JSON.parse(JSON.stringify(registry)))).toThrow(/routingSwitch must be CIRUJANO_RUNNER_P1/u);
+  });
+
+  it('rejects a routing switch on a proposed enrollment', async () => {
+    const registry = parseFleetRegistry(JSON.parse(await readFile(fixturePath(), 'utf8')));
+    registry.enrollments[1]!.routingSwitch = 'CIRUJANO_RUNNER_P2';
+    expect(() => parseFleetRegistry(JSON.parse(JSON.stringify(registry)))).toThrow(/proposed enrollment P2 must not carry a routing switch/u);
+  });
+
   it('rejects an unknown enrollment key so private records never carry stray fields', async () => {
     const raw = JSON.parse(await readFile(fixturePath(), 'utf8')) as { enrollments: Array<FleetEnrollment & { extra?: boolean }> };
     raw.enrollments[0]!.extra = true;

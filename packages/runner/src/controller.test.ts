@@ -271,6 +271,22 @@ describe('tickController intent recovery (R10/R12)', () => {
     await lock.release();
   });
 
+  it('never journals a pending lifecycle effect authorized by release-routing', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'cirujano-controller-release-'));
+    const journalPath = join(directory, 'state.json');
+    const lock = await acquireControllerLock(directory);
+    await expect(tickController({
+      lock, journalPath, eventPath: join(directory, 'events.jsonl'), input: startInput(),
+      executeEffect: async () => { throw new Error('ambiguous'); },
+      reconcileEffect: async () => ({ resolved: false }),
+    })).rejects.toThrow('ambiguous');
+    await lock.release();
+    const state = await readJournal<{ pendingEffect: { authorization: { operation: string } } }>(journalPath);
+    expect(() => parseControllerState(state)).not.toThrow();
+    state.pendingEffect.authorization.operation = 'release-routing';
+    expect(() => parseControllerState(state)).toThrow(/pending authorization operation is invalid/u);
+  });
+
   it('persists exact operation authority and blocks retry after expiry with durable evidence', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'cirujano-controller-auth-'));
     const journalPath = join(directory, 'state.json');

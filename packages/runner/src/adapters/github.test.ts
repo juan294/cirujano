@@ -459,3 +459,54 @@ describe('GitHub conditional reads and quota guard', () => {
   });
 
 });
+
+describe('routing switch and stranded-run calls', () => {
+  function reply(status: number, body: unknown = null): ProcessResult {
+    return { exitCode: status >= 200 && status < 300 ? 0 : 1, stderr: status >= 400 ? `gh: HTTP ${status}` : '', stdout: `HTTP/2 ${status}\n\n${body === null ? '' : JSON.stringify(body)}` };
+  }
+  function fixture(results: ProcessResult[]) {
+    const calls: string[][] = [];
+    const adapter = new GitHubAdapter({ run: async (_command, args) => { calls.push([...args]); const result = results.shift(); if (!result) throw new Error('unexpected dispatch'); return result; } }, { ghPath: '/bin/gh', timeoutMs: 1000, now: () => NOW });
+    return { adapter, calls };
+  }
+
+  it('reads the switch case-insensitively and treats a missing variable as absent', async () => {
+    const { adapter, calls } = fixture([reply(200, { name: 'CIRUJANO_RUNNER_P3', value: 'on' }), reply(200, { name: 'CIRUJANO_RUNNER_P3', value: 'ON' }), reply(200, { name: 'CIRUJANO_RUNNER_P3', value: 'off' }), reply(404, { message: 'Not Found' })]);
+    expect(await adapter.getVariable('trusted', 'private', 'CIRUJANO_RUNNER_P3')).toBe('on');
+    expect(await adapter.getVariable('trusted', 'private', 'CIRUJANO_RUNNER_P3')).toBe('on');
+    expect(await adapter.getVariable('trusted', 'private', 'CIRUJANO_RUNNER_P3')).toBe('other');
+    expect(await adapter.getVariable('trusted', 'private', 'CIRUJANO_RUNNER_P3')).toBe('absent');
+    expect(calls[0]).toEqual(expect.arrayContaining(['GET', '/repos/trusted/private/actions/variables/CIRUJANO_RUNNER_P3']));
+  });
+
+  it('deletes the switch, treats an already missing one as absent, and keeps the status and message of a refusal', async () => {
+    const { adapter, calls } = fixture([reply(204), reply(404, { message: 'Not Found' }), reply(403, { message: 'Resource not accessible by integration' }), reply(500, { message: 'boom' })]);
+    expect(await adapter.deleteVariable('trusted', 'private', 'CIRUJANO_RUNNER_P3')).toBe('deleted');
+    expect(calls[0]).toEqual(expect.arrayContaining(['DELETE', '/repos/trusted/private/actions/variables/CIRUJANO_RUNNER_P3']));
+    expect(await adapter.deleteVariable('trusted', 'private', 'CIRUJANO_RUNNER_P3')).toBe('absent');
+    await expect(adapter.deleteVariable('trusted', 'private', 'CIRUJANO_RUNNER_P3')).rejects.toThrow(/HTTP 403 deleting variable CIRUJANO_RUNNER_P3: Resource not accessible by integration/u);
+    await expect(adapter.deleteVariable('trusted', 'private', 'CIRUJANO_RUNNER_P3')).rejects.toThrow(/HTTP 500 deleting variable CIRUJANO_RUNNER_P3: boom/u);
+  });
+
+  it('force-cancels a run and treats an already completed run as done', async () => {
+    const { adapter, calls } = fixture([reply(202, {}), reply(409, { message: 'Cannot cancel a workflow run that is completed.' }), reply(404, { message: 'Not Found' })]);
+    expect(await adapter.forceCancelRun('trusted', 'private', 1001)).toBe('accepted');
+    expect(calls[0]).toEqual(expect.arrayContaining(['POST', '/repos/trusted/private/actions/runs/1001/force-cancel']));
+    expect(await adapter.forceCancelRun('trusted', 'private', 1001)).toBe('completed');
+    await expect(adapter.forceCancelRun('trusted', 'private', 1001)).rejects.toThrow(/HTTP 404 force-cancelling run 1001: Not Found/u);
+  });
+
+  it('re-runs one job and keeps the status and message of a refusal', async () => {
+    const { adapter, calls } = fixture([reply(201, {}), reply(403, { message: 'This workflow run cannot be retried' })]);
+    expect(await adapter.rerunJob('trusted', 'private', 2001)).toBe('accepted');
+    expect(calls[0]).toEqual(expect.arrayContaining(['POST', '/repos/trusted/private/actions/jobs/2001/rerun']));
+    await expect(adapter.rerunJob('trusted', 'private', 2001)).rejects.toThrow(/HTTP 403 re-running job 2001: This workflow run cannot be retried/u);
+  });
+
+  it('refuses a variable name that is not a repository variable identifier before dispatch', async () => {
+    const { adapter, calls } = fixture([]);
+    await expect(adapter.getVariable('trusted', 'private', '../secrets')).rejects.toThrow(/variable name/u);
+    await expect(adapter.deleteVariable('trusted', 'private', 'lower_case')).rejects.toThrow(/variable name/u);
+    expect(calls).toEqual([]);
+  });
+});

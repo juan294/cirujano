@@ -40,8 +40,11 @@ The default locations are:
 | Daily snapshots | `~/.local/share/cirujano/telemetry/YYYY-MM-DD.json` |
 | Cumulative report | `~/.local/share/cirujano/telemetry/latest.md` |
 | Fleet report (with a registry) | `~/.local/share/cirujano/telemetry/fleet-latest.md` |
+| Fleet routing health (with a registry) | `~/.local/share/cirujano/telemetry/fleet-health.md` |
 | Standard log | `~/Library/Logs/cirujano/telemetry.log` |
 | Error log | `~/Library/Logs/cirujano/telemetry-error.log` |
+
+With a registry, the wrapper first runs `cirujano fleet health --format markdown` and writes `fleet-health.md` (see the routing switch section of [the Nebius runner runbook](nebius-runner.md)). It runs before collection, so a GitHub outage that fails collection cannot hide it. When a row is red, or the check fails, the wrapper sends a macOS notification through `CIRUJANO_NOTIFY_COMMAND` (default `/usr/bin/osascript`). A failed check keeps the previous report. Neither case fails collection.
 
 The wrapper accepts `CIRUJANO_TELEMETRY_OWNER`,
 `CIRUJANO_TELEMETRY_STORE`, `CIRUJANO_TELEMETRY_SINCE`,

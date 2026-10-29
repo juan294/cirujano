@@ -16,6 +16,13 @@ REPORT_TEMP="$REPORT_PATH.$$.tmp"
 REGISTRY_PATH="${CIRUJANO_FLEET_REGISTRY:-$STORE_PATH/fleet-registry.json}"
 FLEET_REPORT_PATH="$STORE_PATH/fleet-latest.md"
 FLEET_REPORT_TEMP="$FLEET_REPORT_PATH.$$.tmp"
+FLEET_HEALTH_PATH="$STORE_PATH/fleet-health.md"
+FLEET_HEALTH_TEMP="$FLEET_HEALTH_PATH.$$.tmp"
+NOTIFY_COMMAND="${CIRUJANO_NOTIFY_COMMAND:-/usr/bin/osascript}"
+FLEET_ENABLED=0
+if [ -n "${CIRUJANO_FLEET_REGISTRY:-}" ] || [ -e "$REGISTRY_PATH" ]; then
+  FLEET_ENABLED=1
+fi
 
 mkdir -p "$STORE_PATH"
 
@@ -33,9 +40,44 @@ if [ "${CIRUJANO_TELEMETRY_LOCKED:-0}" != "1" ]; then
 fi
 
 cleanup() {
-  rm -f "$REPORT_TEMP" "$FLEET_REPORT_TEMP"
+  rm -f "$REPORT_TEMP" "$FLEET_REPORT_TEMP" "$FLEET_HEALTH_TEMP"
 }
 trap cleanup EXIT
+
+CLI_PATH="${CIRUJANO_CLI_PATH:-}"
+if [ -z "$CLI_PATH" ]; then
+  cd "$REPO_ROOT"
+  pnpm --dir packages/cli build
+  CLI_PATH="$REPO_ROOT/packages/cli/dist/bin.js"
+fi
+if [ ! -r "$CLI_PATH" ]; then
+  echo "telemetry: CLI bundle is not readable at $CLI_PATH" >&2
+  exit 1
+fi
+
+# Routing-switch health runs first, so a GitHub outage that fails collection cannot hide it. Exit 1
+# with a real report means a red row; anything else is a failed check that keeps the previous
+# report. Neither fails collection, and both notify the owner.
+if [ "$FLEET_ENABLED" = "1" ]; then
+  HEALTH_STATUS=0
+  NOTIFY_MESSAGE=""
+  node "$CLI_PATH" fleet health --registry "$REGISTRY_PATH" --format markdown > "$FLEET_HEALTH_TEMP" || HEALTH_STATUS=$?
+  if [ "$HEALTH_STATUS" -le 1 ] && [ "$(head -n 1 "$FLEET_HEALTH_TEMP")" = "# Cirujano fleet health" ]; then
+    mv "$FLEET_HEALTH_TEMP" "$FLEET_HEALTH_PATH"
+    echo "telemetry: fleet health updated at $FLEET_HEALTH_PATH (exit $HEALTH_STATUS)"
+    if [ "$HEALTH_STATUS" -eq 1 ]; then
+      NOTIFY_MESSAGE="Cirujano fleet health is red; see fleet-health.md"
+    fi
+  else
+    rm -f "$FLEET_HEALTH_TEMP"
+    echo "telemetry: fleet health check failed with exit $HEALTH_STATUS" >&2
+    NOTIFY_MESSAGE="Cirujano fleet health check failed; see the telemetry log"
+  fi
+  if [ -n "$NOTIFY_MESSAGE" ]; then
+    "$NOTIFY_COMMAND" -e "display notification \"$NOTIFY_MESSAGE\" with title \"Cirujano\"" ||
+      echo "telemetry: fleet health notification failed" >&2
+  fi
+fi
 
 # The owner lookup is the first GitHub read; retry it like the collector's own reads.
 if [ -z "$OWNER" ]; then
@@ -51,17 +93,6 @@ if [ -z "$OWNER" ]; then
   done
 fi
 
-CLI_PATH="${CIRUJANO_CLI_PATH:-}"
-if [ -z "$CLI_PATH" ]; then
-  cd "$REPO_ROOT"
-  pnpm --dir packages/cli build
-  CLI_PATH="$REPO_ROOT/packages/cli/dist/bin.js"
-fi
-if [ ! -r "$CLI_PATH" ]; then
-  echo "telemetry: CLI bundle is not readable at $CLI_PATH" >&2
-  exit 1
-fi
-
 node "$CLI_PATH" telemetry collect \
   --owner "$OWNER" \
   --store "$STORE_PATH" \
@@ -74,7 +105,7 @@ mv "$REPORT_TEMP" "$REPORT_PATH"
 
 echo "telemetry: report updated at $REPORT_PATH"
 
-if [ -n "${CIRUJANO_FLEET_REGISTRY:-}" ] || [ -e "$REGISTRY_PATH" ]; then
+if [ "$FLEET_ENABLED" = "1" ]; then
   node "$CLI_PATH" telemetry report \
     --store "$STORE_PATH" \
     --since "$SINCE" \

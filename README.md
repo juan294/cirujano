@@ -160,6 +160,8 @@ node packages/cli/dist/bin.js telemetry report \
   --format markdown
 ```
 
+Enrolled runner jobs are gated by a repository variable, so a runner that can no longer serve stops attracting jobs without a workflow push. `cirujano fleet runs-on` generates the gated line, `cirujano fleet health` reports each enrollment's routing state, and `cirujano fleet release` turns a runner off. See [ADR 0002](docs/decisions/0002-runner-routing-switch.md) and the routing switch section of [the Nebius runner runbook](docs/runbooks/nebius-runner.md).
+
 On macOS, `./scripts/install-telemetry-agent.sh` installs a launch agent that
 runs at login and every day at 06:10 local time. It uses the existing GitHub CLI
 login and stores raw snapshots and the cumulative `latest.md` report under

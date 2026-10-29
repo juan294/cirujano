@@ -1,7 +1,8 @@
 import type { CostRates, RunnerCostEstimate, RunnerCostInput } from './contracts.js';
 
 const HOUR_MS = 3_600_000;
-const THIRTY_DAY_MONTH_MS = 30 * 24 * HOUR_MS;
+/** The month the provider's per-GiB-month disk price is quoted for. */
+export const THIRTY_DAY_MONTH_MS = 30 * 24 * HOUR_MS;
 
 export function estimateRunnerCost(input: RunnerCostInput): RunnerCostEstimate {
   if (input.rates === null) return incomplete('explicit dated rates are required');

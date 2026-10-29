@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { LifecycleInput, Permit } from './contracts.js';
-import { GUEST_UP_STATES, canBeginAssignedJob, decideLifecycle, drainDeadlineMs, nextCapacityWait, parsePermit, validatePermit } from './lifecycle.js';
+import { GUEST_UP_STATES, canBeginAssignedJob, decideLifecycle, drainDeadlineMs, nextCapacityWait, parsePermit, validatePermit, validateReleasePermit } from './lifecycle.js';
 import { validConfig as rawConfig } from './config.test.js';
 import { parseRunnerConfig } from './config.js';
 
@@ -573,5 +573,28 @@ describe('provider capacity wait (public IPv4 quota)', () => {
     const old = nextCapacityWait(undefined, { quotas: ['q'] }, 'start-vm', NOW, 30_000);
     const later = nextCapacityWait({ ...old, refusals: 5 }, { quotas: ['q'] }, 'start-vm', old.retryAtMs + 3_600_000, 30_000);
     expect(later).toMatchObject({ refusals: 1, firstRefusedAtMs: old.retryAtMs + 3_600_000 });
+  });
+});
+
+describe('routing release authority (runner routing switch phase 3)', () => {
+  const identity = input().identity;
+  const releasing: Permit = { ...permit, operations: [...permit.operations, 'release-routing'] };
+
+  it('parses a permit that grants release-routing', () => {
+    expect(parsePermit(releasing).operations).toContain('release-routing');
+  });
+
+  it('accepts a current permit and an expired one that allows recovery', () => {
+    expect(validateReleasePermit(releasing, identity, NOW)).toEqual({ valid: true });
+    expect(validatePermit(releasing, identity, permit.expiresAtMs + 1)).toEqual({ valid: false, reason: 'permit is expired' });
+    expect(validateReleasePermit(releasing, identity, permit.expiresAtMs + 1)).toEqual({ valid: true });
+  });
+
+  it('refuses without the operation, without recovery after expiry, on identity mismatch and without a permit', () => {
+    expect(validateReleasePermit(permit, identity, NOW)).toEqual({ valid: false, reason: 'permit does not authorize release-routing' });
+    expect(validateReleasePermit({ ...releasing, recoveryAllowed: false }, identity, permit.expiresAtMs + 1))
+      .toEqual({ valid: false, reason: 'permit does not authorize recovery' });
+    expect(validateReleasePermit(releasing, { ...identity, controllerId: 'other' }, NOW)).toMatchObject({ valid: false, reason: expect.stringMatching(/controllerId/u) });
+    expect(validateReleasePermit(null, identity, NOW)).toEqual({ valid: false, reason: 'approval permit is absent' });
   });
 });

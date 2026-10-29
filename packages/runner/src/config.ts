@@ -11,7 +11,7 @@ const ROOT_KEYS = [
   'runnerLabel', 'slots', 'nebius', 'ssh', 'ownership', 'timing', 'rates',
 ] as const;
 // Optional on input so pilot configs keep parsing; the parsed config always carries it.
-const OPTIONAL_ROOT_KEYS = ['admission', 'idleResourcePolicy'] as const;
+const OPTIONAL_ROOT_KEYS = ['admission', 'idleResourcePolicy', 'routingSwitch'] as const;
 const ADMISSION_POLICIES: readonly AdmissionPolicy[] = ['default-branch-pushes', 'same-repository'];
 const REPOSITORY_KEYS = ['id', 'nameWithOwner', 'visibility'] as const;
 const NEBIUS_KEYS = ['profile', 'projectId', 'subnetId', 'imageId', 'platform', 'preset', 'diskType', 'diskSizeGiB'] as const;
@@ -99,6 +99,8 @@ export function parseRunnerConfig(input: unknown): RunnerConfig {
       networkEgressUsdPerGib: nonnegativeFinite(rates['networkEgressUsdPerGib'], 'rates.networkEgressUsdPerGib'),
       hostedUsdPerMinute: nonnegativeFinite(rates['hostedUsdPerMinute'], 'rates.hostedUsdPerMinute'),
     },
+    // Last and only when present, so configs written before the switch keep their hash.
+    ...(Object.hasOwn(root, 'routingSwitch') ? { routingSwitch: parseRoutingSwitch(root['routingSwitch']) } : {}),
   };
   if (parsed.nebius.platform !== 'cpu-d3') throw new ConfigError('nebius.platform must be cpu-d3 for the pilot');
   if (parsed.nebius.preset !== '4vcpu-16gb') throw new ConfigError('nebius.preset must be 4vcpu-16gb for the pilot');
@@ -121,6 +123,16 @@ function objectAt(value: unknown, path: string): Record<string, unknown> {
     throw new ConfigError(`${path} must be an object`);
   }
   return value as Record<string, unknown>;
+}
+
+function parseRoutingSwitch(value: unknown): { variable: string } {
+  const routingSwitch = objectAt(value, 'routingSwitch');
+  exactKeys(routingSwitch, ['variable'], 'routingSwitch');
+  const variable = routingSwitch['variable'];
+  if (typeof variable !== 'string' || !/^CIRUJANO_RUNNER_P[1-9]\d{0,3}$/u.test(variable)) {
+    throw new ConfigError('routingSwitch.variable must look like CIRUJANO_RUNNER_P1');
+  }
+  return { variable };
 }
 
 function exactKeys(object: Record<string, unknown>, allowed: readonly string[], path: string, optional: readonly string[] = []): void {

@@ -125,6 +125,52 @@ describe('telemetry scheduler', () => {
     expect(await fixture.reports()).toEqual(['--store STORE --since 2026-09-13 --format markdown']);
     await expect(readFile(resolve(fixture.store, 'latest.md'), 'utf8')).resolves.toBe('# plain\n');
     await expect(stat(resolve(fixture.store, 'fleet-latest.md'))).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(await fixture.healthCalls()).toEqual([]);
+    await expect(stat(resolve(fixture.store, 'fleet-health.md'))).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('writes fleet health and stays quiet while it is not red', async () => {
+    const fixture = await wrapperFixture();
+    await writeFile(resolve(fixture.store, 'fleet-registry.json'), '{}');
+    const result = await execFile(fixture.script, { env: fixture.env });
+    expect(await fixture.healthCalls()).toEqual(['--registry STORE/fleet-registry.json --format markdown']);
+    await expect(readFile(resolve(fixture.store, 'fleet-health.md'), 'utf8')).resolves.toBe('# Cirujano fleet health\n');
+    expect(await fixture.notifications()).toEqual([]);
+    expect(result.stdout).toMatch(/fleet health updated at .*fleet-health\.md \(exit 0\)/u);
+  });
+
+  it('notifies on a red health exit and keeps the report', async () => {
+    const fixture = await wrapperFixture();
+    await writeFile(resolve(fixture.store, 'fleet-registry.json'), '{}');
+    await execFile(fixture.script, { env: { ...fixture.env, MOCK_HEALTH_EXIT: '1' } });
+    await expect(readFile(resolve(fixture.store, 'fleet-health.md'), 'utf8')).resolves.toBe('# Cirujano fleet health\n');
+    expect(await fixture.notifications()).toEqual(['-e display notification "Cirujano fleet health is red; see fleet-health.md" with title "Cirujano"']);
+  });
+
+  it('a failing notifier or a crashed health check does not fail collection', async () => {
+    const fixture = await wrapperFixture();
+    await writeFile(resolve(fixture.store, 'fleet-registry.json'), '{}');
+    const notifyFailed = await execFile(fixture.script, { env: { ...fixture.env, MOCK_HEALTH_EXIT: '1', MOCK_NOTIFY_EXIT: '1' } });
+    expect(notifyFailed.stderr).toMatch(/telemetry: fleet health notification failed/u);
+
+    // The real CLI exits 1 on any fleet failure; without a report that is a failed check, not red.
+    await writeFile(resolve(fixture.store, 'fleet-health.md'), 'old health\n');
+    const crashed = await execFile(fixture.script, { env: { ...fixture.env, MOCK_HEALTH_EXIT: '1', MOCK_HEALTH_EMPTY: '1' } });
+    expect(crashed.stderr).toMatch(/telemetry: fleet health check failed with exit 1/u);
+    await expect(readFile(resolve(fixture.store, 'fleet-health.md'), 'utf8')).resolves.toBe('old health\n');
+    expect(await fixture.notifications()).toEqual([
+      '-e display notification "Cirujano fleet health is red; see fleet-health.md" with title "Cirujano"',
+      '-e display notification "Cirujano fleet health check failed; see the telemetry log" with title "Cirujano"',
+    ]);
+    expect((await readdir(fixture.store)).filter((name) => name.endsWith('.tmp'))).toEqual([]);
+  });
+
+  it('still checks fleet health when the fleet report fails', async () => {
+    const fixture = await wrapperFixture();
+    await writeFile(resolve(fixture.store, 'fleet-registry.json'), '{}');
+    await execFile(fixture.script, { env: { ...fixture.env, MOCK_FAIL_FLEET: '1', MOCK_HEALTH_EXIT: '1' } }).catch(() => undefined);
+    expect(await fixture.healthCalls()).toEqual(['--registry STORE/fleet-registry.json --format markdown']);
+    expect(await fixture.notifications()).toHaveLength(1);
   });
 
   it('exits non-zero and names the failing key when the fleet report fails', async () => {
@@ -177,14 +223,28 @@ describe('telemetry scheduler', () => {
   });
 });
 
+async function readLines(path: string): Promise<string[]> {
+  return (await readFile(path, 'utf8').catch(() => '')).trimEnd().split('\n').filter(Boolean);
+}
+
 /** Runs the wrapper inside its lock against a fixture store with a mock CLI that records each report call. */
 async function wrapperFixture() {
   const store = await mkdtemp(resolve(tmpdir(), 'cirujano-telemetry-wrapper-'));
   const mockCli = resolve(store, 'mock-cli.mjs');
   const calls = resolve(store, 'calls.log');
+  const healthCalls = resolve(store, 'health-calls.log');
+  const notifier = resolve(store, 'notify');
+  const notifications = resolve(store, 'notify.log');
+  await writeFile(notifier, `#!/bin/bash\nprintf '%s\\n' "$*" >> "${notifications}"\nexit "\${MOCK_NOTIFY_EXIT:-0}"\n`);
+  await chmod(notifier, 0o700);
   await writeFile(mockCli, `
     import { appendFileSync } from 'node:fs';
     const args = process.argv.slice(2);
+    if (args[0] === 'fleet' && args[1] === 'health') {
+      appendFileSync(process.env.MOCK_HEALTH_CALLS, args.slice(2).join(' ') + '\\n');
+      if (process.env.MOCK_HEALTH_EMPTY !== '1') process.stdout.write('# Cirujano fleet health\\n');
+      process.exit(Number(process.env.MOCK_HEALTH_EXIT || '0'));
+    }
     if (args[1] === 'report') {
       appendFileSync(process.env.MOCK_CALLS, args.slice(2).join(' ') + '\\n');
       if (args.includes('--registry')) {
@@ -209,8 +269,12 @@ async function wrapperFixture() {
       CIRUJANO_TELEMETRY_SINCE: '',
       CIRUJANO_TELEMETRY_LOOKBACK_HOURS: '',
       MOCK_CALLS: calls,
+      MOCK_HEALTH_CALLS: healthCalls,
+      CIRUJANO_NOTIFY_COMMAND: notifier,
     },
     reports: async () => (await readFile(calls, 'utf8')).trimEnd().split('\n').map((line) => line.replaceAll(store, 'STORE')),
+    healthCalls: async () => (await readLines(healthCalls)).map((line) => line.replaceAll(store, 'STORE')),
+    notifications: () => readLines(notifications),
   };
 }
 

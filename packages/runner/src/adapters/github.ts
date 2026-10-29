@@ -549,6 +549,39 @@ export class GitHubAdapter {
     return parseRegistrationTokenResponse(response.body);
   }
 
+  /** The routing switch: GitHub compares `vars.X == 'on'` case-insensitively, so this does too. */
+  async getVariable(owner: string, repository: string, name: string): Promise<'on' | 'other' | 'absent'> {
+    const response = await this.#call('GET', variableEndpoint(owner, repository, name), {}, true);
+    if (response.status === 404) return 'absent';
+    if (response.status !== 200) throw httpError(response, `reading variable ${name}`);
+    const value = (response.body as { value?: unknown } | null)?.value;
+    return typeof value === 'string' && value.toLowerCase() === 'on' ? 'on' : 'other';
+  }
+
+  async deleteVariable(owner: string, repository: string, name: string): Promise<'deleted' | 'absent'> {
+    const response = await this.#call('DELETE', variableEndpoint(owner, repository, name), {}, true);
+    if (response.status === 204) return 'deleted';
+    if (response.status === 404) return 'absent';
+    throw httpError(response, `deleting variable ${name}`);
+  }
+
+  /** A queued job on a label no runner serves ignores an ordinary cancel; force-cancel ends it. */
+  async forceCancelRun(owner: string, repository: string, runId: number): Promise<'accepted' | 'completed'> {
+    integer(runId, 'runId');
+    const response = await this.#call('POST', `/repos/${segment(owner)}/${segment(repository)}/actions/runs/${runId}/force-cancel`, {}, true);
+    if (response.status === 202) return 'accepted';
+    if (response.status === 409) return 'completed';
+    throw httpError(response, `force-cancelling run ${runId}`);
+  }
+
+  /** Measured 2026-10-29 (routing switch probe): a re-run reads the current variables, so it runs hosted once the switch is off. */
+  async rerunJob(owner: string, repository: string, jobId: number): Promise<'accepted'> {
+    integer(jobId, 'jobId');
+    const response = await this.#call('POST', `/repos/${segment(owner)}/${segment(repository)}/actions/jobs/${jobId}/rerun`, {}, true);
+    if (response.status === 201) return 'accepted';
+    throw httpError(response, `re-running job ${jobId}`);
+  }
+
   async removeOwnedRunner(owner: string, repository: string, ownership: RunnerOwnership): Promise<void> {
     if (ownership.ownership !== 'owned' || ownership.runner === null || ownership.matches.length !== 1) {
       throw new GitHubResponseError('runner removal requires one proven owned runner');
@@ -573,7 +606,8 @@ export class GitHubAdapter {
     return pages;
   }
 
-  async #call(method: 'GET' | 'POST' | 'DELETE', endpoint: string, fields: Readonly<Record<string, string>> = {}): Promise<IncludedResponse> {
+  /** `acceptHttpErrors` returns a parsed 4xx/5xx response (gh exits 1 for them) for the caller to map. */
+  async #call(method: 'GET' | 'POST' | 'DELETE', endpoint: string, fields: Readonly<Record<string, string>> = {}, acceptHttpErrors = false): Promise<IncludedResponse> {
     const hold = this.readHold();
     if (method === 'GET' && hold !== null) throw new GitHubResponseError(hold.reason);
     const key = JSON.stringify([endpoint, Object.entries(fields).sort(([a], [b]) => a.localeCompare(b))]);
@@ -591,7 +625,8 @@ export class GitHubAdapter {
     this.#observeQuota(head);
     const response = parseResponseBody(head);
     const matched304 = response.status === 304 && cached !== undefined;
-    if (result.exitCode !== 0 && !(result.exitCode === 1 && matched304)) {
+    const acceptedError = acceptHttpErrors && result.exitCode === 1 && response.status >= 400;
+    if (result.exitCode !== 0 && !(result.exitCode === 1 && matched304) && !acceptedError) {
       throw new GitHubResponseError(`gh exited ${result.exitCode} while reading HTTP ${response.status}`);
     }
     if (response.status === 304) {
@@ -653,4 +688,16 @@ export class GitHubAdapter {
 function segment(value: string): string {
   if (!/^[A-Za-z0-9_.-]+$/u.test(value)) throw new GitHubResponseError('GitHub owner and repository must be URL-safe path segments');
   return value;
+}
+
+function variableEndpoint(owner: string, repository: string, name: string): string {
+  if (!/^[A-Z][A-Z0-9_]*$/u.test(name)) throw new GitHubResponseError('variable name must be an upper-case repository variable identifier');
+  return `/repos/${segment(owner)}/${segment(repository)}/actions/variables/${name}`;
+}
+
+/** Keeps the status and GitHub's own message (credential-scrubbed and bounded) of a refused call. */
+function httpError(response: IncludedResponse, action: string): GitHubResponseError {
+  const message = (response.body as { message?: unknown } | null)?.message;
+  const detail = typeof message === 'string' ? `: ${redactCredentialShapes(message).slice(0, 300)}` : '';
+  return new GitHubResponseError(`GitHub returned HTTP ${response.status} ${action}${detail}`);
 }

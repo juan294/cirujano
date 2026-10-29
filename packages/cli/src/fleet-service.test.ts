@@ -7,7 +7,8 @@ import { describe, expect, it, vi } from 'vitest';
 import { parseRunnerConfig, parsePermit, runnerConfigHash, verifySshPublicKeyFingerprint } from '@cirujano/runner';
 
 import { runCli } from './cli.js';
-import { parseFleetRegistry, type FleetRegistry } from './fleet-registry.js';
+import { parseFleetRegistry, writeFleetRegistry, type FleetRegistry } from './fleet-registry.js';
+import { renderGatedRunsOn } from './fleet-routing.js';
 import { assertPublishable, createFleetCommandService, extractJobRunsOn, loadControllerEvidence, readControllerEvidence } from './fleet-service.js';
 
 const OWNER = 'juan294';
@@ -39,8 +40,19 @@ const HOSTED_WORKFLOW = [
   '',
 ].join('\n');
 
-const MIGRATED_WORKFLOW = HOSTED_WORKFLOW.replace('    runs-on: ubuntu-latest', `    runs-on: [self-hosted, linux, x64, ${LABEL}]`);
+const OWNER_ID = 4242;
+const LITERAL_WORKFLOW = HOSTED_WORKFLOW.replace('    runs-on: ubuntu-latest', `    runs-on: [self-hosted, linux, x64, ${LABEL}]`);
 const UNLABELLED_WORKFLOW = HOSTED_WORKFLOW.replace('    runs-on: ubuntu-latest', '    runs-on: [self-hosted, linux, x64]');
+
+/** The routing gate of one enrollment of the fake repository's CI workflow. */
+const gateFor = (enrollmentId = 'P1', runnerLabel = LABEL) => ({ enrollmentId, repository: 'juan294/app', workflowPath: '.github/workflows/ci.yml', runnerLabel, ownerUserId: OWNER_ID });
+
+/** The check job on the Cirujano gated selection that `fleet runs-on` generates for one enrollment. */
+function gatedWorkflow(enrollmentId: string, runnerLabel = LABEL): string {
+  const runsOn = renderGatedRunsOn(gateFor(enrollmentId, runnerLabel));
+  return HOSTED_WORKFLOW.replace('    runs-on: ubuntu-latest', `    runs-on: ${runsOn}`);
+}
+const MIGRATED_WORKFLOW = gatedWorkflow('P1');
 
 interface FakeGitHub {
   headCommit: string;
@@ -69,6 +81,7 @@ function pageRunnerFor(fake: FakeGitHub) {
     if (JSON.stringify(args.slice(0, 3)) !== JSON.stringify(['api', '--paginate', '--slurp']) || args.length !== 4) throw new Error(`fleet reads must stay read-only: ${args.join(' ')}`);
     const contents = /^\/repos\/juan294\/app\/contents\/\.github\/workflows\/ci\.yml\?ref=([0-9a-f]{40})$/u.exec(endpoint);
     if (endpoint === '/repos/juan294/app') return { stdout: JSON.stringify([{ id: 777, full_name: 'juan294/app', default_branch: 'main', visibility: 'private' }]) };
+    if (endpoint === '/users/juan294') return { stdout: JSON.stringify([{ id: OWNER_ID, login: 'juan294' }]) };
     if (endpoint === '/repos/juan294/app/branches/main') return { stdout: JSON.stringify([{ name: 'main', commit: { sha: fake.headCommit } }]) };
     if (endpoint === '/repos/juan294/app/branches/develop') return { stdout: JSON.stringify([{ name: 'develop', commit: { sha: fake.developHead } }]) };
     if (endpoint === '/repos/juan294/app/actions/workflows?per_page=100') {
@@ -200,9 +213,12 @@ describe('fleet command service (phase 1 U2)', () => {
   it('refuses to enroll a job that already targets a self-hosted or Cirujano runner, and a duplicate', async () => {
     const registryPath = await freshRegistry();
     const fake = fakeGitHub();
-    fake.files[HEAD] = { sha: MIGRATED_BLOB, content: MIGRATED_WORKFLOW };
+    fake.files[HEAD] = { sha: MIGRATED_BLOB, content: LITERAL_WORKFLOW };
     await expect(createFleetCommandService({}, pageRunnerFor(fake)).run(enrollArguments(registryPath), silent()))
       .rejects.toThrow(/already runs on self-hosted/u);
+    fake.files[HEAD] = { sha: MIGRATED_BLOB, content: MIGRATED_WORKFLOW };
+    await expect(createFleetCommandService({}, pageRunnerFor(fake)).run(enrollArguments(registryPath), silent()))
+      .rejects.toThrow(/runs-on uses an expression or matrix/u);
     const hosted = fakeGitHub();
     const service = createFleetCommandService({}, pageRunnerFor(hosted));
     expect(await service.run(enrollArguments(registryPath), silent())).toBe(0);
@@ -228,6 +244,12 @@ describe('fleet command service (phase 1 U2)', () => {
       await expect(service.run(cutover, silent())).rejects.toThrow(new RegExp(`runs-on lacks ${LABEL}`, 'u'));
       fake.files[MERGED] = { sha: '7'.repeat(40), content: HOSTED_WORKFLOW.replace('    runs-on: ubuntu-latest', `    runs-on: [self-hosted, ${LABEL}]`) };
       await expect(service.run(cutover, silent())).rejects.toThrow(/runs-on lacks linux, x64/u);
+      // A full literal label list has no switch: the runner could never be released without a workflow push.
+      fake.files[MERGED] = { sha: '8'.repeat(40), content: LITERAL_WORKFLOW };
+      await expect(service.run(cutover, silent())).rejects.toThrow(/ungated self-hosted selection; generate it with cirujano fleet runs-on --id P1/u);
+      // A hand-written expression is refused with the rule it breaks.
+      fake.files[MERGED] = { sha: '9'.repeat(40), content: MIGRATED_WORKFLOW.replace("vars.CIRUJANO_RUNNER_P1 == 'on' && ", '') };
+      await expect(service.run(cutover, silent())).rejects.toThrow(/is not the Cirujano gated selection \(.*switch gate.*\); generate it with cirujano fleet runs-on --id P1/u);
       expect((await readRegistry(registryPath)).enrollments[0]).toMatchObject({ status: 'proposed', after: null });
 
       fake.files[MERGED] = { sha: MIGRATED_BLOB, content: MIGRATED_WORKFLOW };
@@ -235,6 +257,7 @@ describe('fleet command service (phase 1 U2)', () => {
       expect(await service.run(cutover, io)).toBe(0);
       expect((await readRegistry(registryPath)).enrollments[0]).toMatchObject({
         status: 'cut-over',
+        routingSwitch: 'CIRUJANO_RUNNER_P1',
         after: { commit: MERGED, workflowBlobSha: MIGRATED_BLOB, runsOn: ['self-hosted', 'linux', 'x64', LABEL], recordedAt: '2026-09-17T12:00:00.000Z' },
       });
       expect(JSON.parse(out.join(''))).toMatchObject({ status: 'cut-over', id: 'P1' });
@@ -312,11 +335,132 @@ describe('fleet command service (phase 1 U2)', () => {
     expect((await readRegistry(registryPath)).enrollments.map(({ id, status }) => [id, status])).toEqual([['P1', 'reverted'], ['P2', 'proposed']]);
 
     // The new enrollment owns live drift; historical P1 must not reject its cutover.
-    fake.files[edited] = { sha: MIGRATED_BLOB, content: MIGRATED_WORKFLOW };
+    fake.files[edited] = { sha: MIGRATED_BLOB, content: gatedWorkflow('P2') };
     expect(await service.run({ command: 'fleet', action: 'cutover', registryPath, id: 'P2', commit: edited }, silent())).toBe(0);
     const reenrolled = capture();
     expect(await service.run(verify, reenrolled.io)).toBe(0);
     expect(reenrolled.err).toEqual([]);
+  });
+
+  it('verify reports an unrecognized expression without aborting the other enrollments', async () => {
+    const registryPath = await freshRegistry();
+    const fake = fakeGitHub();
+    const service = createFleetCommandService({}, pageRunnerFor(fake));
+    expect(await service.run(enrollArguments(registryPath), silent())).toBe(0);
+    expect(await service.run({ ...enrollArguments(registryPath), jobKey: 'lint' }, silent())).toBe(0);
+    expect(await service.run({ ...enrollArguments(registryPath), jobKey: 'shards', jobNames: ['Shard 1', 'Shard 2'] }, silent())).toBe(0);
+    const handWritten = "${{ github.actor_id == '4242' && fromJSON('[\"self-hosted\",\"linux\",\"x64\",\"cirujano-p2-actions_linux\"]') || 'ubuntu-latest' }}";
+    const lines = gatedWorkflow('P1').split('\n');
+    lines[lines.indexOf('    runs-on: [ubuntu-24.04]')] = `    runs-on: ${handWritten}`;
+    lines[lines.lastIndexOf('    runs-on: ubuntu-latest')] = `    runs-on: ${renderGatedRunsOn(gateFor('P3', 'cirujano-p3-actions_linux'))}`;
+    fake.files[MERGED] = { sha: MIGRATED_BLOB, content: lines.join('\n') };
+    fake.ancestors.push(MERGED);
+    expect(await service.run({ command: 'fleet', action: 'cutover', registryPath, id: 'P1', commit: MERGED }, silent())).toBe(0);
+    expect(await service.run({ command: 'fleet', action: 'cutover', registryPath, id: 'P3', commit: MERGED }, silent())).toBe(0);
+    await expect(service.run({ command: 'fleet', action: 'cutover', registryPath, id: 'P2', commit: MERGED }, silent()))
+      .rejects.toThrow(/job lint runs-on is not the Cirujano gated selection/u);
+    fake.headCommit = MERGED;
+
+    const { io, out, err } = capture();
+    expect(await service.run({ command: 'fleet', action: 'verify', registryPath }, io)).toBe(1);
+    expect(err.join('')).toMatch(new RegExp(`P2: cannot read the runner selection at ${MERGED}: job lint runs-on is not the Cirujano gated selection`, 'u'));
+    expect(err).toHaveLength(1);
+    expect(JSON.parse(out.join(''))).toMatchObject({ status: 'mismatch', enrollments: [{ id: 'P1', status: 'cut-over' }, { id: 'P2', status: 'proposed' }, { id: 'P3', status: 'cut-over' }] });
+    expect((await readRegistry(registryPath)).enrollments.map(({ id, status, routingSwitch }) => [id, status, routingSwitch]))
+      .toEqual([['P1', 'cut-over', 'CIRUJANO_RUNNER_P1'], ['P2', 'proposed', undefined], ['P3', 'cut-over', 'CIRUJANO_RUNNER_P3']]);
+  });
+
+  it('verify reports an ungated cut-over enrollment and an ungated live selection', async () => {
+    const registryPath = await freshRegistry();
+    const fake = fakeGitHub();
+    const service = createFleetCommandService({}, pageRunnerFor(fake));
+    expect(await service.run(enrollArguments(registryPath), silent())).toBe(0);
+    fake.files[MERGED] = { sha: MIGRATED_BLOB, content: MIGRATED_WORKFLOW };
+    fake.ancestors.push(MERGED);
+    fake.headCommit = MERGED;
+    expect(await service.run({ command: 'fleet', action: 'cutover', registryPath, id: 'P1', commit: MERGED }, silent())).toBe(0);
+    const verify = { command: 'fleet' as const, action: 'verify' as const, registryPath };
+    expect(await service.run(verify, silent())).toBe(0);
+
+    // A legacy record cut over before the switch existed.
+    const registry = await readRegistry(registryPath);
+    const legacy = { ...registry.enrollments[0]! };
+    delete legacy.routingSwitch;
+    await writeFleetRegistry(registryPath, { ...registry, enrollments: [legacy] });
+    const legacyRun = capture();
+    expect(await service.run(verify, legacyRun.io)).toBe(1);
+    expect(legacyRun.err.join('')).toMatch(/P1: ungated enrollment; the runner cannot be released without a workflow push/u);
+    await writeFleetRegistry(registryPath, registry);
+
+    // A live edit that drops the gate but keeps the labels.
+    const ungated = 'e'.repeat(40);
+    fake.ancestors.push(ungated);
+    fake.headCommit = ungated;
+    fake.files[ungated] = { sha: '8'.repeat(40), content: LITERAL_WORKFLOW };
+    const liveRun = capture();
+    expect(await service.run(verify, liveRun.io)).toBe(1);
+    expect(liveRun.err.join('')).toMatch(new RegExp(`P1: live runner selection at ${ungated} is ungated; generate it with cirujano fleet runs-on --id P1`, 'u'));
+    expect((await readRegistry(registryPath)).enrollments[0]).toMatchObject({ status: 'cut-over', routingSwitch: 'CIRUJANO_RUNNER_P1' });
+  });
+
+  it('generates the gated selection for an enrollment without writing the registry', async () => {
+    const registryPath = await freshRegistry();
+    const fake = fakeGitHub();
+    const service = createFleetCommandService({}, pageRunnerFor(fake));
+    expect(await service.run(enrollArguments(registryPath), silent())).toBe(0);
+    const before = await readFile(registryPath, 'utf8');
+    const { io, out } = capture();
+    expect(await service.run({ command: 'fleet', action: 'runs-on', registryPath, id: 'P1' }, io)).toBe(0);
+    const expected = renderGatedRunsOn(gateFor());
+    const generated = JSON.parse(out.join('')) as { yaml: string; switchVariable: string; enableCommand: string };
+    expect(generated).toMatchObject({
+      status: 'generated', id: 'P1', job: 'check', workflowPath: '.github/workflows/ci.yml', switchVariable: 'CIRUJANO_RUNNER_P1',
+      yaml: `runs-on: ${expected}`, enableCommand: 'gh variable set CIRUJANO_RUNNER_P1 --body on --repo juan294/app',
+    });
+    // The generated line is exactly what cutover accepts.
+    const workflow = HOSTED_WORKFLOW.replace('    runs-on: ubuntu-latest', `    ${generated.yaml}`);
+    expect(extractJobRunsOn(workflow, 'check', gateFor()))
+      .toMatchObject({ runsOn: ['self-hosted', 'linux', 'x64', LABEL], routingSwitch: 'CIRUJANO_RUNNER_P1' });
+    expect(await readFile(registryPath, 'utf8')).toBe(before);
+    expect(fake.requests).toContain('/users/juan294');
+    await expect(service.run({ command: 'fleet', action: 'runs-on', registryPath, id: 'P9' }, silent())).rejects.toThrow(/enrollment P9 does not exist/u);
+
+    const registry = await readRegistry(registryPath);
+    const reverted = { ...registry.enrollments[0]!, status: 'reverted' as const, after: { ...registry.enrollments[0]!.before, runsOn: ['self-hosted', 'linux', 'x64', LABEL] } };
+    await writeFleetRegistry(registryPath, { ...registry, enrollments: [reverted] });
+    await expect(service.run({ command: 'fleet', action: 'runs-on', registryPath, id: 'P1' }, silent()))
+      .rejects.toThrow(/enrollment P1 is reverted; enroll it afresh before generating its runner selection/u);
+  });
+
+  it('verify reports a GitHub read failure for one enrollment and still verifies the others', async () => {
+    const registryPath = await freshRegistry();
+    const fake = fakeGitHub();
+    const service = createFleetCommandService({}, pageRunnerFor(fake));
+    expect(await service.run(enrollArguments(registryPath), silent())).toBe(0);
+    // Add an enrollment for a repository the fake cannot read, as an earlier enroll would have recorded it.
+    const registry = await readRegistry(registryPath);
+    const unreadable = { ...registry.enrollments[0]!, id: 'P2', repository: 'juan294/other' };
+    const readable = { ...registry.enrollments[0]!, id: 'P3', jobKey: 'lint', runnerLabel: 'cirujano-p3-actions_linux' };
+    await writeFleetRegistry(registryPath, { ...registry, enrollments: [registry.enrollments[0]!, unreadable, readable] });
+    fake.requests.length = 0;
+
+    const { io, out, err } = capture();
+    expect(await service.run({ command: 'fleet', action: 'verify', registryPath }, io)).toBe(1);
+    expect(err.join('')).toMatch(/^P2: cannot read the runner selection: unexpected GitHub read \/repos\/juan294\/other\n$/u);
+    expect(JSON.parse(out.join(''))).toMatchObject({ status: 'mismatch', enrollments: [{ id: 'P1' }, { id: 'P2' }, { id: 'P3' }] });
+    expect(fake.requests.filter((endpoint) => endpoint.includes('contents/.github/workflows/ci.yml'))).toHaveLength(2);
+  });
+
+  it('verify tells a proposed enrollment carrying ungated labels to generate the gated selection', async () => {
+    const registryPath = await freshRegistry();
+    const fake = fakeGitHub();
+    const service = createFleetCommandService({}, pageRunnerFor(fake));
+    expect(await service.run(enrollArguments(registryPath), silent())).toBe(0);
+    fake.headCommit = MERGED;
+    fake.files[MERGED] = { sha: '8'.repeat(40), content: LITERAL_WORKFLOW };
+    const { io, err } = capture();
+    expect(await service.run({ command: 'fleet', action: 'verify', registryPath }, io)).toBe(1);
+    expect(err.join('')).toMatch(new RegExp(`P1: live workflow carries ${LABEL} at ${MERGED} without the routing switch; generate it with cirujano fleet runs-on --id P1`, 'u'));
   });
 
   it('shows the registry as JSON through the CLI and maps runtime failures to exit 1', async () => {
@@ -405,6 +549,20 @@ describe('fleet controller-config and permit-proposal (phase 2 U1)', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('copies the routing switch of a gated cut-over enrollment into the controller config, and nothing for a proposed one', async () => {
+    const { registryPath, service, templatePath, stateRoot } = await enrolledFixture();
+    expect(await service.run({ command: 'fleet', action: 'controller-config', registryPath, id: 'P1', stateRoot, templatePath }, silent())).toBe(0);
+    expect(Object.hasOwn(parseRunnerConfig(JSON.parse(await readFile(join(stateRoot, 'P1', 'config.json'), 'utf8'))), 'routingSwitch')).toBe(false);
+
+    const registry = await readRegistry(registryPath);
+    const gated = { ...registry.enrollments[0]!, status: 'cut-over' as const, routingSwitch: 'CIRUJANO_RUNNER_P1', controller: null,
+      after: { ...registry.enrollments[0]!.before, runsOn: ['self-hosted', 'linux', 'x64', LABEL] } };
+    await writeFleetRegistry(registryPath, { ...registry, enrollments: [gated] });
+    const fresh = join(stateRoot, 'gated');
+    expect(await service.run({ command: 'fleet', action: 'controller-config', registryPath, id: 'P1', stateRoot: fresh, templatePath }, silent())).toBe(0);
+    expect(parseRunnerConfig(JSON.parse(await readFile(join(fresh, 'P1', 'config.json'), 'utf8'))).routingSwitch).toEqual({ variable: 'CIRUJANO_RUNNER_P1' });
   });
 
   it('uses the enrollment branch for controller admission and refuses a conflicting override', async () => {
@@ -673,7 +831,7 @@ describe('extractJobRunsOn', () => {
     expect(extractJobRunsOn(HOSTED_WORKFLOW, 'check')).toEqual({ runsOn: ['ubuntu-latest'], name: 'Check', matrix: false });
     expect(extractJobRunsOn(HOSTED_WORKFLOW, 'lint')).toEqual({ runsOn: ['ubuntu-24.04'], name: null, matrix: false });
     expect(extractJobRunsOn(HOSTED_WORKFLOW, 'shards')).toEqual({ runsOn: ['ubuntu-latest'], name: null, matrix: true });
-    expect(extractJobRunsOn(MIGRATED_WORKFLOW, 'check')).toEqual({ runsOn: ['self-hosted', 'linux', 'x64', LABEL], name: 'Check', matrix: false });
+    expect(extractJobRunsOn(LITERAL_WORKFLOW, 'check')).toEqual({ runsOn: ['self-hosted', 'linux', 'x64', LABEL], name: 'Check', matrix: false });
     const block = ['jobs:', '  build:', '    runs-on:', '      - self-hosted', '      - "linux" # comment', "      - 'x64'", '    steps: []', ''].join('\n');
     expect(extractJobRunsOn(block, 'build')).toEqual({ runsOn: ['self-hosted', 'linux', 'x64'], name: null, matrix: false });
     const sameIndent = ['jobs:', '  build:', '    runs-on:', '    - self-hosted', '    - linux', '    steps: []', ''].join('\n');
@@ -689,5 +847,21 @@ describe('extractJobRunsOn', () => {
     expect(() => extractJobRunsOn(['jobs:', '  a:', '    runs-on: >', '      ubuntu-latest', ''].join('\n'), 'a')).toThrow(/block scalar/u);
     expect(() => extractJobRunsOn(['jobs:', '  a:', '    runs-on:', '    steps: []', ''].join('\n'), 'a')).toThrow(/runs-on is empty/u);
     expect(() => extractJobRunsOn('name: nothing\n', 'a')).toThrow(/has no jobs block/u);
+  });
+
+  it('reads the gated selection only for the enrollment it names', () => {
+    const gate = gateFor();
+    expect(extractJobRunsOn(MIGRATED_WORKFLOW, 'check', gate)).toEqual({
+      runsOn: ['self-hosted', 'linux', 'x64', LABEL], routingSwitch: 'CIRUJANO_RUNNER_P1', name: 'Check', matrix: false,
+    });
+    expect(extractJobRunsOn(LITERAL_WORKFLOW, 'check', gate)).toEqual({ runsOn: ['self-hosted', 'linux', 'x64', LABEL], name: 'Check', matrix: false });
+    expect(() => extractJobRunsOn(MIGRATED_WORKFLOW, 'check')).toThrow(/runs-on uses an expression or matrix/u);
+    expect(() => extractJobRunsOn(MIGRATED_WORKFLOW, 'check', { ...gate, enrollmentId: 'P2' }))
+      .toThrow(/job check runs-on is not the Cirujano gated selection \(switch variable must be CIRUJANO_RUNNER_P2\); generate it with cirujano fleet runs-on --id P2/u);
+    const quoted = MIGRATED_WORKFLOW.replace(/runs-on: (\$\{\{.*\}\})/u, (_line, expression: string) => `runs-on: "${expression.replaceAll('"', '\\"')}"`);
+    expect(extractJobRunsOn(quoted, 'check', gate).routingSwitch).toBe('CIRUJANO_RUNNER_P1');
+    // A single-quoted scalar with unescaped inner quotes is invalid YAML; GitHub would never run it.
+    const broken = MIGRATED_WORKFLOW.replace(/runs-on: (\$\{\{.*\}\})/u, (_line, expression: string) => `runs-on: '${expression}'`);
+    expect(() => extractJobRunsOn(broken, 'check', gate)).toThrow(/is not the Cirujano gated selection \(YAML scalar/u);
   });
 });
