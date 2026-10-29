@@ -51,6 +51,8 @@ class FakeRouting implements RoutingGitHub {
   incomplete: string | null = null;
   runsIncomplete: string | null = null;
   cancelFails = new Set<number>();
+  cancelCompleted = new Set<number>();
+  rerunFails = new Set<number>();
   cancelLags = false;
   readonly writes: string[] = [];
 
@@ -69,7 +71,7 @@ class FakeRouting implements RoutingGitHub {
     this.writes.push(`force-cancel ${runId}`);
     if (this.cancelFails.has(runId)) throw new Error(`GitHub returned HTTP 500 force-cancelling run ${runId}: boom`);
     if (!this.cancelLags) this.runs = this.runs.filter(({ id }) => id !== runId);
-    return 'accepted' as const;
+    return this.cancelCompleted.has(runId) ? 'completed' as const : 'accepted' as const;
   }
   async listActiveRuns(): Promise<Collection<WorkflowRun>> {
     const reason = this.incomplete ?? this.runsIncomplete;
@@ -77,6 +79,7 @@ class FakeRouting implements RoutingGitHub {
   }
   async rerunJob(_owner: string, _repository: string, jobId: number) {
     this.writes.push(`rerun ${jobId}`);
+    if (this.rerunFails.has(jobId)) throw new Error(`GitHub returned HTTP 422 re-running job ${jobId}: run is active`);
     return 'accepted' as const;
   }
   async listJobs(_owner: string, _repository: string, runId: number, runAttempt: number): Promise<Collection<WorkflowJob>> {
@@ -384,8 +387,39 @@ describe('fleet release', () => {
     const github = new FakeRouting();
     github.runsIncomplete = 'GitHub HTTP 502';
     const outcome = await cancelAndRerun(github, 'juan294', 'app', { cancellable: [10], strandedJobsByRun: { 10: [1] } }, { attempts: 2, intervalMs: 1, sleep: async () => undefined });
-    expect(outcome).toEqual({ cancelled: [10], rerun: [], stillActive: 'unknown', failedCancels: [], failedReruns: [] });
+    expect(outcome).toEqual({ cancelled: [10], alreadyCompleted: [], rerun: [], notRerun: [], stillActive: 'unknown', failedCancels: [], failedReruns: [] });
     expect(github.writes).toEqual(['force-cancel 10']);
+  });
+
+  it('re-runs only runs it cancelled, and only the first stranded job of each', async () => {
+    const github = new FakeRouting();
+    github.runs = [run(10), run(11)];
+    github.cancelCompleted.add(11);
+    const outcome = await cancelAndRerun(github, 'juan294', 'app', { cancellable: [10, 11], strandedJobsByRun: { 10: [1, 2], 11: [3] } }, { attempts: 1, intervalMs: 1, sleep: async () => undefined });
+    expect(outcome).toEqual({ cancelled: [10], alreadyCompleted: [11], rerun: [1], notRerun: [2], stillActive: [], failedCancels: [], failedReruns: [] });
+    expect(github.writes).toEqual(['force-cancel 10', 'force-cancel 11', 'rerun 1']);
+  });
+
+  it('reports a failed re-run with the push-or-dispatch step', async () => {
+    const fx = await fixture();
+    fx.github.runs = [run(10)];
+    fx.github.jobs = [job(1, 10, 'queued')];
+    fx.github.rerunFails.add(1);
+    const { exitCode, report } = await release(fx, true);
+    expect(exitCode).toBe(1);
+    expect(report).toMatchObject({
+      cancelled: [10], rerun: [], failedReruns: [{ jobId: 1, error: 'GitHub returned HTTP 422 re-running job 1: run is active' }],
+      nextStep: 'push or dispatch a new run for the runs whose jobs were not re-run; with the switch off it runs on ubuntu-latest',
+    });
+  });
+
+  it('never cancels or re-runs while the switch stays on', async () => {
+    const fx = await fixture();
+    fx.github.deleteSticks = false;
+    fx.github.runs = [run(10)];
+    fx.github.jobs = [job(1, 10, 'queued')];
+    expect((await release(fx, true)).exitCode).toBe(1);
+    expect(fx.github.writes.filter((write) => !write.startsWith('delete'))).toEqual([]);
   });
 
   it('exits 1 when the switch is still on after a retried delete', async () => {

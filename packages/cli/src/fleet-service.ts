@@ -96,15 +96,7 @@ export function createFleetCommandService(
       if (args.action === 'enroll') return enroll(args, registry, registryPath, source, io);
       if (args.action === 'cutover') return cutover(args, registry, registryPath, source, io);
       if (args.action === 'runs-on') return runsOn(args, registry, source, io);
-      if (args.action === 'health') {
-        const report = await fleetHealth({
-          registry, registryPath, source, githubFor: routingGitHub, defaultTiming: OPERATING_TIMING,
-          networkEgressLimitGiB: Number(environment['CIRUJANO_NETWORK_EGRESS_LIMIT_GIB'] ?? '10'),
-          nowMs: args.now === undefined ? Date.now() : Date.parse(args.now), nowOverridden: args.now !== undefined,
-        });
-        io.stdout(args.format === 'markdown' ? renderHealthMarkdown(report) : `${JSON.stringify(report)}\n`);
-        return report.status === 'red' ? 1 : 0;
-      }
+      if (args.action === 'health') return health(args, registry, registryPath, source, routingGitHub, environment, io);
       if (args.action === 'release') return fleetRelease({ registry, registryPath, id: args.id, cancelStranded: args.cancelStranded, github: routingGitHub(), io });
       if (args.action === 'controller-config') return controllerConfig(args, registry, registryPath, source, environment, io);
       if (args.action === 'permit-proposal') return permitProposal(args, registry, io);
@@ -112,6 +104,19 @@ export function createFleetCommandService(
       return verify(registry, registryPath, source, io);
     },
   };
+}
+
+async function health(
+  args: Extract<FleetArguments, { action: 'health' }>, registry: FleetRegistry, registryPath: string, source: GitHubFleetSource,
+  githubFor: () => RoutingGitHub, environment: NodeJS.ProcessEnv, io: CliIo,
+): Promise<0 | 1> {
+  const report = await fleetHealth({
+    registry, registryPath, source, githubFor, defaultTiming: OPERATING_TIMING,
+    networkEgressLimitGiB: Number(environment['CIRUJANO_NETWORK_EGRESS_LIMIT_GIB'] ?? '10'),
+    nowMs: args.now === undefined ? Date.now() : Date.parse(args.now), nowOverridden: args.now !== undefined,
+  });
+  io.stdout(args.format === 'markdown' ? renderHealthMarkdown(report) : `${JSON.stringify(report)}\n`);
+  return report.status === 'red' ? 1 : 0;
 }
 
 /** The owner's authenticated gh, through the same adapter the runner controller uses. */

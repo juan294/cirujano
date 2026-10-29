@@ -19,6 +19,10 @@ FLEET_REPORT_TEMP="$FLEET_REPORT_PATH.$$.tmp"
 FLEET_HEALTH_PATH="$STORE_PATH/fleet-health.md"
 FLEET_HEALTH_TEMP="$FLEET_HEALTH_PATH.$$.tmp"
 NOTIFY_COMMAND="${CIRUJANO_NOTIFY_COMMAND:-/usr/bin/osascript}"
+FLEET_ENABLED=0
+if [ -n "${CIRUJANO_FLEET_REGISTRY:-}" ] || [ -e "$REGISTRY_PATH" ]; then
+  FLEET_ENABLED=1
+fi
 
 mkdir -p "$STORE_PATH"
 
@@ -54,20 +58,22 @@ fi
 # Routing-switch health runs first, so a GitHub outage that fails collection cannot hide it. Exit 1
 # with a real report means a red row; anything else is a failed check that keeps the previous
 # report. Neither fails collection, and both notify the owner.
-if [ -n "${CIRUJANO_FLEET_REGISTRY:-}" ] || [ -e "$REGISTRY_PATH" ]; then
+if [ "$FLEET_ENABLED" = "1" ]; then
   HEALTH_STATUS=0
+  NOTIFY_MESSAGE=""
   node "$CLI_PATH" fleet health --registry "$REGISTRY_PATH" --format markdown > "$FLEET_HEALTH_TEMP" || HEALTH_STATUS=$?
   if [ "$HEALTH_STATUS" -le 1 ] && [ "$(head -n 1 "$FLEET_HEALTH_TEMP")" = "# Cirujano fleet health" ]; then
     mv "$FLEET_HEALTH_TEMP" "$FLEET_HEALTH_PATH"
     echo "telemetry: fleet health updated at $FLEET_HEALTH_PATH (exit $HEALTH_STATUS)"
-    NOTIFY_MESSAGE="Cirujano fleet health is red; see fleet-health.md"
+    if [ "$HEALTH_STATUS" -eq 1 ]; then
+      NOTIFY_MESSAGE="Cirujano fleet health is red; see fleet-health.md"
+    fi
   else
     rm -f "$FLEET_HEALTH_TEMP"
     echo "telemetry: fleet health check failed with exit $HEALTH_STATUS" >&2
-    HEALTH_STATUS=2
     NOTIFY_MESSAGE="Cirujano fleet health check failed; see the telemetry log"
   fi
-  if [ "$HEALTH_STATUS" -ne 0 ]; then
+  if [ -n "$NOTIFY_MESSAGE" ]; then
     "$NOTIFY_COMMAND" -e "display notification \"$NOTIFY_MESSAGE\" with title \"Cirujano\"" ||
       echo "telemetry: fleet health notification failed" >&2
   fi
@@ -99,7 +105,7 @@ mv "$REPORT_TEMP" "$REPORT_PATH"
 
 echo "telemetry: report updated at $REPORT_PATH"
 
-if [ -n "${CIRUJANO_FLEET_REGISTRY:-}" ] || [ -e "$REGISTRY_PATH" ]; then
+if [ "$FLEET_ENABLED" = "1" ]; then
   node "$CLI_PATH" telemetry report \
     --store "$STORE_PATH" \
     --since "$SINCE" \

@@ -8,13 +8,13 @@ import {
   projectedStartCostUsd,
   runnerConfigHash,
   selectStrandedRuns,
+  type Collection,
+  type GitHubAdapter,
+  type Permit,
   type PermitIdentity,
   type RunnerConfig,
-  type Collection,
-  type Permit,
   type TimingConfig,
   type WorkflowJob,
-  type WorkflowRun,
 } from '@cirujano/runner';
 
 import type { CliIo } from './cli.js';
@@ -27,40 +27,44 @@ import { readOptionalJson } from './github-api.js';
  * phase 2). Health is read-only; release is the owner's command to turn one runner's routing off.
  */
 
-/** The GitHub calls health and release need; GitHubAdapter from @cirujano/runner implements them. */
-export interface RoutingGitHub {
-  getVariable(owner: string, repository: string, name: string): Promise<'on' | 'other' | 'absent'>;
-  deleteVariable(owner: string, repository: string, name: string): Promise<'deleted' | 'absent'>;
-  forceCancelRun(owner: string, repository: string, runId: number): Promise<'accepted' | 'completed'>;
-  listActiveRuns(owner: string, repository: string): Promise<Collection<WorkflowRun>>;
-  listJobs(owner: string, repository: string, runId: number, runAttempt: number): Promise<Collection<WorkflowJob>>;
-  rerunJob(owner: string, repository: string, jobId: number): Promise<'accepted'>;
-}
+/** The GitHub calls health and release need, exactly as GitHubAdapter declares them. */
+export type RoutingGitHub = Pick<GitHubAdapter, 'getVariable' | 'deleteVariable' | 'forceCancelRun' | 'listActiveRuns' | 'listJobs' | 'rerunJob'>;
 
 export interface CancelOutcome {
   cancelled: number[];
+  /** Runs that had finished before the cancel (HTTP 409); they are not ours to re-run. */
+  alreadyCompleted: number[];
   rerun: number[];
+  /** Further stranded jobs of a run whose first stranded job was re-run (one job re-run per run). */
+  notRerun: number[];
   stillActive: number[] | 'unknown';
   failedCancels: Array<{ runId: number; error: string }>;
   failedReruns: Array<{ jobId: number; error: string }>;
 }
 
+/** Every stranded job was re-run and nothing is left for a push or dispatch. */
+export function cancelOutcomeClean(outcome: CancelOutcome): boolean {
+  return outcome.stillActive !== 'unknown' && outcome.stillActive.length === 0 && outcome.notRerun.length === 0
+    && outcome.failedReruns.length === 0 && outcome.failedCancels.length === 0;
+}
+
 /**
- * Force-cancels each run and, once GitHub reports it finished, re-runs its stranded jobs. Call only
- * after the switch is confirmed off: the 2026-10-29 probe measured that a re-run reads the current
- * variables, so the jobs then run on ubuntu-latest. Force-cancel is asynchronous; runs still active
- * after the bounded wait are reported, not re-run. Every failure is recorded per run or job.
+ * Force-cancels each run and, once GitHub reports it finished, re-runs its first stranded job. Call
+ * only after the switch is confirmed off: the 2026-10-29 probe measured that a re-run reads the
+ * current variables, so the job then runs on ubuntu-latest. The probe covered one job per run, so
+ * further stranded jobs of the same run are listed for a push or dispatch instead. Force-cancel is
+ * asynchronous; runs still active after the bounded wait are reported, not re-run. Every failure is
+ * recorded per run or job.
  */
 export async function cancelAndRerun(
   github: RoutingGitHub, owner: string, name: string,
   stranded: { cancellable: readonly number[]; strandedJobsByRun: Readonly<Record<number, readonly number[]>> },
   wait: { attempts: number; sleep: (ms: number) => Promise<void>; intervalMs: number } = { attempts: 10, sleep: (ms) => new Promise((done) => setTimeout(done, ms)), intervalMs: 3_000 },
 ): Promise<CancelOutcome> {
-  const outcome: CancelOutcome = { cancelled: [], rerun: [], stillActive: [], failedCancels: [], failedReruns: [] };
+  const outcome: CancelOutcome = { cancelled: [], alreadyCompleted: [], rerun: [], notRerun: [], stillActive: [], failedCancels: [], failedReruns: [] };
   for (const runId of stranded.cancellable) {
     try {
-      await github.forceCancelRun(owner, name, runId);
-      outcome.cancelled.push(runId);
+      (await github.forceCancelRun(owner, name, runId) === 'accepted' ? outcome.cancelled : outcome.alreadyCompleted).push(runId);
     } catch (error) {
       outcome.failedCancels.push({ runId, error: message(error) });
     }
@@ -80,19 +84,20 @@ export async function cancelAndRerun(
   }
   outcome.stillActive = active;
   for (const runId of outcome.cancelled.filter((id) => !active.includes(id))) {
-    for (const jobId of stranded.strandedJobsByRun[runId] ?? []) {
-      try {
-        await github.rerunJob(owner, name, jobId);
-        outcome.rerun.push(jobId);
-      } catch (error) {
-        outcome.failedReruns.push({ jobId, error: message(error) });
-      }
+    const [jobId, ...rest] = stranded.strandedJobsByRun[runId] ?? [];
+    outcome.notRerun.push(...rest);
+    if (jobId === undefined) continue;
+    try {
+      await github.rerunJob(owner, name, jobId);
+      outcome.rerun.push(jobId);
+    } catch (error) {
+      outcome.failedReruns.push({ jobId, error: message(error) });
     }
   }
   return outcome;
 }
 
-function message(error: unknown): string {
+export function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
@@ -133,10 +138,7 @@ export async function fleetHealth(input: {
   /** The controller wrapper's egress limit (run-cirujano-controller.sh defaults it to 10 GiB). */
   networkEgressLimitGiB: number;
 }): Promise<HealthReport> {
-  const rows: HealthRow[] = [];
-  for (const enrollment of input.registry.enrollments.filter(({ status }) => status === 'cut-over')) {
-    rows.push(await healthRow(enrollment, input));
-  }
+  const rows = await Promise.all(input.registry.enrollments.filter(({ status }) => status === 'cut-over').map((enrollment) => healthRow(enrollment, input)));
   const status: Colour = rows.some(({ colour }) => colour === 'red') ? 'red' : rows.some(({ colour }) => colour === 'amber') ? 'amber' : 'green';
   return { status, now: new Date(input.nowMs).toISOString(), nowOverridden: input.nowOverridden, rows };
 }
@@ -157,34 +159,29 @@ async function healthRow(enrollment: FleetEnrollment, input: Parameters<typeof f
     controller = await readController(enrollment, input.defaultTiming, input.networkEgressLimitGiB);
   } catch (error) {
     controllerError = message(error);
-    controller = { permit: null, permitError: null, timing: input.defaultTiming, startCount: 0, cumulativeRuntimeMs: 0, cumulativeCostUsd: 0, projectedStartCostUsd: 0 };
+    controller = noEvidence(input.defaultTiming);
   }
   const github = input.githubFor();
   try {
-    const repositoryPrivate = (await input.source.repository(enrollment.repository)).visibility === 'private';
-    const switchState = await github.getVariable(owner, name, enrollment.routingSwitch);
+    const [repository, switchState] = await Promise.all([input.source.repository(enrollment.repository), github.getVariable(owner, name, enrollment.routingSwitch)]);
     const { permitError, ...evidence } = controller;
-    const assessment = assessService({ ...evidence, nowMs: input.nowMs, repositoryPrivate });
+    const assessment = assessService({ ...evidence, nowMs: input.nowMs, repositoryPrivate: repository.visibility === 'private' });
     const serviceEnd = assessment.serviceEndMs === null ? null : new Date(assessment.serviceEndMs).toISOString();
-    const fields = { switch: switchState, serviceEnd };
     const routedHere = switchState === 'on' && assessment.serviceable && permitError === null;
     const stranded = routedHere ? null : await strandedRuns(github, owner, name, { workflowIds: [enrollment.workflowId], runnerLabel: enrollment.runnerLabel });
-    const strandedFields = { ...fields, strandedRuns: stranded === null ? null : { cancellable: stranded.cancellable, waiting: stranded.waiting } };
-    const anyStranded = stranded !== null && stranded.strandedJobs.length > 0;
-    const cancelCommand = `${releaseCommand} --cancel-stranded`;
+    const fields = { switch: switchState, serviceEnd, strandedRuns: stranded === null ? null : { cancellable: stranded.cancellable, waiting: stranded.waiting } };
+    const recoveryCommand = stranded !== null && stranded.strandedJobs.length > 0 ? `${releaseCommand} --cancel-stranded` : releaseCommand;
     if (switchState !== 'on') {
-      return anyStranded ? row('stranded', 'red', { ...strandedFields, recovery: cancelCommand }) : row('released', 'green', strandedFields);
+      return recoveryCommand === releaseCommand ? row('released', 'green', fields) : row('stranded', 'red', { ...fields, recovery: recoveryCommand });
     }
     if (controllerError !== null) {
       return row('unserviceable', 'red', {
-        ...strandedFields, reason: `controller-state-unreadable: ${controllerError}`,
-        recovery: `repair or archive the controller files in ${enrollment.controller?.stateDirectory ?? 'the controller directory'}, or run ${anyStranded ? cancelCommand : releaseCommand}`,
+        ...fields, reason: `controller-state-unreadable: ${controllerError}`,
+        recovery: `repair or archive the controller files in ${enrollment.controller?.stateDirectory ?? 'the controller directory'}, or run ${recoveryCommand}`,
       });
     }
-    if (permitError !== null || !assessment.serviceable) {
-      const reason = permitError === null ? (assessment as { reason: string }).reason : `permit-invalid: ${permitError}`;
-      return row('unserviceable', 'red', { ...strandedFields, reason, recovery: anyStranded ? cancelCommand : releaseCommand });
-    }
+    if (permitError !== null) return row('unserviceable', 'red', { ...fields, reason: `permit-invalid: ${permitError}`, recovery: recoveryCommand });
+    if (!assessment.serviceable) return row('unserviceable', 'red', { ...fields, reason: assessment.reason, recovery: recoveryCommand });
     if (assessment.serviceEndMs - input.nowMs <= WARNING_MS) {
       return row('expiring', 'amber', { ...fields, recovery: `service ends ${serviceEnd}; renew the permit or run ${releaseCommand}` });
     }
@@ -217,15 +214,14 @@ async function readController(
   enrollment: FleetEnrollment, defaultTiming: Pick<TimingConfig, 'maxJobMs' | 'shutdownMarginMs'>, networkEgressLimitGiB: number,
 ): Promise<ControllerEvidence> {
   const stateDirectory = enrollment.controller?.stateDirectory;
-  const none = { permit: null, permitError: null, timing: defaultTiming, startCount: 0, cumulativeRuntimeMs: 0, cumulativeCostUsd: 0, projectedStartCostUsd: 0 };
-  if (stateDirectory === undefined) return none;
+  if (stateDirectory === undefined) return noEvidence(defaultTiming);
   let permit: Permit | null = null;
   let permitError: string | null = null;
   try {
     const rawPermit = await readOptionalJson(join(stateDirectory, 'permit.json'));
     permit = rawPermit === null ? null : parsePermit(rawPermit);
   } catch (error) {
-    permitError = error instanceof Error ? error.message : String(error);
+    permitError = message(error);
   }
   const rawConfig = await readOptionalJson(join(stateDirectory, 'config.json'));
   const config: RunnerConfig | null = rawConfig === null ? null : parseRunnerConfig(rawConfig);
@@ -244,6 +240,10 @@ async function readController(
     cumulativeCostUsd: lifecycle?.cumulativeCostUsd ?? 0,
     projectedStartCostUsd: config === null ? 0 : projectedStartCostUsd(config, networkEgressLimitGiB),
   };
+}
+
+function noEvidence(timing: Pick<TimingConfig, 'maxJobMs' | 'shutdownMarginMs'>): ControllerEvidence {
+  return { permit: null, permitError: null, timing, startCount: 0, cumulativeRuntimeMs: 0, cumulativeCostUsd: 0, projectedStartCostUsd: 0 };
 }
 
 /** Runs of the enrolled workflows with jobs queued on the runner label, read from GitHub's active runs. */
@@ -275,9 +275,8 @@ export function renderHealthMarkdown(report: HealthReport): string {
   lines.push('| Enrollment | Repository | Status | Switch | Service end | Stranded runs | Recovery |', '| --- | --- | --- | --- | --- | --- | --- |');
   for (const row of report.rows) {
     const status = row.reason === null ? row.status : `${row.status} (${row.reason})`;
-    const stranded = row.strandedRuns === null || row.strandedRuns.cancellable.length + row.strandedRuns.waiting.length === 0
-      ? 'none'
-      : [row.strandedRuns.cancellable.length > 0 ? `cancellable ${row.strandedRuns.cancellable.join(', ')}` : '', row.strandedRuns.waiting.length > 0 ? `waiting ${row.strandedRuns.waiting.join(', ')}` : ''].filter(Boolean).join('; ');
+    const { cancellable = [], waiting = [] } = row.strandedRuns ?? {};
+    const stranded = [cancellable.length > 0 ? `cancellable ${cancellable.join(', ')}` : '', waiting.length > 0 ? `waiting ${waiting.join(', ')}` : ''].filter(Boolean).join('; ') || 'none';
     const recovery = row.recovery === null ? 'none' : `\`${row.recovery}\``;
     lines.push(`| ${row.id} | ${row.repository} | ${status} | ${row.switch ?? 'n/a'} | ${row.serviceEnd ?? 'n/a'} | ${stranded} | ${recovery} |`);
   }
@@ -300,13 +299,15 @@ export async function fleetRelease(input: {
   if (switchVariable === undefined) throw new Error(`enrollment ${input.id} has no routing switch; its runner can only be released by a workflow push`);
   const [owner, name] = splitRepository(enrollment.repository);
 
-  let variable = await input.github.deleteVariable(owner, name, switchVariable);
-  if (await input.github.getVariable(owner, name, switchVariable) === 'on') {
+  let variable: 'deleted' | 'absent' = 'absent';
+  let stillOn = true;
+  for (let attempt = 0; attempt < 2 && stillOn; attempt += 1) {
     variable = await input.github.deleteVariable(owner, name, switchVariable);
-    if (await input.github.getVariable(owner, name, switchVariable) === 'on') {
-      input.io.stderr(`${switchVariable} is still on after two deletes; check the token's variable permission and delete it with gh variable delete ${switchVariable} --repo ${enrollment.repository}\n`);
-      return 1;
-    }
+    stillOn = await input.github.getVariable(owner, name, switchVariable) === 'on';
+  }
+  if (stillOn) {
+    input.io.stderr(`${switchVariable} is still on after two deletes; check the token's variable permission and delete it with gh variable delete ${switchVariable} --repo ${enrollment.repository}\n`);
+    return 1;
   }
   const releasedAt = new Date().toISOString();
   await writeFleetRegistry(input.registryPath, {
@@ -317,7 +318,7 @@ export async function fleetRelease(input: {
   });
 
   // The switch is off from here on; every later failure is reported with what already happened.
-  const report: Record<string, unknown> = { status: 'released', id: enrollment.id, repository: enrollment.repository, switchVariable, variable, releasedAt };
+  const report = { status: 'released', id: enrollment.id, repository: enrollment.repository, switchVariable, variable, releasedAt };
   const scope = { workflowIds: [enrollment.workflowId], runnerLabel: enrollment.runnerLabel };
   const rerunRelease = `re-run cirujano fleet release --registry ${input.registryPath} --id ${enrollment.id} --cancel-stranded`;
   let stranded: Awaited<ReturnType<typeof strandedRuns>>;
@@ -327,21 +328,17 @@ export async function fleetRelease(input: {
     input.io.stdout(`${JSON.stringify({ ...report, strandedScan: `failed: ${message(error)}`, nextStep: rerunRelease })}\n`);
     return 1;
   }
-  const outcome = input.cancelStranded
-    ? await cancelAndRerun(input.github, owner, name, stranded, input.wait)
-    : { cancelled: [], rerun: [], stillActive: [], failedCancels: [], failedReruns: [] } satisfies CancelOutcome;
+  const outcome = await cancelAndRerun(input.github, owner, name, input.cancelStranded ? stranded : { cancellable: [], strandedJobsByRun: {} }, input.wait);
   const notCancelled = input.cancelStranded ? [] : stranded.cancellable;
   const failed = outcome.failedCancels.length > 0 || outcome.failedReruns.length > 0 || outcome.stillActive === 'unknown';
-  Object.assign(report, { ...outcome, waiting: stranded.waiting, notCancelled, nextStep: nextStep(outcome, stranded.waiting, notCancelled, rerunRelease) });
-  input.io.stdout(`${JSON.stringify(report)}\n`);
+  input.io.stdout(`${JSON.stringify({ ...report, ...outcome, waiting: stranded.waiting, notCancelled, nextStep: nextStep(outcome, stranded.waiting, notCancelled, rerunRelease) })}\n`);
   return failed ? 1 : 0;
 }
 
 function nextStep(outcome: CancelOutcome, waiting: readonly number[], notCancelled: readonly number[], rerunRelease: string): string {
   const waitingNote = waiting.length > 0 ? `; ${rerunRelease} once the runs still waiting on other jobs finish` : '';
   if (notCancelled.length > 0) return `${rerunRelease} to cancel the stranded runs and re-run their jobs on ubuntu-latest`;
-  const pending = outcome.stillActive === 'unknown' ? outcome.cancelled : outcome.stillActive;
-  if (pending.length > 0 || outcome.failedReruns.length > 0 || outcome.failedCancels.length > 0) {
+  if ((outcome.cancelled.length > 0 && !cancelOutcomeClean(outcome)) || outcome.failedCancels.length > 0) {
     return `push or dispatch a new run for the runs whose jobs were not re-run; with the switch off it runs on ubuntu-latest${outcome.failedCancels.length > 0 ? `. ${rerunRelease} to retry the failed cancels` : ''}${waitingNote}`;
   }
   if (outcome.rerun.length > 0) return `the stranded jobs were re-run on ubuntu-latest${waitingNote}`;

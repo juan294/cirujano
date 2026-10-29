@@ -223,6 +223,10 @@ describe('telemetry scheduler', () => {
   });
 });
 
+async function readLines(path: string): Promise<string[]> {
+  return (await readFile(path, 'utf8').catch(() => '')).trimEnd().split('\n').filter(Boolean);
+}
+
 /** Runs the wrapper inside its lock against a fixture store with a mock CLI that records each report call. */
 async function wrapperFixture() {
   const store = await mkdtemp(resolve(tmpdir(), 'cirujano-telemetry-wrapper-'));
@@ -269,8 +273,8 @@ async function wrapperFixture() {
       CIRUJANO_NOTIFY_COMMAND: notifier,
     },
     reports: async () => (await readFile(calls, 'utf8')).trimEnd().split('\n').map((line) => line.replaceAll(store, 'STORE')),
-    healthCalls: async () => (await readFile(healthCalls, 'utf8').catch(() => '')).trimEnd().split('\n').filter(Boolean).map((line) => line.replaceAll(store, 'STORE')),
-    notifications: async () => (await readFile(notifications, 'utf8').catch(() => '')).trimEnd().split('\n').filter(Boolean),
+    healthCalls: async () => (await readLines(healthCalls)).map((line) => line.replaceAll(store, 'STORE')),
+    notifications: () => readLines(notifications),
   };
 }
 

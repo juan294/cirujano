@@ -1,5 +1,6 @@
 import type { WorkflowJob, WorkflowRun } from './adapters/github.js';
-import type { LifecycleInput, Permit, PermitIdentity, PermitOperation, RunnerConfig, TimingConfig } from './contracts.js';
+import { THIRTY_DAY_MONTH_MS } from './cost.js';
+import type { LifecycleDecision, LifecycleInput, Permit, PermitIdentity, PermitOperation, RunnerConfig, TimingConfig } from './contracts.js';
 
 /**
  * Routing-switch decisions shared by the fleet commands and the controller
@@ -11,7 +12,6 @@ export type ServiceRefusal =
   | 'permit-not-active' | 'permit-expired' | 'starts-exhausted' | 'past-service-end' | 'runtime-exhausted' | 'cost-exhausted';
 
 const SERVING_OPERATIONS: readonly PermitOperation[] = ['create', 'start', 'register'];
-const THIRTY_DAY_MONTH_MS = 30 * 24 * 60 * 60 * 1000;
 
 /**
  * The cost one start may add: a full lifetime of compute and disk plus the egress limit. Without an
@@ -102,11 +102,28 @@ export function releaseCheckDue(last: { atMs: number; reason: string } | null, r
   return last === null || last.reason !== reason || nowMs - last.atMs >= RELEASE_CHECK_INTERVAL_MS;
 }
 
+/** Per-process release-check state of one controller. */
+export interface ReleaseCheck {
+  last: { atMs: number; reason: string } | null;
+}
+
+/** Returns whether a check for this reason is due, and records it when it is. */
+export function claimReleaseCheck(check: ReleaseCheck, reason: string, nowMs: number): boolean {
+  if (!releaseCheckDue(check.last, reason, nowMs)) return false;
+  check.last = { atMs: nowMs, reason };
+  return true;
+}
+
 /**
  * A live or starting VM of this controller may still take a queued job (lifecycle canBeginAssignedJob
  * checks only its grant and the permit deadline), so stranded runs are cancelled only when no owned VM
- * exists or is being created or started.
+ * exists, none is being created or started, and the tick that just ran decided no lifecycle effect
+ * (a stopped VM can be started by a permit without `create`, which serviceability does not count).
  */
-export function ownedRunnerMayTakeJobs(input: { provider: Pick<LifecycleInput['provider'], 'vmStatus'>; journal: Pick<LifecycleInput['journal'], 'outstandingIntent'> }): boolean {
-  return !['absent', 'stopped'].includes(input.provider.vmStatus) || input.journal.outstandingIntent !== null;
+export function ownedRunnerMayTakeJobs(
+  input: { provider: Pick<LifecycleInput['provider'], 'vmStatus'>; journal: Pick<LifecycleInput['journal'], 'outstandingIntent'> },
+  tickDecision?: Pick<LifecycleDecision, 'effect'>,
+): boolean {
+  return !['absent', 'stopped'].includes(input.provider.vmStatus) || input.journal.outstandingIntent !== null
+    || (tickDecision !== undefined && tickDecision.effect.type !== 'none');
 }

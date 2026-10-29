@@ -903,9 +903,7 @@ describe('routing release step (runner routing switch phase 3)', () => {
 
   async function tick(fixture: Awaited<ReturnType<typeof routingFixture>>, dryRun = false) {
     const args = ['runner', 'watch', '--config', fixture.configPath, '--permit', fixture.permitPath, ...(dryRun ? ['--dry-run'] : [])];
-    const io = captureIo();
-    await runCli(args, io, createRunnerCommandService(fixture.env));
-    if (process.env['CIRUJANO_DEBUG_ROUTING'] === '1') console.error(io.err.join(''), io.out.join('').slice(-2000));
+    await runCli(args, captureIo(), createRunnerCommandService(fixture.env));
     const events = (await readFile(join(fixture.directory, 'events.jsonl'), 'utf8')).trim().split('\n').map((line) => JSON.parse(line) as Record<string, unknown>);
     const log = await readFile(fixture.logPath, 'utf8');
     const scenario = JSON.parse(await readFile(fixture.scenarioPath, 'utf8')) as LifecycleScenario;
@@ -914,12 +912,13 @@ describe('routing release step (runner routing switch phase 3)', () => {
 
   const pastServiceEnd = () => ({ issuedAtMs: Date.now() - 60_000, expiresAtMs: Date.now() + 30 * 60_000 });
   const expired = () => ({ issuedAtMs: Date.now() - 60_000, expiresAtMs: Date.now() - 1_000 });
-  const deletes = (log: string) => log.split('\n').filter((line) => line.includes('--method DELETE') && line.includes(`/actions/variables/${VARIABLE}`)).length;
+  const variableCalls = (log: string, method: 'GET' | 'DELETE') => log.split('\n').filter((line) => line.includes(`--method ${method}`) && line.includes(`/actions/variables/${VARIABLE}`)).length;
+  const deletes = (log: string) => variableCalls(log, 'DELETE');
 
   it('deletes the switch and confirms by readback once the permit cannot fit one more job', async () => {
     const { routing, log, scenario } = await tick(await routingFixture(pastServiceEnd()));
     expect(deletes(log)).toBe(1);
-    expect(log.split('\n').filter((line) => line.includes('--method GET') && line.includes(`/actions/variables/${VARIABLE}`))).toHaveLength(2);
+    expect(variableCalls(log, 'GET')).toBe(2);
     expect(scenario.variable).toBeUndefined();
     expect(routing).toEqual([expect.objectContaining({ type: 'routing-release', variable: VARIABLE, reason: 'past-service-end', result: 'deleted' })]);
   });
@@ -974,9 +973,34 @@ describe('routing release step (runner routing switch phase 3)', () => {
     expect(routing).toEqual([expect.objectContaining({ type: 'routing-check-incomplete', detail: 'repository visibility could not be read' })]);
   });
 
-  it('reports a switch that is still on after the delete', async () => {
-    const { routing } = await tick(await routingFixture(expired(), { variableSticks: true }));
+  it('reports a switch that is still on after the delete and never cancels or re-runs', async () => {
+    const { routing, scenario } = await tick(await routingFixture(expired(), {
+      variableSticks: true, jobs: [{ runId: 1001, jobId: 2001, status: 'queued', conclusion: null, runnerId: null, runnerName: null }],
+    }));
     expect(routing).toEqual([expect.objectContaining({ type: 'routing-release-failed', error: 'the switch is still on after the delete' })]);
+    expect(scenario.forceCancelled).toBeUndefined();
+    expect(scenario.rerunJobs).toBeUndefined();
+  });
+
+  it('waits instead of cancelling while this tick creates a VM for the queued job', async () => {
+    // Without `register` the lifecycle may still create a VM, while serviceability already refuses.
+    const fixture = await routingFixture({ operations: ['create', 'start', 'stop', 'delete', 'release-routing'] }, {
+      variable: undefined as unknown as string,
+      jobs: [{ runId: 1001, jobId: 2001, status: 'queued', conclusion: null, runnerId: null, runnerName: null }],
+    });
+    const { routing, scenario, log } = await tick(fixture);
+    expect(log).toMatch(/instance create/u);
+    expect(scenario.forceCancelled).toBeUndefined();
+    expect(routing).toEqual([expect.objectContaining({ type: 'routing-stranded-waiting', runIds: [1001], detail: 'an owned runner may still take these jobs' })]);
+  });
+
+  it('reports a stranded-run listing it could not complete', async () => {
+    const { routing, scenario } = await tick(await routingFixture(expired(), { runsUnavailable: true }));
+    expect(scenario.variable).toBeUndefined();
+    expect(routing).toEqual([
+      expect.objectContaining({ type: 'routing-release', reason: 'permit-expired' }),
+      expect.objectContaining({ type: 'routing-check-incomplete', detail: expect.stringMatching(/^stranded runs could not be listed: /u) }),
+    ]);
   });
 
   it('checks at most once per 10 minutes within one controller process', async () => {
@@ -1048,6 +1072,8 @@ interface LifecycleScenario {
   repositoryPublic?: boolean;
   /** DELETE answers 204 but the variable stays on. */
   variableSticks?: boolean;
+  /** The active-run listing answers HTTP 502. */
+  runsUnavailable?: boolean;
   forceCancelled?: number[];
   rerunJobs?: number[];
   jobs: Array<{ runId: number; jobId: number; status: 'none' | 'queued' | 'in_progress' | 'completed'; conclusion: string | null; runnerId: number | null; runnerName: string | null }>;
@@ -1105,6 +1131,7 @@ if(/^\\/repos\\/trusted\\/private$/.test(endpoint)){if(s.repositoryUnavailable)s
 else if(endpoint.includes('/actions/variables/')){if(method==='DELETE'){if(s.variableDeleteStatus){status=s.variableDeleteStatus;body={message:'Resource not accessible by integration'};}else if(s.variable===undefined){status=404;body={message:'Not Found'};}else{if(!s.variableSticks)delete s.variable;save();status=204;body=null;}}else if(s.variable===undefined){status=404;body={message:'Not Found'};}else body={name:endpoint.split('/').pop(),value:s.variable};}
 else if(endpoint.endsWith('/rerun')&&endpoint.includes('/actions/jobs/')){const jobId=Number(endpoint.match(/jobs\\/(\\d+)/)[1]);s.rerunJobs=[...(s.rerunJobs||[]),jobId];save();status=201;}
 else if(endpoint.endsWith('/force-cancel')){const runId=Number(endpoint.match(/runs\\/(\\d+)/)[1]);s.forceCancelled=[...(s.forceCancelled||[]),runId];for(const j of s.jobs)if(j.runId===runId&&j.status!=='completed'&&j.status!=='none'){j.status='completed';j.conclusion='cancelled';}save();status=202;}
+else if(endpoint.endsWith('/actions/runs')&&s.runsUnavailable){status=502;body={message:'Bad Gateway'};}
 else if(endpoint.endsWith('/actions/runs')){const all=s.jobs.filter(j=>j.status==='queued'||j.status==='in_progress');const active=[...new Map(all.map(j=>[j.runId,all.some(k=>k.runId===j.runId&&k.status==='in_progress')?{...j,status:'in_progress'}:j])).values()];body={total_count:active.length,workflow_runs:active.map(j=>({id:j.runId,workflow_id:41,run_attempt:1,status:j.status==='queued'?'queued':'in_progress',conclusion:null,event:'push',head_branch:'develop',head_sha:'sha-'+j.runId,repository:{id:123},head_repository:{id:123},pull_requests:[]}))};}
 else if(endpoint.includes('/attempts/1/jobs')){const runId=Number(endpoint.match(/runs\\/(\\d+)/)[1]);const jobs=s.jobs.filter(j=>j.runId===runId&&j.status!=='none');body={total_count:jobs.length,jobs:jobs.map(j=>({id:j.jobId,run_id:j.runId,head_sha:'sha-'+j.runId,status:j.status,conclusion:j.conclusion,name:'e2e',labels:['self-hosted','cirujano-pilot-a'],runner_id:j.runnerId,runner_name:j.runnerName,runner_group_id:null,runner_group_name:null,started_at:j.status==='queued'?null:'2026-09-13T10:00:00Z',completed_at:j.status==='completed'?'2026-09-13T10:01:00Z':null}))};}
 else if(endpoint.endsWith('/actions/runners'))body={total_count:s.runnerName===null?0:1,runners:s.runnerName===null?[]:[{id:s.runnerId,name:s.runnerName,os:'linux',status:'online',busy:s.runnerBusy,labels:[{name:'self-hosted'},{name:'cirujano-pilot-a'}]}]};

@@ -30,8 +30,9 @@ import {
   parseRunnerReportInput,
   parseRunnerConfig,
   projectedStartCostUsd,
+  THIRTY_DAY_MONTH_MS,
   readJournal,
-  releaseCheckDue,
+  claimReleaseCheck,
   ownedRunnerMayTakeJobs,
   assessService,
   runnerConfigHash,
@@ -51,7 +52,9 @@ import {
   type ControllerState,
   type ExpectedNebiusResource,
   type LifecycleEffect,
+  type LifecycleDecision,
   type LifecycleInput,
+  type ReleaseCheck,
   type NebiusInstance,
   type NebiusOperation,
   type PendingEffect,
@@ -67,7 +70,7 @@ import {
 } from '@cirujano/runner';
 
 import type { CliIo, RunnerCommandService } from './cli.js';
-import { cancelAndRerun, strandedRuns } from './fleet-health.js';
+import { cancelAndRerun, cancelOutcomeClean, message, strandedRuns } from './fleet-health.js';
 
 const DEFAULT_GH_PATH = '/opt/homebrew/bin/gh';
 const DEFAULT_POLL_LIMIT = 10_000;
@@ -78,7 +81,6 @@ const CLI_READ_TIMEOUT_FLOOR_MS = 120_000;
 // the JSON as soon as a second enrolled VM existed and every controller sharing the project went
 // blind. Paginated run and job listings can be larger still.
 const CLI_OUTPUT_LIMIT_BYTES = 64 * 1024 * 1024;
-const THIRTY_DAY_MONTH_MS = 30 * 24 * 3_600_000;
 
 export interface ObservedAccounting {
   diskStartedAtMs: number | null;
@@ -255,7 +257,9 @@ async function watch(context: RuntimeContext, dryRun: boolean, io: CliIo): Promi
   let interrupted = false;
   let wake: (() => void) | null = null;
   const onInterrupt = () => { interrupted = true; wake?.(); };
-  const routingCheck: { last: { atMs: number; reason: string } | null } = { last: null };
+  const routingCheck: ReleaseCheck = { last: null };
+  // Test-only bounds: CIRUJANO_RUNNER_ONCE runs one tick; CIRUJANO_RUNNER_TICKS runs N in one process.
+  const tickLimit = context.environment['CIRUJANO_RUNNER_ONCE'] === '1' ? 1 : Number(context.environment['CIRUJANO_RUNNER_TICKS'] ?? 0);
   process.once('SIGINT', onInterrupt);
   try {
     for (let count = 0; count < DEFAULT_POLL_LIMIT; count += 1) {
@@ -266,15 +270,13 @@ async function watch(context: RuntimeContext, dryRun: boolean, io: CliIo): Promi
         reconcileEffect: (effect) => reconcileEffect(context, effect),
       });
       io.stdout(`${JSON.stringify({ schemaVersion: 1, type: 'tick', status: result.status, decision: result.decision, queue: input.queue, githubReadHold: context.github.readHold() })}\n`);
-      await releaseRouting(context, input, dryRun, routingCheck);
+      await releaseRouting(context, input, result.decision, dryRun, routingCheck);
       if (interrupted) {
         const recovery = await interruptRecovery(context);
         io.stdout(`${JSON.stringify({ schemaVersion: 1, type: 'interrupt-recovery', ...recovery })}\n`);
         return recovery.completed ? 0 : 1;
       }
-      if (context.environment['CIRUJANO_RUNNER_ONCE'] === '1') return result.status === 'blocked' ? 1 : 0;
-      // Test-only: a bounded number of ticks in one process, to exercise per-process state.
-      if (count + 1 === Number(context.environment['CIRUJANO_RUNNER_TICKS'] ?? 0)) return result.status === 'blocked' ? 1 : 0;
+      if (count + 1 === tickLimit) return result.status === 'blocked' ? 1 : 0;
       await new Promise<void>((resolveDelay) => {
         const timer = setTimeout(resolveDelay, context.config.timing.pollIntervalMs);
         wake = () => { clearTimeout(timer); resolveDelay(); };
@@ -294,7 +296,9 @@ async function watch(context: RuntimeContext, dryRun: boolean, io: CliIo): Promi
  * only unfinished jobs are stranded on the label. Idempotent and checked by readback; it never creates
  * a lifecycle effect (plan D6). Runs at most every 10 minutes, and at once when the reason changes.
  */
-async function releaseRouting(context: RuntimeContext, input: LifecycleInput, dryRun: boolean, check: { last: { atMs: number; reason: string } | null }): Promise<void> {
+async function releaseRouting(
+  context: RuntimeContext, input: LifecycleInput, tickDecision: LifecycleDecision | undefined, dryRun: boolean, check: ReleaseCheck,
+): Promise<void> {
   const variable = context.config.routingSwitch?.variable;
   if (variable === undefined) return;
   const event = (fields: Record<string, unknown>) => appendRedactedEvent(context.eventPath, { schemaVersion: 1, variable, ...fields }, { secrets: [] });
@@ -308,8 +312,7 @@ async function releaseRouting(context: RuntimeContext, input: LifecycleInput, dr
   if (assessment.serviceable && !input.queue.complete) {
     const repositoryPrivate = await repositoryPrivacy(context);
     if (repositoryPrivate === null) {
-      if (releaseCheckDue(check.last, 'check-incomplete', input.nowMs)) {
-        check.last = { atMs: input.nowMs, reason: 'check-incomplete' };
+      if (claimReleaseCheck(check, 'check-incomplete', input.nowMs)) {
         await event({ type: 'routing-check-incomplete', detail: 'repository visibility could not be read' });
       }
       return;
@@ -321,8 +324,7 @@ async function releaseRouting(context: RuntimeContext, input: LifecycleInput, dr
     return;
   }
   const { reason } = assessment;
-  if (!releaseCheckDue(check.last, reason, input.nowMs)) return;
-  check.last = { atMs: input.nowMs, reason };
+  if (!claimReleaseCheck(check, reason, input.nowMs)) return;
   const registry = context.environment['CIRUJANO_FLEET_REGISTRY'] ?? '~/.local/share/cirujano/telemetry/fleet-registry.json';
   const recovery = `run cirujano fleet release --registry ${registry} --id ${variable.replace('CIRUJANO_RUNNER_', '')} --cancel-stranded, `
     + `or gh variable delete ${variable} --repo ${context.owner}/${context.repository}`;
@@ -345,17 +347,17 @@ async function releaseRouting(context: RuntimeContext, input: LifecycleInput, dr
       await event({ type: 'routing-release', reason, result });
     }
   } catch (error) {
-    await event({ type: 'routing-release-failed', reason, error: error instanceof Error ? error.message : String(error), recovery });
+    await event({ type: 'routing-release-failed', reason, error: message(error), recovery });
     return;
   }
   let stranded: Awaited<ReturnType<typeof strandedRuns>>;
   try {
     stranded = await strandedRuns(context.github, context.owner, context.repository, context.config);
   } catch (error) {
-    await event({ type: 'routing-check-incomplete', detail: `stranded runs could not be listed: ${error instanceof Error ? error.message : String(error)}` });
+    await event({ type: 'routing-check-incomplete', detail: `stranded runs could not be listed: ${message(error)}` });
     return;
   }
-  if (ownedRunnerMayTakeJobs(input)) {
+  if (ownedRunnerMayTakeJobs(input, tickDecision)) {
     const runIds = [...stranded.cancellable, ...stranded.waiting];
     if (runIds.length > 0) await event({ type: 'routing-stranded-waiting', runIds, detail: 'an owned runner may still take these jobs' });
     return;
@@ -365,7 +367,8 @@ async function releaseRouting(context: RuntimeContext, input: LifecycleInput, dr
     await event({
       type: 'routing-stranded-cancelled', runIds: outcome.cancelled, rerunJobIds: outcome.rerun, stillActive: outcome.stillActive,
       failedCancels: outcome.failedCancels, failedReruns: outcome.failedReruns,
-      nextStep: outcome.rerun.length > 0 && outcome.stillActive !== 'unknown' && outcome.stillActive.length === 0 && outcome.failedReruns.length === 0
+      notRerunJobIds: outcome.notRerun, alreadyCompleted: outcome.alreadyCompleted,
+      nextStep: cancelOutcomeClean(outcome)
         ? 'the stranded jobs were re-run; with the switch off they run on ubuntu-latest'
         : 'push or dispatch a new run for the runs whose jobs were not re-run; with the switch off it runs on ubuntu-latest',
     });

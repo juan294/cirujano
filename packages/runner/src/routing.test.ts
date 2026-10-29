@@ -2,13 +2,14 @@ import { describe, expect, it } from 'vitest';
 
 import type { WorkflowJob, WorkflowRun } from './adapters/github.js';
 import type { Permit } from './contracts.js';
-import { assessService, ownedRunnerMayTakeJobs, releaseCheckDue, selectStrandedRuns, serviceEnd } from './routing.js';
+import { assessService, claimReleaseCheck, ownedRunnerMayTakeJobs, releaseCheckDue, selectStrandedRuns, serviceEnd } from './routing.js';
 
 const LABEL = 'cirujano-baseline-actions_linux';
 const LABELS = ['self-hosted', 'linux', 'x64', LABEL];
 const TIMING = { maxJobMs: 3_600_000, shutdownMarginMs: 300_000 };
 const EXPIRY = Date.parse('2026-10-28T23:59:59Z');
 const FAR = '2026-10-10T00:00:00Z';
+const identity = { configHash: 'c', candidateDigest: 'd', repositoryId: 1, projectId: 'project', controllerId: 'controller', resourcePrefix: 'prefix' };
 
 function run(id: number, runAttempt = 1): WorkflowRun {
   return { id, workflowId: 41, runAttempt, status: 'queued', conclusion: null, event: 'push', headBranch: 'develop', headSha: 'a', repositoryId: 1, headRepositoryId: 1, pullRequestCount: 0 };
@@ -85,7 +86,6 @@ describe('serviceEnd and assessService', () => {
   });
 
   it('serves with a matching identity, the last start and the exact remaining cost', () => {
-    const identity = { configHash: 'c', candidateDigest: 'd', repositoryId: 1, projectId: 'project', controllerId: 'controller', resourcePrefix: 'prefix' };
     expect(assessService({ ...base, nowMs: Date.parse('2026-10-10T00:00:00Z'), identity, startCount: 599, cumulativeCostUsd: 39.5, projectedStartCostUsd: 0.5 }).serviceable).toBe(true);
     expect(assessService({ ...base, nowMs: Date.parse('2026-10-10T00:00:00Z'), identity: { configHash: 'c' } }).serviceable).toBe(true);
   });
@@ -104,15 +104,30 @@ describe('releaseCheckDue', () => {
     expect(releaseCheckDue(last, 'past-service-end', start + 600_000)).toBe(true);
     expect(releaseCheckDue(last, 'permit-expired', start + 1)).toBe(true);
   });
+
+  it('records a claimed check so the next one within 10 minutes is not due', () => {
+    const check = { last: null };
+    expect(claimReleaseCheck(check, 'permit-expired', start)).toBe(true);
+    expect(check).toEqual({ last: { atMs: start, reason: 'permit-expired' } });
+    expect(claimReleaseCheck(check, 'permit-expired', start + 1)).toBe(false);
+    expect(check.last).toEqual({ atMs: start, reason: 'permit-expired' });
+  });
 });
 
 describe('ownedRunnerMayTakeJobs', () => {
   const intent = { type: 'create-vm' as const, generation: 1, deadlineMs: 1, status: 'pending' as const };
   it.each([
     ['absent', null, false], ['stopped', null, false], ['running', null, true], ['starting', null, true],
-    ['stopping', null, true], ['unknown', null, true], ['absent', intent, true], ['stopped', intent, true],
+    ['stopping', null, true], ['unknown', null, true], ['error', null, true], ['absent', intent, true], ['stopped', intent, true],
   ] as const)('VM %s with intent %j may take jobs: %s', (vmStatus, outstandingIntent, expected) => {
     expect(ownedRunnerMayTakeJobs({ provider: { vmStatus }, journal: { outstandingIntent } })).toBe(expected);
+  });
+
+  it('counts the effect the tick just decided, such as starting a stopped VM', () => {
+    const stopped = { provider: { vmStatus: 'stopped' as const }, journal: { outstandingIntent: null } };
+    expect(ownedRunnerMayTakeJobs(stopped, { effect: { type: 'start-vm', generation: 2, deadlineMs: 1 } })).toBe(true);
+    expect(ownedRunnerMayTakeJobs(stopped, { effect: { type: 'none' } })).toBe(false);
+    expect(ownedRunnerMayTakeJobs(stopped)).toBe(false);
   });
 });
 
@@ -128,7 +143,6 @@ describe('assessService parity with the lifecycle start decision', () => {
       timing: { pollIntervalMs: 30_000, idleGraceMs: 300_000, bootTimeoutMs: 600_000, maxJobMs: 3_600_000, lifetimeMs: 14_400_000, shutdownMarginMs: 300_000 },
       rates: { currency: 'USD', quotedAt: '2026-09-13', source: 'quote', computeUsdPerHour: 0.24, diskUsdPerGibMonth: 0.1, networkEgressUsdPerGib: 0.05, hostedUsdPerMinute: 0.008 },
     });
-    const identity = { configHash: 'c', candidateDigest: 'd', repositoryId: 1, projectId: 'project', controllerId: 'controller', resourcePrefix: 'prefix' };
     const base = permit({ operations: ['create', 'start', 'register', 'stop', 'delete', 'release-routing'] });
     const end = serviceEnd(base, config.timing);
     const cases: Array<[string, Partial<Permit>, { startCount?: number; cumulativeRuntimeMs?: number; cumulativeCostUsd?: number }, number, Partial<typeof identity>]> = [

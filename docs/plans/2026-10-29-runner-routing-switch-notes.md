@@ -174,7 +174,56 @@ Evidence is in the ignored report `docs/agents/routing-switch-probe-2026-10-29.m
 - `POST /actions/jobs/<id>/rerun` returned 201, and the new attempt ran on `ubuntu-latest` and succeeded.
 - The repository is archived with no active runs and no variable.
 
+### Final review (commit 101a263, amended to 964cc7e) and dispositions
+
+CHANGES REQUESTED, one blocker. Resolved in the final commit:
+
+| ID | Finding | Disposition |
+| --- | --- | --- |
+| F-1 (blocker) | The notes named the private scratch repository | Resolved: line rewritten and the unpushed head commit amended; no commit on the branch contains the name (scan of every branch commit) |
+| F-2 | The tick could start or create a VM while the release step, reading the pre-tick snapshot, cancelled its job | Resolved: `ownedRunnerMayTakeJobs` also counts the tick's own decided effect; unit test and a service test through the create path, which fails without the fix |
+| F-3 | The controller call of the guard was untested | Resolved: same service test |
+| F-4 | Missing tests "never re-runs while the switch is on" and "failed re-run" | Resolved: controller and release tests with queued jobs and a failing re-run |
+| F-5 | A run that finished by itself (409) was re-run; several jobs per run unmeasured | Resolved: only accepted cancels are re-run (`alreadyCompleted` lists the others); only the first stranded job of a run is re-run (`notRerun` lists the rest for a push or dispatch) |
+| F-6 | Plan's `routing-stranded-rerun` event | Deviation: re-run job ids ride on `routing-stranded-cancelled` (`rerunJobIds`, `notRerunJobIds`); no attempt number, since GitHub assigns it after the 201 |
+| F-7 | `error` VM status missing from the table | Resolved: added; runbook says a stuck VM needs `fleet release --cancel-stranded` |
+| F-8 | Stranded-listing failure untested | Resolved: test with a 502 run listing |
+| F-9 | `CIRUJANO_RUNNER_TICKS` in production | Accepted: unset or non-numeric never matches; one shared test-only limit with `CIRUJANO_RUNNER_ONCE` |
+| F-10 | ADR wording | Resolved: release cancels and re-runs only with `--cancel-stranded` |
+
+Further deviations from the final repairs:
+
+| Plan said | Found | Chose | Why |
+| --- | --- | --- | --- |
+| Serviceability matches the start decision exactly | The lifecycle can start a stopped VM with a permit that lacks `create`, or create with one that lacks `register` | `assessService` still requires `create`, `start` and `register`, so it releases routing early in those cases; the tick-decision guard stops any cancel | Early release only gives up savings; the parity table covers full-operation permits |
+| Re-run every stranded job | The probe measured one job per run; a second job re-run in a just re-run run is likely refused | First job per run; the rest listed | Measured behaviour only |
+
+Simplify pass over phases 2-4 (four angles), applied:
+- `RoutingGitHub` as a `Pick` of `GitHubAdapter`;
+- one `noEvidence` helper;
+- health rows built in parallel, and the repository and switch read together;
+- one `fields` object per row, with no cast;
+- the release delete loop;
+- empty outcome through `cancelAndRerun`;
+- a typed report;
+- shared `message`, `cancelOutcomeClean` and `claimReleaseCheck`/`ReleaseCheck`;
+- `THIRTY_DAY_MONTH_MS` exported once from `cost.ts`;
+- one tick-limit exit;
+- the `health` handler extracted;
+- the script's `FLEET_ENABLED` gate and a notify message set only when needed;
+- test helpers (`variableCalls`, `readLines`, a shared identity), with the debug line removed;
+- a cross-reference comment in `startBudget`.
+
+Skipped, with reasons:
+- Reusing `observe()`'s runs, jobs and repository read in the release step: needs `LifecycleInput` changes; at most one extra read every 10 minutes.
+- Skipping the stranded scan in the steady released state: a behaviour change; one scan every 10 minutes.
+- A wakeable wait or deferred re-run inside the controller: a behaviour change. The wait is bounded at about 30 s and runs only when no owned VM exists.
+- Moving `strandedRuns` and `cancelAndRerun` into `@cirujano/runner`: a new module outside the reviewed set; owner choice.
+- One adapter factory for fleet and controller: different limits; low value.
+- A `repoEndpoint` helper: the pattern predates this work.
+- `serviceEnd` through the private `safeCutoffMs`: the parity test pins them instead.
+
 ### Handoff
 
-- All four phases are implemented. Remaining before integration: simplify pass, independent review of the final commit, full `pnpm run ci:fast`, then local merge into `develop` and worktree removal (authorized). No push.
+- All four phases are implemented and reviewed. Integration: full `pnpm run ci:fast`, then local merge into `develop` and worktree removal (authorized). No push.
 - Pre-existing finding F-BASE-1 (flaky `sandbox.test.ts`) is unchanged and outside this plan.

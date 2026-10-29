@@ -399,6 +399,7 @@ function validateQueueObservation(input: LifecycleInput): string | null {
   return null;
 }
 
+// routing.ts assessService mirrors these limits for the routing switch; its parity test pins the two together.
 function startBudget(input: LifecycleInput): { valid: true; availableRuntimeMs: number } | { valid: false; reason: string } {
   const permitCheck = validatePermit(input.permit, input.identity, input.nowMs);
   if (!permitCheck.valid) return permitCheck;
