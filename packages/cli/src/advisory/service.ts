@@ -15,7 +15,9 @@ import { LABEL_CATEGORIES, supportState } from './questions.js';
 import type { CliIo } from '../cli.js';
 import type { GitHubPageRunner } from '../github-api.js';
 import type { AdvisoryArguments } from './arguments.js';
-import { collectSelectedJob } from './collect.js';
+import { collectSelectedJob,collectSourceDeclaration } from './collect.js';
+import {decodeSourceDeclaration,type SourceDeclarationV1} from './source-evidence.js';
+import {searchSourceDeclarations,sourceReport} from './source-search.js';
 import type { EvidenceBundleV1 } from './contracts.js';
 import { readEvidenceInputs, freshOperation } from './storage.js';
 import { buildInbox, evidenceStatus, report, type AdvisoryReport } from './rules.js';
@@ -44,6 +46,19 @@ export function createAdvisoryService(options:AdvisoryServiceOptions={}):Advisor
     let safeQuestion:string|null=null;
     let affectedInput:string|null=args.flags.operation??args.flags.output??null;
     try{
+      if(args.action==='collect-source'){
+        const source=await freshOperation(args.flags.output!,async store=>{
+          const value=await collectSourceDeclaration({repository:args.flags.repository!,run:Number(args.flags.run),attempt:Number(args.flags.attempt),workflow:args.flags.workflow!},{...options,toolSourceSha:await sourceSha(options)});
+          await store.writeText('source-evidence.json',canonicalJson(value));return value;
+        });
+        const value=sourceReport('complete',{scope:source.scope,digest:source.digest,headSha:source.run.headSha,operation:args.flags.output});
+        value.nextActions=[`cirujano advisory ask-source --input ${shellQuote(args.flags.output!)} --question 'Where is dependency installation?'`];emitReport(args,io,value);return 0;
+      }
+      if(args.action==='ask-source'){
+        validateSearchQuery(args.flags.question!);safeQuestion=args.flags.question!;
+        const sources:SourceDeclarationV1[]=[];for(const input of args.inputs){affectedInput=input;sources.push(decodeSourceDeclaration(await readPrivateJson(join(input,'source-evidence.json'),2*1024*1024)));}
+        emitReport(args,io,searchSourceDeclarations(sources,safeQuestion));return 0;
+      }
       if(args.action==='collect'){
         const b=await freshOperation(args.flags.output!,async store=>{
           const value=await collectSelectedJob({repository:args.flags.repository!,run:Number(args.flags.run),attempt:Number(args.flags.attempt),workflow:args.flags.workflow!,jobKey:args.flags['job-key']!,jobId:Number(args.flags['job-id']),sourceFiles:args.sourceFiles},{...options,toolSourceSha:await sourceSha(options)});
@@ -104,6 +119,12 @@ export function createAdvisoryService(options:AdvisoryServiceOptions={}):Advisor
       const value=await inspectAdvisoryOperation(args.flags.operation!);emitReport(args,io,value);return value.status==='unavailable'||value.status==='outcome-unknown'?1:0;
     }catch(error){
       const reason=failureReason(error);
+      if(args.action==='collect-source'||args.action==='ask-source'||reason==='advisory-source-local-only'){
+        const value=sourceReport('unavailable',{operation:args.flags.output??null,affectedInput},[reason]);
+        value.nextActions=['Select valid source inputs for advisory ask-source, or use advisory collect-source with an exact repository/run/attempt/workflow and a fresh output directory. Whole-file source refusals require different admissible evidence.'];
+        if(args.inputs[0])value.nextActions.unshift(`cirujano advisory ask-source --input ${shellQuote(args.inputs[0])} --question ${shellQuote(safeQuestion??'Where is dependency installation?')}`);
+        emitReport(args,io,value);return 1;
+      }
       if(args.action==='enrich'&&reason==='advisory-invalid-or-unavailable-evidence'){
         try{const retained=await inspectAdvisoryOperation(args.flags.output!);if(retained.status==='outcome-unknown'){emitReport(args,io,retained);return 1;}}catch{/* Preserve the original safe failure category when local evidence cannot be validated. */}
       }

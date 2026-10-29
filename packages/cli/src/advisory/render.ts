@@ -2,6 +2,7 @@ import type { EvidenceBundleV1 } from './contracts.js';
 import type { ComparisonPayload } from './compare.js';
 import type { SearchPayload, SearchHit } from './search.js';
 import type { AdvisoryReport, EvidenceCard } from './rules.js';
+import type {SourceSearchPayload} from './source-search.js';
 
 export function escapeMarkdown(value:string):string {
   return value.replace(/[\u0000-\u001f\u007f-\u009f]/gu,' ').replace(/&/gu,'&amp;').replace(/</gu,'&lt;').replace(/>/gu,'&gt;').replace(/[\\`*_{}[\]()#+.!|]/gu,'\\$&');
@@ -39,6 +40,12 @@ function renderSearchPayload(payload:SearchPayload):string[]{
  ...(payload.hits.length?payload.hits.map(hit=>renderSearchHit(hit)):['No matching evidence is supported.']),
  ...payload.uncertainCandidates.map(hit=>renderSearchHit(hit,true))];
 }
+function renderSourceSearch(payload:SourceSearchPayload):string[]{
+ const lines=[`Question: ${escapeMarkdown(payload.query)}`,`Source declaration scope: ${payload.scope}; method: ${payload.method}; documents: ${payload.documentCount}; candidates: ${payload.candidateCount}.`];
+ for(const hit of payload.hits)lines.push(`Declared source — ${escapeMarkdown(hit.repository.name)} at ${hit.run.headSha}\n\n[source](${comparisonSource(hit.repository.name,hit.run.headSha,hit.path,hit.lineStart,hit.lineEnd)}) · blob ${hit.blobSha}\n\n${inertExcerpt(hit.text)}`);
+ if(!payload.hits.length)lines.push('No lexical source match in the admitted documents. This does not establish absence of runtime behavior.');
+ return lines;
+}
 function signed(value:number):string{return `${value>0?'+':''}${value}`;}
 function percent(value:number|null):string{return value===null?'undefined (zero baseline)':`${signed(Number(value.toFixed(2)))}%`;}
 function comparisonSource(repository:string,sha:string,path:string,start?:number,end?:number):string{
@@ -68,6 +75,6 @@ function renderComparisonPayload(payload:ComparisonPayload):string[]{
 export function renderReport(value:AdvisoryReport):string {
   const payload=value.payload as {cards?:EvidenceCard[];kind?:string};
   return [`Advisory status: ${value.status}`,value.reasonCodes.map(escapeMarkdown).join(', '),
-    ...(payload.kind==='comparison'?renderComparisonPayload(value.payload as ComparisonPayload):payload.kind==='search'?renderSearchPayload(value.payload as SearchPayload):payload.cards?payload.cards.length?payload.cards.map(renderCard):['No opportunities: no evidence bundles supplied.']: [escapeMarkdown(JSON.stringify(value.payload))]),
+    ...(payload.kind==='source-search'?renderSourceSearch(value.payload as SourceSearchPayload):payload.kind==='comparison'?renderComparisonPayload(value.payload as ComparisonPayload):payload.kind==='search'?renderSearchPayload(value.payload as SearchPayload):payload.cards?payload.cards.length?payload.cards.map(renderCard):['No opportunities: no evidence bundles supplied.']: [escapeMarkdown(JSON.stringify(value.payload))]),
     ...value.limitations.map(escapeMarkdown),...value.nextActions.map(escapeMarkdown)].filter(Boolean).join('\n\n')+'\n';
 }

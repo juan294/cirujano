@@ -2,6 +2,8 @@ import { safeRelativePath } from '@cirujano/core';
 import { ArgumentError } from '../args.js';
 
 const options = {
+  'collect-source':['repository','run','attempt','workflow','output','format'],
+  'ask-source':['input','question','format'],
   collect: ['repository','run','attempt','workflow','job-key','job-id','output','source-file'],
   inbox: ['input','enrichment','format','sort'],
   status: ['operation','format'],
@@ -17,7 +19,7 @@ export interface AdvisoryArguments {
 }
 export function parseAdvisoryArguments(argv:readonly string[]):AdvisoryArguments {
   const action=argv[0];
-  if(!action||!Object.hasOwn(options,action)) throw new ArgumentError('advisory requires collect, inbox, prepare, enrich, ask, compare or status.');
+  if(!action||!Object.hasOwn(options,action)) throw new ArgumentError('advisory requires collect, collect-source, inbox, prepare, enrich, ask, ask-source, compare or status.');
   const allowed:readonly string[]=options[action as AdvisoryAction];
   const flags:Record<string,string>={},inputs:string[]=[],enrichments:string[]=[],sourceFiles:string[]=[];
   for(let i=1;i<argv.length;i+=2){
@@ -28,8 +30,9 @@ export function parseAdvisoryArguments(argv:readonly string[]):AdvisoryArguments
     else if(flag==='source-file') {try{safeRelativePath(value);}catch{throw new ArgumentError('advisory source-file requires a safe relative path.');}sourceFiles.push(value);}
     else { if(Object.hasOwn(flags,flag)) throw new ArgumentError(`Duplicate advisory option --${flag}.`);flags[flag]=value; }
   }
-  const required=action==='collect'?['repository','run','attempt','workflow','job-key','job-id','output']:action==='status'?['operation']:action==='prepare'?['task','output']:action==='enrich'?['request','permit','output']:action==='ask'?['question']:action==='compare'?['baseline','candidate']:[];
+  const required=action==='collect-source'?['repository','run','attempt','workflow','output']:action==='collect'?['repository','run','attempt','workflow','job-key','job-id','output']:action==='status'?['operation']:action==='prepare'?['task','output']:action==='enrich'?['request','permit','output']:action==='ask'||action==='ask-source'?['question']:action==='compare'?['baseline','candidate']:[];
   for(const key of required) if(!flags[key]) throw new ArgumentError(`advisory ${action} requires --${key}.`);
+  if(action==='ask-source'&&!inputs.length)throw new ArgumentError('advisory ask-source requires --input.');
   if(action==='prepare'){
     if(flags.task==='compare'){
       if(inputs.length||flags.question!==undefined||!flags.baseline||!flags.candidate)throw new ArgumentError('advisory prepare compare requires exactly --baseline and --candidate manifests.');
@@ -37,11 +40,11 @@ export function parseAdvisoryArguments(argv:readonly string[]):AdvisoryArguments
   }
   if(flags.question!==undefined&&(!flags.question.trim()||Buffer.byteLength(flags.question)>2048))throw new ArgumentError('advisory question must contain 1–2048 UTF-8 bytes.');
   if((action==='ask'||action==='compare')&&enrichments.length>1)throw new ArgumentError('advisory ask/compare accepts one retained enrichment.');
-  if(action==='collect'){
+  if(action==='collect'||action==='collect-source'){
     if(!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u.test(flags.repository!)||flags.repository!.split('/').some(p=>p==='.'||p==='..')) throw new ArgumentError('Invalid advisory repository.');
-    for(const key of ['run','attempt','job-id']) if(!/^[1-9]\d*$/u.test(flags[key]!)||!Number.isSafeInteger(Number(flags[key]))) throw new ArgumentError(`Invalid advisory --${key}.`);
+    for(const key of action==='collect'?['run','attempt','job-id']:['run','attempt']) if(!/^[1-9]\d*$/u.test(flags[key]!)||!Number.isSafeInteger(Number(flags[key]))) throw new ArgumentError(`Invalid advisory --${key}.`);
     try{safeRelativePath(flags.workflow!);}catch{throw new ArgumentError('Invalid advisory workflow path.');}
-    if(!/^\.github\/workflows\/[^/]+\.ya?ml$/u.test(flags.workflow!)||!/^[A-Za-z_][A-Za-z0-9_-]*$/u.test(flags['job-key']!)) throw new ArgumentError('Invalid advisory workflow or job key.');
+    if(!/^\.github\/workflows\/[^/]+\.ya?ml$/u.test(flags.workflow!)||(action==='collect'&&!/^[A-Za-z_][A-Za-z0-9_-]*$/u.test(flags['job-key']!))) throw new ArgumentError('Invalid advisory workflow or job key.');
   }
   if(inputs.length>20||sourceFiles.length>20||enrichments.length>20) throw new ArgumentError('advisory accepts at most 20 inputs, sources or enrichments.');
   const format=flags.format??(action==='status'?'text':'markdown');

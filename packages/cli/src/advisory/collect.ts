@@ -2,8 +2,10 @@ import { createHash } from 'node:crypto';
 import { gitBlobSha, safeRelativePath } from '@cirujano/core';
 import { githubGet, githubPaged, type GitHubReadOptions } from '../optimization/github-read.js';
 import { evidenceFail, sealEvidence, mapWorkflowSteps, assertSafeEvidenceSource, type EvidenceBundleV1, type EvidenceSource, type EvidenceStep } from './contracts.js';
+import {sealSourceDeclaration,type SourceDeclarationV1} from './source-evidence.js';
 
-export interface CollectionRequest { repository: string; run: number; attempt: number; workflow: string; jobKey: string; jobId: number; sourceFiles: string[] }
+export interface SourceCollectionRequest {repository:string;run:number;attempt:number;workflow:string}
+export interface CollectionRequest extends SourceCollectionRequest { jobKey: string; jobId: number; sourceFiles: string[] }
 export interface CollectionOptions extends GitHubReadOptions { toolSourceSha: string; now?: () => Date }
 export class CollectionReadError extends Error {
   readonly reasonCode='github-read-unavailable';
@@ -51,17 +53,31 @@ async function selectedSources(repository: string, head: string, paths: string[]
   }
   return sources;
 }
-/** Bounded metadata and selected immutable blobs only: no logs, checkout, execution or inference. */
-export async function collectSelectedJob(request: CollectionRequest, options: CollectionOptions): Promise<EvidenceBundleV1> {
+function validateSelection(request:SourceCollectionRequest,options:CollectionOptions):void {
   if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(request.repository) || request.repository.split('/').some(v=>v==='.'||v==='..')) evidenceFail('github-invalid-repository');
-  integer(request.run);integer(request.attempt);integer(request.jobId);sha(options.toolSourceSha);relative(request.workflow);
-  if (!/^\.github\/workflows\/[^/]+\.ya?ml$/.test(request.workflow) || !/^[A-Za-z_][A-Za-z0-9_-]*$/.test(request.jobKey) || !Array.isArray(request.sourceFiles)) evidenceFail('github-invalid-selection');
-  request.sourceFiles.forEach(relative);const paths=[request.workflow,...request.sourceFiles.filter(p=>p!==request.workflow)];if (paths.length>20 || new Set(paths).size!==paths.length) evidenceFail('github-source-size-or-duplicate');
+  integer(request.run);integer(request.attempt);sha(options.toolSourceSha);relative(request.workflow);
+  if(!/^\.github\/workflows\/[^/]+\.ya?ml$/.test(request.workflow))evidenceFail('github-invalid-selection');
+}
+async function selectedRun(request:SourceCollectionRequest,options:CollectionOptions) {
   const repo=await readStage('repository',()=>githubGet(`repos/${request.repository}`,options));if (repo.full_name!==request.repository || typeof repo.private!=='boolean') evidenceFail('github-repository-identity');const repositoryId=integer(repo.id);
   const run=await readStage('run',()=>githubGet(`repos/${request.repository}/actions/runs/${request.run}/attempts/${request.attempt}`,options));
   if (run.id!==request.run || run.run_attempt!==request.attempt || run.path!==request.workflow || object(run.repository).id!==repositoryId || object(run.repository).full_name!==request.repository) evidenceFail('github-run-identity');
   const head=sha(run.head_sha),event=text(run.event),headRepo=object(run.head_repository);
   if (headRepo.id!==repositoryId || headRepo.full_name!==request.repository) evidenceFail('github-run-head-repository');
+  return {repo,run,repositoryId,head,event};
+}
+/** Verified declarations for local browsing, independently of source-to-execution mapping. */
+export async function collectSourceDeclaration(request:SourceCollectionRequest,options:CollectionOptions):Promise<SourceDeclarationV1> {
+  validateSelection(request,options);const {repo,repositoryId,head,event}=await selectedRun(request,options);
+  const sources=await readStage('source',()=>selectedSources(request.repository,head,[request.workflow],options));
+  return sealSourceDeclaration({schemaVersion:1,kind:'advisory-declared-source',scope:'repository-at-run-head',repository:{id:repositoryId,name:request.repository,visibility:repo.private?'private':'public'},run:{id:request.run,attempt:request.attempt,headSha:head,event},source:sources[0]!,fetchedAt:(options.now?.()??new Date()).toISOString(),toolSourceSha:options.toolSourceSha,apiVersion:'2022-11-28'});
+}
+/** Bounded metadata and selected immutable blobs only: no logs, checkout, execution or inference. */
+export async function collectSelectedJob(request: CollectionRequest, options: CollectionOptions): Promise<EvidenceBundleV1> {
+  validateSelection(request,options);integer(request.jobId);
+  if(!/^[A-Za-z_][A-Za-z0-9_-]*$/.test(request.jobKey)||!Array.isArray(request.sourceFiles))evidenceFail('github-invalid-selection');
+  request.sourceFiles.forEach(relative);const paths=[request.workflow,...request.sourceFiles.filter(p=>p!==request.workflow)];if(paths.length>20||new Set(paths).size!==paths.length)evidenceFail('github-source-size-or-duplicate');
+  const {repo,run,repositoryId,head,event}=await selectedRun(request,options);
   const jobs=await readStage('jobs',()=>githubPaged(`repos/${request.repository}/actions/runs/${request.run}/attempts/${request.attempt}/jobs`,'jobs',options)),matching=jobs.filter(j=>j.id===request.jobId);if (matching.length!==1) evidenceFail('github-job-identity');const job=matching[0]!;
   if (job.run_id!==request.run || job.run_attempt!==request.attempt || job.head_sha!==head) evidenceFail('github-job-identity');
   const name=text(job.name),labels=list(job.labels).map(text),reasonCodes:string[]=[];
