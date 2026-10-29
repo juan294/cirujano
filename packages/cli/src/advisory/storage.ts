@@ -19,6 +19,7 @@ export async function readEvidenceInputs(directory:string,maximum=20):Promise<Ev
  if(maximum<1||maximum>20)throw new Error('advisory-input-limit');
  const direct=await optionalJson(join(directory,'evidence.json'),4*1024*1024);
  if(direct!==null)return [decodeEvidence(direct)];
+ if(await optionalJson(join(directory,'source-evidence.json'),2*1024*1024)!==null)throw new Error('advisory-source-local-only');
  const raw=await readPrivateJson(join(directory,'prepared.json'),4*1024*1024);
  if(raw===null||typeof raw!=='object'||Array.isArray(raw))throw new Error('prepared-invalid');
  const prepared=raw as Record<string,unknown>;

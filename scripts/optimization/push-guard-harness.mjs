@@ -7956,7 +7956,7 @@ function record2(value) {
     throw new OptimizationInputError("Expected YAML mapping");
   return value;
 }
-function parse(source) {
+function parse(source, inspect) {
   if (Buffer.byteLength(source) > 256 * 1024)
     throw new OptimizationInputError("yaml-size");
   const documents = (0, import_yaml.parseAllDocuments)(source, { version: "1.2", uniqueKeys: true, strict: true, keepSourceTokens: true });
@@ -7976,6 +7976,7 @@ function parse(source) {
           throw new OptimizationInputError("yaml-key");
     }
   });
+  inspect?.(document.contents);
   return record2(document.toJS({ maxAliasCount: 0 }));
 }
 function parseWorkflowSource(source) {

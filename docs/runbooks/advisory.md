@@ -25,6 +25,32 @@ Job duration and per-job rounded minutes are code-computed observations. Missing
 
 `inbox` accepts repeatable `--input` and `--enrichment`, at most 20 retained bundles in total, and `--sort duration|minutes`. Its default output is Markdown. `--format json` emits the versioned report contract: `schemaVersion`, `status`, `reasonCodes`, `limitations`, `nextActions` and `payload`. Read-only local commands do not send inference requests.
 
+## Browse workflow declarations
+
+Source declarations answer “where is this configured?” independently of execution mapping. For pull requests, schedules, matrices or unnamed steps, collect the workflow at the exact API run head with a separate local-only contract:
+
+```bash
+node packages/cli/dist/bin.js advisory collect-source \
+  --repository OWNER/REPOSITORY --run 123 --attempt 1 \
+  --workflow .github/workflows/ci.yml \
+  --output ./.cirujano/advisory/source-123 --format json
+node packages/cli/dist/bin.js advisory ask-source \
+  --input ./.cirujano/advisory/source-123 \
+  --question 'Where are dependencies installed?' --format markdown
+```
+
+`collect-source` verifies repository, run attempt, workflow path, head repository and immutable Git commit/tree/blob identities. It retains complete original source bytes in a distinct `source-evidence.json` sidecar, with scope `repository-at-run-head`, original blob hash, line range and digest. It needs no job key or job ID and never fetches job logs or executes source. A declaration does not prove the workflow revision, expansion or checkout that ran.
+
+New sidecars use schema V2 with digest-bound admission policy `declared-source-benign-env-v1`. Strict YAML parsing permits plain `env` mappings only at the workflow root, direct jobs and direct sequence steps. Allowed values are `NODE_ENV` development/test/production; `CI` boolean or exact true/false string; `QEMU_CPU_LIMIT` or `CIRUJANO_QEMU_CPUS` integer 1–64; `NODE_OPTIONS` containing exactly one `--max-old-space-size=N` flag with N 128–65536; or a nonsensitive uppercase key whose entire value is `${{ needs.LITERAL_JOB.result }}`. Numeric limits also accept canonical decimal strings. Symbolic result references are retained declarations, never resolved outcomes.
+
+Unknown environment keys, values or locations, environment selectors, credential keys/references/shapes, escaped headers, shell assignments and malformed YAML remain refused. Decoded YAML keys and values receive credential checks too. Only approved AST key spans are masked in a temporary validation view before the original whole-file guard runs; complete original bytes are persisted and cited. Existing V1 sidecars remain readable under their original strict guard. Execution collection and inference admission retain their original contracts.
+
+One source is bounded to 256 KiB and 10,000 lines. `ask-source` accepts at most 20 input documents and 2 MiB aggregate source and returns at most three non-overlapping excerpts from a 20-candidate shortlist. Its deterministic `declared-source-search-v2` policy requires operational signals or substantive terms, ignores comment/name-only matches, and abstains on requests for unavailable runtime records or external implementation bodies. Explicit declaration-location questions can return an invocation, which supplies only that location. Private source can be browsed locally. Source/run identities are acquisition context; there is no executed-job classification, duration, cost or inferred cache state.
+
+JSON exposes explicit scope, search/admission policy IDs, input digests, admitted document count, lexical candidates, exact original text/line references and limitations. Markdown renders excerpts as inert text with links pinned to the head commit. Scores are deterministic retrieval scores, not model probabilities. A lexical match is text for inspection, not proof of a hidden package-script implementation or runtime behavior. No-match means the policy found no suitable declaration or the requested evidence is unavailable; inspect reason codes. Duplicate source identities are deduplicated; conflicting bytes at the same repository/head/path are refused.
+
+Source sidecars cannot be used by `inbox`, execution `ask`, `compare`, `prepare` or `enrich`; these retain their original execution-evidence and inference contracts. The new commands send no model requests and accept no enrichment option. For a failed source read, select a valid source directory and retry `ask-source`. For refused collection or an existing output, select admissible source and a fresh dedicated output directory. Source recovery uses these two commands; `status` remains for execution/inference operation artifacts.
+
 ## Search retained source
 
 ```bash

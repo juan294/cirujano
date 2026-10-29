@@ -12,14 +12,19 @@ export function validateSearchQuery(query:string):void{
 export function actionScopeQuery(query:string):boolean{
  return /\b(?:delete|remove|disable|skip|change|edit|modify|rewrite|toggle|route)\b/i.test(query)&&/\b(?:checks?|tests?|ci|workflows?|cadence|routing|pipeline)\b/i.test(query);
 }
-function tokens(text:string):Set<string>{return new Set((text.toLocaleLowerCase('en-US').match(/[\p{L}\p{N}_-]+/gu)??[]).filter(t=>!stopWords.has(t)).map(t=>synonyms[t]??t));}
+export function lexicalTerms(text:string):Set<string>{return new Set((text.toLocaleLowerCase('en-US').match(/[\p{L}\p{N}_-]+/gu)??[]).filter(t=>!stopWords.has(t)).map(t=>synonyms[t]??t));}
+/** Shared lexical policy; source navigation does not need an execution EvidenceBundle. */
+export function lexicalScorer(query:string):(text:string)=>number {
+ validateSearchQuery(query);const wanted=lexicalTerms(query);
+ return text=>{const words=lexicalTerms(text);let score=0;for(const word of wanted)if(words.has(word))score++;return score;};
+}
 export function searchIntent(query:string):SearchIntent{
- const words=tokens(query),categories=['install','build','test','cache'].filter(t=>words.has(t));if(categories.length!==1)return 'generic-evidence-search';
+ const words=lexicalTerms(query),categories=['install','build','test','cache'].filter(t=>words.has(t));if(categories.length!==1)return 'generic-evidence-search';
  return ({install:'find-install',build:'find-build',test:'find-tests',cache:'find-cache-evidence'} as const)[categories[0] as 'install'|'build'|'test'|'cache'];
 }
 export interface SearchCandidate {excerpt:LocalExcerpt;score:number}
 /** Lexical score uses retained text only; names/ordinals never create a matching claim. */
 export function shortlistEvidence(bundles:EvidenceBundleV1[],query:string):SearchCandidate[]{
- validateSearchQuery(query);const wanted=tokens(query);
- return enumerateEvidenceExcerpts(bundles).map(excerpt=>{const words=tokens(excerpt.originalText);let score=0;for(const word of wanted)if(words.has(word))score++;return {excerpt,score};}).sort((a,b)=>b.score-a.score||a.excerpt.id.localeCompare(b.excerpt.id)).slice(0,20);
+ const score=lexicalScorer(query);
+ return enumerateEvidenceExcerpts(bundles).map(excerpt=>({excerpt,score:score(excerpt.originalText)})).sort((a,b)=>b.score-a.score||a.excerpt.id.localeCompare(b.excerpt.id)).slice(0,20);
 }

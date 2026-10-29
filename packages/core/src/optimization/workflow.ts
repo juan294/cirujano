@@ -5,7 +5,7 @@ import type { ActionReceipt, CacheOperation, Provenance } from './contracts.js';
 export interface WorkflowEvidence { provenance: Provenance; receipt: ActionReceipt; rootLockfile: boolean; timedBaseline: boolean; requiredChecks: string[]; verificationProfilePresent: boolean }
 export interface WorkflowEligibility { status: 'eligible' | 'no-change' | 'unsupported'; reason: string; operations: CacheOperation[]; protectedDigest: string | null; structuralFacts: Record<string,string|number|boolean> }
 export function record(value:unknown): Record<string,unknown> { if (!value || typeof value!=='object' || Array.isArray(value)) throw new OptimizationInputError('Expected YAML mapping'); return value as Record<string,unknown>; }
-function parse(source:string): Record<string,unknown> {
+function parse(source:string,inspect?:(root:unknown)=>void): Record<string,unknown> {
   if (Buffer.byteLength(source)>256*1024) throw new OptimizationInputError('yaml-size');
   const documents=parseAllDocuments(source,{version:'1.2',uniqueKeys:true,strict:true,keepSourceTokens:true});
   if (documents.length!==1 || !documents[0] || documents[0].errors.length || documents[0].warnings.length) throw new OptimizationInputError('yaml-parse');
@@ -16,10 +16,37 @@ function parse(source:string): Record<string,unknown> {
     if ((isMap(node)||isSeq(node)||isScalar(node)) && !node.range) throw new OptimizationInputError('yaml-range');
     if (isMap(node)) for (const pair of node.items) if (!isScalar(pair.key) || typeof pair.key.value!=='string') throw new OptimizationInputError('yaml-key');
   });
+  inspect?.(document.contents);
   return record(document.toJS({maxAliasCount:0}));
 }
 /** All collection and patch consumers use the same strict YAML interpretation. */
 export function parseWorkflowSource(source:string):Record<string,unknown> { return parse(source); }
+export interface SourceEnvironmentMapping {key:string;path:(string|number)[];keyStart:number;keyEnd:number;value:unknown}
+export interface SourceEnvironmentInspection {data:Record<string,unknown>;mappings:SourceEnvironmentMapping[]}
+/** Exact mapping-key spans; scalar text and comments never become environment nodes. */
+export function inspectSourceEnvironments(source:string):SourceEnvironmentInspection {
+  const entries:Omit<SourceEnvironmentMapping,'value'>[]=[];
+  const parsed=parse(source,root=>{
+    function walk(node:unknown,path:(string|number)[],depth:number):void {
+      if(depth>64)throw new OptimizationInputError('yaml-depth');
+      if(isMap(node))for(const pair of node.items){
+        if(!isScalar(pair.key)||typeof pair.key.value!=='string'||!pair.key.range)throw new OptimizationInputError('yaml-key');
+        const key=pair.key.value,next=[...path,key];
+        if(/^env(?:ironment)?$/iu.test(key))entries.push({key,path:next,keyStart:pair.key.range[0],keyEnd:pair.key.range[1]});
+        walk(pair.value,next,depth+1);
+      }
+      else if(isSeq(node))node.items.forEach((item,index)=>walk(item,[...path,index],depth+1));
+    }
+    walk(root,[],0);
+  });
+  const mappings=entries.map(entry=>{
+    let value:unknown=parsed;
+    for(const part of entry.path){if(value===null||typeof value!=='object'||!Object.hasOwn(value,part))throw new OptimizationInputError('yaml-path');value=(value as Record<string|number,unknown>)[part];}
+    return {...entry,value};
+  });
+  return {data:parsed,mappings};
+}
+export function sourceEnvironmentMappings(source:string):SourceEnvironmentMapping[]{return inspectSourceEnvironments(source).mappings;}
 export function protectedWorkflowDigest(source:string,jobId:string,stepIndex:number):string {
   const workflow=parse(source); const job=record(record(workflow.jobs)[jobId]);
   if (!Array.isArray(job.steps) || !job.steps[stepIndex]) throw new OptimizationInputError('Missing selected workflow step');

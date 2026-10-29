@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-29
+
+### Added
+
+- Add local `advisory collect-source` and `advisory ask-source` commands for immutable workflow declarations at the recorded run head, independently of executed-job mapping. Excerpts retain exact source bytes and pinned Git references.
+- Add versioned source admission for a narrow set of benign workflow/job/step environment declarations, with strict YAML and decoded credential checks. Existing V1 sidecars retain their original admission rules.
+
+### Changed
+
+- Filter local source searches by declared operations and abstain on unavailable runtime records or external implementation bodies. Report the admission/search policy IDs and evidence limits explicitly.
+- Document real-source diagnostic results, including refusal coverage, retrieval losses and the rejected experimental v3 search candidate. That candidate is excluded from this release.
+
+### Compatibility
+
+- Additive release; Node 22.13 or newer remains required. Existing execution evidence, numeric arithmetic and inference permit contracts are unchanged.
+- Jev remains off by default; no native usefulness, latency, cost or developer-time improvement is claimed. Source declarations do not establish execution or savings.
+- No npm publication, provider activation, paid runner operation or CI-routing change is included.
+
 ## [0.2.0] - 2026-10-29
 
 ### Added

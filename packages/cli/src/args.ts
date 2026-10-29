@@ -3,11 +3,13 @@ import { SHA_PATTERN } from './fleet-registry.js';
 import { HOSTED_SKUS, type HostedSku } from './telemetry.js';
 import { parseOptimizeArguments, type OptimizeArguments } from './optimization/arguments.js';
 
-export const VERSION = '0.2.0';
+export const VERSION = '0.3.0';
 
 export const USAGE = [
   'Usage:',
   '  cirujano advisory collect --repository <owner/name> --run <id> --attempt <n> --workflow <path> --job-key <key> --job-id <id> --output <directory> [--source-file <path>]...',
+  '  cirujano advisory collect-source --repository <owner/name> --run <id> --attempt <n> --workflow <path> --output <directory> [--format json|markdown]',
+  '  cirujano advisory ask-source --input <directory>... --question <text> [--format json|markdown]',
   '  cirujano advisory inbox [--input <directory>]... [--enrichment <directory>]... [--format json|markdown] [--sort duration|minutes]',
   '  cirujano advisory prepare --input <directory>... --task labels|search [--question <text>] --output <directory>',
   '  cirujano advisory prepare --task compare --baseline <cohort.json> --candidate <cohort.json> --output <directory>',
