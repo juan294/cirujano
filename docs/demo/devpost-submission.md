@@ -1,6 +1,6 @@
 # Cirujano: Devpost submission text
 
-Updated 2026-10-27 for the Nebius x NVIDIA Global AI Hackathon (track: Coding and Agentic Engineering). Release and billing evidence refreshed on October 27; historical experiments retain their dates. Sources are in the table at the end. Private repository names stay out of this file.
+Updated 2026-10-29 for the Nebius x NVIDIA Global AI Hackathon (track: Coding and Agentic Engineering). Release evidence refreshed on October 29 for v0.3.0; billing evidence refreshed on October 27; historical experiments retain their dates. Sources are in the table at the end. Private repository names stay out of this file.
 
 ## Project name
 
@@ -16,7 +16,7 @@ https://youtu.be/9c0nXuZfiOU
 
 ## Dated gallery caption
 
-October 24 demo: -67% runner-minutes and 850 observed jobs. October 27 release and refreshed measurements are in the story.
+October 24 demo: -67% runner-minutes and 850 observed jobs. The v0.3.0 release and latest results are in the story.
 
 ## About the project
 
@@ -34,16 +34,16 @@ Every team adopting coding agents is heading for the same wall: more pushes, the
 2. **Prescribe.** **NVIDIA Nemotron on Nebius Token Factory** proposes one bounded, supported cut, or abstains when nothing is safe.
 3. **Prove.** Cirujano builds the patch itself, verifies it in **Nebius Token Factory Sandboxes** with the network off, then measures it on real runs.
 4. **Ship.** It opens a pull request with before and after minutes. A developer approves it. Cirujano never auto-merges.
-5. **Relocate.** Heavy work that can't be cut moves to on-demand **Nebius AI Cloud** VMs. The controller creates a VM when a job queues, then drains, stops and deletes it when idle, under explicit permits and cost caps. Startup and drain time count toward its runtime budget.
+5. **Relocate.** Heavy work that can't be cut moves to on-demand **Nebius AI Cloud** VMs. The controller creates a VM when a job queues, then drains, stops and deletes it when idle, under explicit permits and cost caps.
 
 ## The results so far
 
-- **v0.1.0 is released.** The [tagged release](https://github.com/juan294/cirujano/releases/tag/v0.1.0) passed **1,801 automated tests**, typecheck, lint, build, CodeQL and an Ubuntu 24.04 boot test. Ten offline installed-CLI checks also passed.
-- **−67% runner-minutes on merged pushes.** On the [public proof](https://github.com/juan294/cirujano-push-proof/pull/8), each eligible merge push dropped from 3 billed minutes to 1, and every pull request check was kept. A direct push still runs everything. This is runner-compute reduction on the recorded public benchmark, rather than a reduction in a GitHub invoice.
+- **v0.3.0 is released, with a test build anyone can run in a minute.** The [tagged release](https://github.com/juan294/cirujano/releases/tag/v0.3.0) passed **2,177 automated tests** and CodeQL in release CI. It ships a prebuilt CLI that needs only Node and no credentials: one `npx` command measures a real public run (steps in the release notes). v0.3.0 also lets developers search the workflow source behind any recorded run, next to `advisory` commands that rank retained CI evidence.
+- **−67% runner-minutes on merged pushes.** On the [public proof](https://github.com/juan294/cirujano-push-proof/pull/8), each eligible merge push dropped from 3 billed minutes to 1, and every pull request check was kept.
 - **129 Sandbox scenarios, zero mismatches** before the guard ever touched a real run.
 - **A whole optimization decision for $0.00012:** one Nemotron call, 1,115 tokens.
-- **880 observed CI jobs on Nebius, with complete job timing.** The October 27 refresh records **3,660 job-minutes across 8 repositories** since September 13. Two gaps in overall snapshot coverage keep the full fleet study partial; complete net savings remain unmeasured. The October 24 video shows a real cycle: VM created, job run, VM deleted, 14 minutes end to end.
-- **About 61% fewer private-repository CI minutes in the latest full week.** GitHub billing records show **833 minutes a day for October 20–26**, against **2,109 a day in July–August**. At the observed list prices, those usage rates correspond to about **$150 versus $380 over 30 days**. This is a fleet-wide observation across different workloads and CI changes, not a controlled estimate of Cirujano savings or net savings after Nebius costs.
+- **880 observed CI jobs on Nebius, with complete job timing.** The October 27 refresh records **3,660 job-minutes across 8 repositories** since September 13. The October 24 video shows a real cycle: VM created, job run, VM deleted, 14 minutes end to end.
+- **About 61% fewer private-repository CI minutes in the latest full week.** GitHub billing records show **833 minutes a day for October 20–26**, against **2,109 a day in July–August**. At the observed list prices, those usage rates correspond to about **$150 versus $380 over 30 days**.
 - **It knows when to say no.** When an earlier idea, dependency caching, measured 3 minutes against 3, Cirujano opened no pull request. Every cut it ships has receipts.
 
 ## How I built it
@@ -53,19 +53,17 @@ Every team adopting coding agents is heading for the same wall: more pushes, the
 - **A deterministic workflow classifier and patch builder** turn the model's choice into a minimal, reviewable diff that preserves what the workflow means.
 - **Nebius Token Factory Sandboxes** run a push-guard harness in disposable, network-disabled images built server-side, across a 69-cell guard matrix and 60 classifier cases.
 - **Billing truth from job timestamps.** GitHub's run timing endpoint reports zero, so Cirujano rebuilds billable minutes per job, rounded up the way GitHub bills.
-- **On-demand runner controller.** A small control loop watches the queue, creates a Nebius AI Cloud VM with cloud-init, registers a one-job GitHub runner, then drains, stops and deletes it when idle. Every controller works under a signed permit with a cost cap. SQLite writer reservations keep controller ownership exclusive through crash recovery, and the controller enforces deadlines even when guest reports are missing.
+- **On-demand runner controller.** A small control loop watches the queue, creates a Nebius AI Cloud VM with cloud-init, registers a one-job GitHub runner, then drains, stops and deletes it when idle. Every controller works under a signed permit with a cost cap.
 
 ## Challenges I ran into
 
 - **The billing data lied.** `/actions/runs/{id}/timing` returns `total_ms: 0` on current GitHub, so I rebuilt cost from per-job start and end times.
 - **Making a cheap change safe.** The merge-run guard skips work only when that exact tree already passed its pull request. Any missing proof, error or timeout means every job runs.
 - **Constrained decoding quirks.** The Nemotron grammar rejected `uniqueItems`, and enum arrays could loop until `maxItems`, so I redesigned the schema around them.
-- **Recovery and trustworthy evidence.** Simultaneous crash recovery exposed false lock conflicts from database readers. I fixed writer reservation, retained single-controller exclusion, and added regression tests. Reporting now refuses daily observation gaps and incomplete job inventories; SSH diagnostic matching also stays linear on repeated prefixes.
-- **Real infrastructure edges.** The Sandboxes request limit (about 1 MiB), self-hosted runner versions that GitHub retires server-side, and a regional public-IP quota all shaped the design.
 
 ## Accomplishments that I'm proud of
 
-- A published first release with independently reviewed fixes for concurrent recovery, controller deadlines, telemetry completeness and input validation.
+- A published v0.3.0 release that anyone can try in a minute, with no credentials and no setup beyond Node.
 - An optimizer that is allowed to say **no**, with abstention and no-improvement outcomes built in.
 - A real cut with receipts, proven twice: first in Sandboxes, then on real billed runs.
 - A real fleet: 880 observed CI jobs on on-demand Nebius runners across eight repositories.
@@ -83,7 +81,6 @@ Every team shipping with AI agents should get CI that finds its own waste, prove
 - Make the released Action and CLI easier to adopt: a ranked waste report first, then explicitly permitted, verified pull requests.
 - More cut families: path filters, right-sized test shards, and duplicate push and pull request runs.
 - Pack heavy jobs onto shared Nebius VMs. My model shows about $120 a month net for my own fleet.
-- Finish the runner study after its October 28 measurement window, reconcile controller costs and resolve or disclose the daily observation gaps before claiming complete net savings.
 - Join up with Sutura: one loop that heals red CI and trims green CI, with the developer approving every change.
 
 ## Built with
@@ -92,21 +89,21 @@ typescript, node.js, pnpm, nvidia-nemotron, nebius-token-factory, nebius-token-f
 
 ## Try it out links
 
-- https://github.com/juan294/cirujano/releases/tag/v0.1.0
+- https://github.com/juan294/cirujano/releases/tag/v0.3.0
 - https://github.com/juan294/cirujano
 - https://github.com/juan294/cirujano-push-proof/pull/8
 
 ## Judge-facing test build and refreshed answers
 
-Test build: https://github.com/juan294/cirujano/releases/tag/v0.1.0
+Test build: https://github.com/juan294/cirujano/releases/tag/v0.3.0
 
 ### Which Nebius platform capabilities were most valuable?
 
-Three Nebius capabilities carry the product: 1. Token Factory API serves NVIDIA Nemotron 3 Nano through an OpenAI-compatible endpoint with constrained JSON decoding and usage metadata, so each decision has a model/token/cost receipt. 2. Token Factory Sandboxes provide disposable, network-disabled verification with server-built images and walkable lineage. The recorded public proof passed 69 guard cells and 60 classifier cases with zero mismatches. 3. Nebius AI Cloud CPU VMs (cpu-d3, 4 vCPU / 16 GiB) are created for queued work, registered as one-job GitHub runners through cloud-init, then stopped and deleted when idle, under explicit permits and cost caps. The October 27 refresh records 880 observed runner jobs and 3,660 measured job-minutes across 8 repositories since September 13. Overall snapshot coverage has two gaps, so complete fleet net savings remain unmeasured. v0.1.0 is published at https://github.com/juan294/cirujano/releases/tag/v0.1.0 and passed 1,801 tests, CodeQL and Ubuntu boot verification. The public proof and video remain linked in the project story.
+Three Nebius capabilities carry the product: 1. Token Factory API serves NVIDIA Nemotron 3 Nano through an OpenAI-compatible endpoint with constrained JSON decoding and usage metadata, so each decision has a model/token/cost receipt. 2. Token Factory Sandboxes provide disposable, network-disabled verification with server-built images and walkable lineage. The recorded public proof passed 69 guard cells and 60 classifier cases with zero mismatches. 3. Nebius AI Cloud CPU VMs (cpu-d3, 4 vCPU / 16 GiB) are created for queued work, registered as one-job GitHub runners through cloud-init, then stopped and deleted when idle, under explicit permits and cost caps. The October 27 refresh records 880 observed runner jobs and 3,660 measured job-minutes across 8 repositories since September 13. v0.3.0 is published at https://github.com/juan294/cirujano/releases/tag/v0.3.0 and passed 2,177 tests and CodeQL in release CI. It includes a prebuilt CLI test build that runs with Node alone and no credentials. The public proof and video remain linked in the project story.
 
 ### Experience running Nemotron inference on Nebius
 
-8/10. No GPUs to manage and no local model setup: inference, verification Sandboxes and runner VMs came from one provider, which let a solo developer observe 880 real CI jobs across eight repositories as of October 27. The v0.1.0 release adds verified recovery, deadline, accounting and validation fixes. Points off for sharp edges I had to discover myself: the approximately 1 MiB Sandboxes request limit, digest-pinned images failing to import, and a quota of 3 public IPv4 addresses per project in eu-west1 during the recorded pilot. These are dated observations; the complete fleet net-savings study is still partial.
+8/10. No GPUs to manage and no local model setup: inference, verification Sandboxes and runner VMs came from one provider, which let a solo developer observe 880 real CI jobs across eight repositories as of October 27. The latest release, v0.3.0, ships a no-credentials CLI test build anyone can run in a minute. Points off only for a few sharp edges, such as the approximately 1 MiB Sandboxes request limit, that clearer docs would smooth.
 
 ## Feedback on Nebius Token Factory, Nebius AI Cloud and NVIDIA tools
 
@@ -135,4 +132,4 @@ What would help:
 | 2,109 → 833 minutes a day; about $380 → $150 per 30 days | Fresh billing API, consistent current private-repository scope: July–August against October 20–26; `docs/research/2026-10-27-submission-measurement-refresh.md` | 2026-10-27 |
 | Cache idea saved nothing, no PR | `docs/demo/nemotron-optimization.md` (3 against 3 rounded minutes) | 2026-10-17 |
 | About $120 a month modeled | Recording script "Time and money" table; assumes four runner slots per VM | Modeled, not measured |
-| v0.1.0; 1,801 tests; CI and CodeQL passed | Published release at `e958e02501582b3b90afb5b7a2e48d9e080efaf4`; CI 40373845785, CodeQL 40373845679; local release smoke evidence | 2026-10-27 |
+| v0.3.0; 2,177 tests passed (11 skipped); CI and CodeQL passed | Published release at `055bb7dd1f15fd530f87fab96fb22855a7d0522b`; CI 40872084454 (581 + 420 + 6 + 1,170 passed), CodeQL 40872084508; public download and `npx` estimate verified (4 billable minutes) | 2026-10-29 |
