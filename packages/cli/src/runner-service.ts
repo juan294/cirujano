@@ -32,6 +32,7 @@ import {
   projectedStartCostUsd,
   readJournal,
   releaseCheckDue,
+  ownedRunnerMayTakeJobs,
   assessService,
   runnerConfigHash,
   renderCloudInit,
@@ -66,7 +67,7 @@ import {
 } from '@cirujano/runner';
 
 import type { CliIo, RunnerCommandService } from './cli.js';
-import { strandedRuns } from './fleet-health.js';
+import { cancelAndRerun, strandedRuns } from './fleet-health.js';
 
 const DEFAULT_GH_PATH = '/opt/homebrew/bin/gh';
 const DEFAULT_POLL_LIMIT = 10_000;
@@ -272,6 +273,8 @@ async function watch(context: RuntimeContext, dryRun: boolean, io: CliIo): Promi
         return recovery.completed ? 0 : 1;
       }
       if (context.environment['CIRUJANO_RUNNER_ONCE'] === '1') return result.status === 'blocked' ? 1 : 0;
+      // Test-only: a bounded number of ticks in one process, to exercise per-process state.
+      if (count + 1 === Number(context.environment['CIRUJANO_RUNNER_TICKS'] ?? 0)) return result.status === 'blocked' ? 1 : 0;
       await new Promise<void>((resolveDelay) => {
         const timer = setTimeout(resolveDelay, context.config.timing.pollIntervalMs);
         wake = () => { clearTimeout(timer); resolveDelay(); };
@@ -294,7 +297,7 @@ async function watch(context: RuntimeContext, dryRun: boolean, io: CliIo): Promi
 async function releaseRouting(context: RuntimeContext, input: LifecycleInput, dryRun: boolean, check: { last: { atMs: number; reason: string } | null }): Promise<void> {
   const variable = context.config.routingSwitch?.variable;
   if (variable === undefined) return;
-  const event = (fields: Record<string, unknown>) => appendRedactedEvent(context.eventPath, { schemaVersion: 1, ...fields }, { secrets: [] });
+  const event = (fields: Record<string, unknown>) => appendRedactedEvent(context.eventPath, { schemaVersion: 1, variable, ...fields }, { secrets: [] });
   const service = {
     permit: context.permit, nowMs: input.nowMs, timing: context.config.timing, identity: context.identity,
     startCount: input.journal.startCount, cumulativeRuntimeMs: input.journal.cumulativeRuntimeMs,
@@ -304,7 +307,13 @@ async function releaseRouting(context: RuntimeContext, input: LifecycleInput, dr
   // A complete queue observation already proved the repository private; only an incomplete one needs a look.
   if (assessment.serviceable && !input.queue.complete) {
     const repositoryPrivate = await repositoryPrivacy(context);
-    if (repositoryPrivate === null) return;
+    if (repositoryPrivate === null) {
+      if (releaseCheckDue(check.last, 'check-incomplete', input.nowMs)) {
+        check.last = { atMs: input.nowMs, reason: 'check-incomplete' };
+        await event({ type: 'routing-check-incomplete', detail: 'repository visibility could not be read' });
+      }
+      return;
+    }
     assessment = assessService({ ...service, repositoryPrivate });
   }
   if (assessment.serviceable) {
@@ -314,35 +323,54 @@ async function releaseRouting(context: RuntimeContext, input: LifecycleInput, dr
   const { reason } = assessment;
   if (!releaseCheckDue(check.last, reason, input.nowMs)) return;
   check.last = { atMs: input.nowMs, reason };
-  const recovery = `run cirujano fleet release --registry ~/.local/share/cirujano/telemetry/fleet-registry.json --id ${variable.replace('CIRUJANO_RUNNER_', '')}, `
+  const registry = context.environment['CIRUJANO_FLEET_REGISTRY'] ?? '~/.local/share/cirujano/telemetry/fleet-registry.json';
+  const recovery = `run cirujano fleet release --registry ${registry} --id ${variable.replace('CIRUJANO_RUNNER_', '')} --cancel-stranded, `
     + `or gh variable delete ${variable} --repo ${context.owner}/${context.repository}`;
   const authority = validateReleasePermit(context.permit, context.identity, input.nowMs);
   if (!authority.valid) {
-    await event({ type: 'routing-release-unauthorized', variable, reason, authority: authority.reason, recovery });
+    await event({ type: 'routing-release-unauthorized', reason, authority: authority.reason, recovery });
     return;
   }
   if (dryRun) {
-    await event({ type: 'routing-release-dry-run', variable, reason });
+    await event({ type: 'routing-release-dry-run', reason });
     return;
   }
   try {
     if (await context.github.getVariable(context.owner, context.repository, variable) === 'on') {
       const result = await context.github.deleteVariable(context.owner, context.repository, variable);
       if (await context.github.getVariable(context.owner, context.repository, variable) === 'on') {
-        await event({ type: 'routing-release-failed', variable, reason, error: 'the switch is still on after the delete', recovery });
+        await event({ type: 'routing-release-failed', reason, error: 'the switch is still on after the delete', recovery });
         return;
       }
-      await event({ type: 'routing-release', variable, reason, result });
+      await event({ type: 'routing-release', reason, result });
     }
-    const stranded = await strandedRuns(context.github, context.owner, context.repository, context.config);
-    for (const runId of stranded.cancellable) await context.github.forceCancelRun(context.owner, context.repository, runId);
-    if (stranded.cancellable.length > 0) {
-      await event({ type: 'routing-stranded-cancelled', variable, runIds: stranded.cancellable, nextStep: 'push or dispatch a new run; with the switch off it runs on ubuntu-latest' });
-    }
-    if (stranded.waiting.length > 0) await event({ type: 'routing-stranded-waiting', variable, runIds: stranded.waiting });
   } catch (error) {
-    await event({ type: 'routing-release-failed', variable, reason, error: error instanceof Error ? error.message : String(error), recovery });
+    await event({ type: 'routing-release-failed', reason, error: error instanceof Error ? error.message : String(error), recovery });
+    return;
   }
+  let stranded: Awaited<ReturnType<typeof strandedRuns>>;
+  try {
+    stranded = await strandedRuns(context.github, context.owner, context.repository, context.config);
+  } catch (error) {
+    await event({ type: 'routing-check-incomplete', detail: `stranded runs could not be listed: ${error instanceof Error ? error.message : String(error)}` });
+    return;
+  }
+  if (ownedRunnerMayTakeJobs(input)) {
+    const runIds = [...stranded.cancellable, ...stranded.waiting];
+    if (runIds.length > 0) await event({ type: 'routing-stranded-waiting', runIds, detail: 'an owned runner may still take these jobs' });
+    return;
+  }
+  const outcome = await cancelAndRerun(context.github, context.owner, context.repository, stranded);
+  if (outcome.cancelled.length > 0 || outcome.failedCancels.length > 0) {
+    await event({
+      type: 'routing-stranded-cancelled', runIds: outcome.cancelled, rerunJobIds: outcome.rerun, stillActive: outcome.stillActive,
+      failedCancels: outcome.failedCancels, failedReruns: outcome.failedReruns,
+      nextStep: outcome.rerun.length > 0 && outcome.stillActive !== 'unknown' && outcome.stillActive.length === 0 && outcome.failedReruns.length === 0
+        ? 'the stranded jobs were re-run; with the switch off they run on ubuntu-latest'
+        : 'push or dispatch a new run for the runs whose jobs were not re-run; with the switch off it runs on ubuntu-latest',
+    });
+  }
+  if (stranded.waiting.length > 0) await event({ type: 'routing-stranded-waiting', runIds: stranded.waiting, detail: 'other jobs of these runs are still running' });
 }
 
 /** true or false once GitHub has answered; null when it could not be read this time. */

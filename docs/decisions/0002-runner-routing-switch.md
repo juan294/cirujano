@@ -24,7 +24,8 @@ Plan: [2026-10-29-runner-routing-switch](../plans/2026-10-29-runner-routing-swit
 
 - Turning a runner on becomes an owner action after cutover: `gh variable set CIRUJANO_RUNNER_<P#> --body on`. Turning it off needs no push.
 - GitHub compares strings case-insensitively, so `ON` also enables routing. Health reads the value the same way.
-- Jobs that were already queued when the switch went off keep their label. The controller and `fleet release` force-cancel them. A new push or dispatch then runs hosted. Whether re-running a cancelled job reads the current variable value is measured by the phase 4 probe.
+- Jobs that were already queued when the switch went off keep their label. The controller and `fleet release` force-cancel them, then re-run them. A live probe on 2026-10-29 measured that a re-run reads the current variable value: with the switch deleted, the re-run attempt ran on `ubuntu-latest`. Force-cancel is asynchronous, so a run that has not finished cancelling within the bounded wait is reported for a push or dispatch instead.
+- The controller cancels only when no VM of its own is live or being created or started, because such a VM may still take the queued job.
 - A variable with the same name at organization or environment level would keep routing on. Enrolled repositories are user-owned private repositories, which have no organization variables.
 - A sleeping owner Mac stops the controller entirely, so it cannot release. This remains the accepted risk of the fleet plan (D1). `fleet health` and `fleet release` work from any machine with the owner's `gh` login.
 - The operating permit bounds still end on 2026-10-28 (`packages/runner/src/operating.ts`). A new enrollment needs an owner decision on new bounds.

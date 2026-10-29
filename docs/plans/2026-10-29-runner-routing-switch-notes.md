@@ -91,3 +91,90 @@ Skipped, with reasons:
 
 - Next: owner acceptance of phase 1, then phase 2 (entry: phase 1 accepted; `ci:fast` green at the phase 1 commit).
 - Phase 2 must read the switch value case-insensitively (R4) and may introduce the selection classification deferred above.
+
+## Phases 2, 3 and 4
+
+Authorization (owner, 2026-10-29): "go finish all phases and once it's all done, commit, merge to develop and prune your tree". No push. Phase 4 scratch repository (owner choice): a new private scratch repository, archived after the probe. Its name and run ids stay in the ignored agent report.
+
+Commits on `feat/runner-routing-switch`: 9e9261a (phase 2), cc478e4 (phase 3 plus phase 2 review repairs), then the phase 3 review repairs and phase 4 re-run in the commit that follows these notes.
+
+### Delivered
+
+- Phase 2:
+  - `packages/runner/src/routing.ts`: `serviceEnd`, `assessService`, `selectStrandedRuns`.
+  - `GitHubAdapter.getVariable/deleteVariable/forceCancelRun`.
+  - `fleet health`, `fleet release`.
+  - Health step and notification in `scripts/collect-actions-telemetry.sh`.
+- Phase 3:
+  - `release-routing` permit operation; `validateReleasePermit`.
+  - `routingSwitch` in runner configs, copied by `controller-config`.
+  - Controller release step in `runner-service.ts`.
+  - ADR 0002, runbooks, README.
+- Phase 4:
+  - Live probe (PASS).
+  - `GitHubAdapter.rerunJob`; shared `cancelAndRerun`, used by `fleet release --cancel-stranded` and the controller.
+
+### Deviations
+
+| Plan said | Found | Chose | Why |
+| --- | --- | --- | --- |
+| `assessService` in phase 3 | Phase 2 health needs the same serviceability rule | Built in phase 2 and reused by the controller | One rule for health and release |
+| Health `stranded` only for jobs queued over 15 minutes | `WorkflowJob` has no created-at time | Any job queued on the label while the switch is off or the runner cannot serve | Nothing will ever serve such a job; waiting adds no information |
+| Stranded set "queued" | GitHub also reports `waiting`, `pending` and `requested` | Every unfinished status except `in_progress` | All of them wait for the label; `in_progress` means a runner took the job |
+| Waiting runs labelled `waiting-for-other-jobs` | Shorter key reads the same | `waiting` | Naming only |
+| Unserviceable row with stranded runs becomes `stranded` | Both are red | Stays `unserviceable`; recovery switches to `--cancel-stranded` | The reason is more useful than the symptom |
+| Release readback must be `absent` | `other` also routes hosted | Any value but `on` counts as released | Routing is off either way |
+| Release tests in `fleet-service.test.ts` | Health and release share fixtures | `fleet-health.test.ts` | Keeps fixtures in one file |
+| `serving` health case in phase 2 | No valid permit could carry `release-routing` before phase 3 | Case added in phase 3 | Ordering |
+| Throttle test with a fake clock | The controller runs one tick per process in tests | Test-only `CIRUJANO_RUNNER_TICKS` runs two ticks in one process | Exercises the real per-process state |
+| "Owned VM still active" covered by a service test | The lifecycle fixture cannot hold a running VM without an accounting baseline | Pure `ownedRunnerMayTakeJobs` in `routing.ts`, unit-tested and called by the controller | Same guard, testable |
+| Manual dry-run incident replay (phase 3) | Covered by automated tests | The routing boundary test (22:54:59.000Z serves, .001Z does not) and the dry-run service test | Same evidence, repeatable |
+| Re-run fallback `rerun-failed-jobs` (phase 4 step 5) | Job-level re-run passed | Not run | Not needed |
+
+### Review findings and dispositions
+
+Phase 2 review (commit 9e9261a), CHANGES REQUESTED, no blocker. Resolved in cc478e4:
+
+| ID | Finding | Disposition |
+| --- | --- | --- |
+| P2-1 | A crashed health check (exit 1, no report) read as red and replaced the last report | Resolved: valid only with the report header; test with exit 1 and empty output |
+| P2-2 | `assessService` ignored starts, projected cost, identity and operations | Resolved: full start-budget parity; table test against `decideLifecycle` added in phase 3 repairs |
+| P2-3 | Unreadable local files reported as GitHub failures | Resolved: `permit-invalid` and `controller-state-unreadable`; tests |
+| P2-4 | Release lost its report on partial failure; no post-cancel readback | Resolved: report always printed, per-run failures, readback |
+| P2-5 | Health skipped when an earlier step failed | Resolved: health runs before the owner lookup and collection; test |
+| P2-6 | A 403 backoff on one row spilled into later rows | Resolved: a fresh GitHub client per row |
+| P2-7 | Test gaps (serving, controller files, incomplete collection, misnamed test) | Resolved: tests added; test renamed |
+| P2-8 | Stranded set broader than "queued"; possible duplicate runs | Accepted: see deviations; dedupe by run id is in `listActiveRuns` |
+| P2-9 | Organization or environment variables with the same name | Accepted, documented in ADR 0002 (user-owned repositories have none) |
+
+Phase 3 review (commit cc478e4), CHANGES REQUESTED, one blocker. Resolved in the following commit:
+
+| ID | Finding | Disposition |
+| --- | --- | --- |
+| P3-1 (blocker) | Force-cancel could hit runs that a live or starting owned VM would serve | Resolved: cancel only when `ownedRunnerMayTakeJobs` is false; otherwise `routing-stranded-waiting`; unit test |
+| P3-2 | `routing-check-incomplete` (S7) missing | Resolved: event for unreadable visibility or stranded listing; test |
+| P3-3 | No start-budget parity test | Resolved: 12-case table against `decideLifecycle` |
+| P3-4 | Throttle untested in-process | Resolved: two-tick test; a mutation removing the guard fails it |
+| P3-5 | A mid-loop cancel failure lost earlier cancels | Resolved: shared `cancelAndRerun` records each run |
+| P3-6 | No stored pre-change config hash | Resolved: hash `b42f6fb8…` computed with the 9e9261a parser and pinned |
+| P3-7 | Release dropped its cancel list when the readback failed | Resolved: `stillActive: 'unknown'` keeps the list; test |
+| P3-8 | Readback-still-on branch untested | Resolved: test with a delete that does not take effect |
+| P3-9 | Runbook listed a mismatched permit as released automatically | Resolved: runbook corrected; the owner releases |
+| P3-10 | Event nits (registry path, stranded failure after delete) | Resolved: recovery uses `CIRUJANO_FLEET_REGISTRY` when set; a stranded-listing failure is `routing-check-incomplete`. No event when the switch was already absent (kept quiet by design) |
+| P3-11 | Unreadable controller files were red with the switch already off | Resolved: the switch is read first; released stays green; test |
+
+### Phase 4 probe (PASS)
+
+Evidence is in the ignored report `docs/agents/routing-switch-probe-2026-10-29.md`. Summary:
+
+- Live `fleet enroll`, `runs-on`, `cutover` and `verify` worked against the scratch repository.
+- With no variable, the dispatched job ran on `ubuntu-latest`.
+- With the variable `on`, the job queued on the Cirujano labels, and `fleet health` was red (`permit-absent`).
+- `fleet release --cancel-stranded` deleted the variable (readback 404) and force-cancelled the run. The cancel was still in progress at readback and completed seconds later.
+- `POST /actions/jobs/<id>/rerun` returned 201, and the new attempt ran on `ubuntu-latest` and succeeded.
+- The repository is archived with no active runs and no variable.
+
+### Handoff
+
+- All four phases are implemented. Remaining before integration: simplify pass, independent review of the final commit, full `pnpm run ci:fast`, then local merge into `develop` and worktree removal (authorized). No push.
+- Pre-existing finding F-BASE-1 (flaky `sandbox.test.ts`) is unchanged and outside this plan.

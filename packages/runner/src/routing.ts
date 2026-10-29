@@ -1,5 +1,5 @@
 import type { WorkflowJob, WorkflowRun } from './adapters/github.js';
-import type { Permit, PermitIdentity, PermitOperation, RunnerConfig, TimingConfig } from './contracts.js';
+import type { LifecycleInput, Permit, PermitIdentity, PermitOperation, RunnerConfig, TimingConfig } from './contracts.js';
 
 /**
  * Routing-switch decisions shared by the fleet commands and the controller
@@ -77,18 +77,22 @@ export function selectStrandedRuns(runs: readonly WorkflowRun[], jobs: readonly 
   cancellable: number[];
   waiting: number[];
   strandedJobs: number[];
+  /** The stranded job ids of each run, for re-running them once the run is cancelled. */
+  strandedJobsByRun: Record<number, number[]>;
 } {
   const cancellable: number[] = [];
   const waiting: number[] = [];
   const strandedJobs: number[] = [];
+  const strandedJobsByRun: Record<number, number[]> = {};
   for (const run of runs) {
     const current = jobs.filter((job) => job.runId === run.id && job.runAttempt === run.runAttempt && job.status !== 'completed');
     const stranded = current.filter((job) => job.status !== 'in_progress' && job.labels.includes(runnerLabel));
     if (stranded.length === 0) continue;
     strandedJobs.push(...stranded.map(({ id }) => id));
+    strandedJobsByRun[run.id] = stranded.map(({ id }) => id);
     (stranded.length === current.length ? cancellable : waiting).push(run.id);
   }
-  return { cancellable, waiting, strandedJobs };
+  return { cancellable, waiting, strandedJobs, strandedJobsByRun };
 }
 
 const RELEASE_CHECK_INTERVAL_MS = 10 * 60 * 1000;
@@ -96,4 +100,13 @@ const RELEASE_CHECK_INTERVAL_MS = 10 * 60 * 1000;
 /** Release checks run at once, then at most every 10 minutes, and at once when the refusal reason changes. */
 export function releaseCheckDue(last: { atMs: number; reason: string } | null, reason: string, nowMs: number): boolean {
   return last === null || last.reason !== reason || nowMs - last.atMs >= RELEASE_CHECK_INTERVAL_MS;
+}
+
+/**
+ * A live or starting VM of this controller may still take a queued job (lifecycle canBeginAssignedJob
+ * checks only its grant and the permit deadline), so stranded runs are cancelled only when no owned VM
+ * exists or is being created or started.
+ */
+export function ownedRunnerMayTakeJobs(input: { provider: Pick<LifecycleInput['provider'], 'vmStatus'>; journal: Pick<LifecycleInput['journal'], 'outstandingIntent'> }): boolean {
+  return !['absent', 'stopped'].includes(input.provider.vmStatus) || input.journal.outstandingIntent !== null;
 }

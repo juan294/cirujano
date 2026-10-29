@@ -7,7 +7,7 @@ import { describe, expect, it } from 'vitest';
 import type { Collection, WorkflowJob, WorkflowRun } from '@cirujano/runner';
 
 import { runCli } from './cli.js';
-import type { RoutingGitHub } from './fleet-health.js';
+import { cancelAndRerun, fleetRelease, type RoutingGitHub } from './fleet-health.js';
 import { parseFleetRegistry, writeFleetRegistry, type FleetEnrollment, type FleetRegistry } from './fleet-registry.js';
 import { createFleetCommandService } from './fleet-service.js';
 
@@ -74,6 +74,10 @@ class FakeRouting implements RoutingGitHub {
   async listActiveRuns(): Promise<Collection<WorkflowRun>> {
     const reason = this.incomplete ?? this.runsIncomplete;
     return reason === null ? { complete: true, items: this.runs } : { complete: false, items: [], reason };
+  }
+  async rerunJob(_owner: string, _repository: string, jobId: number) {
+    this.writes.push(`rerun ${jobId}`);
+    return 'accepted' as const;
   }
   async listJobs(_owner: string, _repository: string, runId: number, runAttempt: number): Promise<Collection<WorkflowJob>> {
     return { complete: true, items: this.jobs.filter((job) => job.runId === runId && job.runAttempt === runAttempt) };
@@ -265,6 +269,8 @@ describe('fleet health', () => {
     const row = (await health(broken, FAR)).report!.rows[0]!;
     expect(row).toMatchObject({ status: 'unserviceable', reason: expect.stringMatching(/^controller-state-unreadable: /u) });
     expect(String(row['recovery'])).toContain(`repair or archive the controller files in ${broken.stateDirectory}`);
+    broken.github.variable = 'absent';
+    expect((await health(broken, FAR)).report!.rows[0]).toMatchObject({ status: 'released', colour: 'green' });
   });
 
   it('reports an incomplete run listing as unknown', async () => {
@@ -324,7 +330,7 @@ describe('fleet release', () => {
     expect(fx.github.writes).toEqual(['delete CIRUJANO_RUNNER_P1']);
     expect(report).toMatchObject({
       status: 'released', id: 'P1', switchVariable: 'CIRUJANO_RUNNER_P1', variable: 'deleted', cancelled: [], waiting: [], notCancelled: [10],
-      nextStep: 'run cirujano fleet release with --cancel-stranded to cancel the stranded runs, then push or dispatch a new run; with the switch off it runs on ubuntu-latest',
+      nextStep: `re-run cirujano fleet release --registry ${fx.registryPath} --id P1 --cancel-stranded to cancel the stranded runs and re-run their jobs on ubuntu-latest`,
     });
     const registry = parseFleetRegistry(JSON.parse(await readFile(fx.registryPath, 'utf8')));
     expect(registry.enrollments[0]).toMatchObject({ status: 'cut-over', notes: [expect.stringMatching(/^routing released at .* by fleet release/u)] });
@@ -336,10 +342,10 @@ describe('fleet release', () => {
     fx.github.jobs = [job(1, 10, 'queued'), job(2, 11, 'queued'), job(3, 11, 'in_progress', ['ubuntu-latest'])];
     const { exitCode, report } = await release(fx, true);
     expect(exitCode).toBe(0);
-    expect(fx.github.writes).toEqual(['delete CIRUJANO_RUNNER_P1', 'force-cancel 10']);
+    expect(fx.github.writes).toEqual(['delete CIRUJANO_RUNNER_P1', 'force-cancel 10', 'rerun 1']);
     expect(report).toMatchObject({
-      cancelled: [10], waiting: [11], notCancelled: [],
-      nextStep: 'push or dispatch a new run for each cancelled run; with the switch off it runs on ubuntu-latest. Re-run release for runs still waiting on other jobs',
+      cancelled: [10], rerun: [1], stillActive: [], waiting: [11], notCancelled: [],
+      nextStep: `the stranded jobs were re-run on ubuntu-latest; re-run cirujano fleet release --registry ${fx.registryPath} --id P1 --cancel-stranded once the runs still waiting on other jobs finish`,
     });
   });
 
@@ -349,12 +355,20 @@ describe('fleet release', () => {
     fx.github.jobs = [job(1, 10, 'queued'), job(2, 11, 'queued')];
     fx.github.cancelFails.add(11);
     fx.github.cancelLags = true;
-    const partial = await release(fx, true);
-    expect(partial.exitCode).toBe(1);
-    expect(partial.report).toMatchObject({
-      status: 'released', cancelled: [10], stillActive: [10],
-      failedCancels: [{ runId: 11, error: 'GitHub returned HTTP 500 force-cancelling run 11: boom' }],
+    const { io, out } = capture();
+    const sleeps: number[] = [];
+    const exitCode = await fleetRelease({
+      registry: parseFleetRegistry(JSON.parse(await readFile(fx.registryPath, 'utf8'))), registryPath: fx.registryPath, id: 'P1', cancelStranded: true,
+      github: fx.github, io, wait: { attempts: 3, intervalMs: 3_000, sleep: async (ms) => { sleeps.push(ms); } },
     });
+    expect(exitCode).toBe(1);
+    expect(sleeps).toEqual([3_000, 3_000]);
+    expect(JSON.parse(out.join(''))).toMatchObject({
+      status: 'released', cancelled: [10], rerun: [], stillActive: [10],
+      failedCancels: [{ runId: 11, error: 'GitHub returned HTTP 500 force-cancelling run 11: boom' }],
+      nextStep: `push or dispatch a new run for the runs whose jobs were not re-run; with the switch off it runs on ubuntu-latest. re-run cirujano fleet release --registry ${fx.registryPath} --id P1 --cancel-stranded to retry the failed cancels`,
+    });
+    expect(fx.github.writes.filter((write) => write.startsWith('rerun'))).toEqual([]);
 
     const scan = await fixture();
     scan.github.runsIncomplete = 'GitHub HTTP 502';
@@ -364,6 +378,14 @@ describe('fleet release', () => {
       status: 'released', variable: 'deleted', strandedScan: 'failed: GitHub HTTP 502',
       nextStep: `re-run cirujano fleet release --registry ${scan.registryPath} --id P1 --cancel-stranded`,
     });
+  });
+
+  it('keeps the cancel list when the readback after force-cancel fails', async () => {
+    const github = new FakeRouting();
+    github.runsIncomplete = 'GitHub HTTP 502';
+    const outcome = await cancelAndRerun(github, 'juan294', 'app', { cancellable: [10], strandedJobsByRun: { 10: [1] } }, { attempts: 2, intervalMs: 1, sleep: async () => undefined });
+    expect(outcome).toEqual({ cancelled: [10], rerun: [], stillActive: 'unknown', failedCancels: [], failedReruns: [] });
+    expect(github.writes).toEqual(['force-cancel 10']);
   });
 
   it('exits 1 when the switch is still on after a retried delete', async () => {

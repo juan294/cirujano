@@ -496,6 +496,13 @@ describe('routing switch and stranded-run calls', () => {
     await expect(adapter.forceCancelRun('trusted', 'private', 1001)).rejects.toThrow(/HTTP 404 force-cancelling run 1001: Not Found/u);
   });
 
+  it('re-runs one job and keeps the status and message of a refusal', async () => {
+    const { adapter, calls } = fixture([reply(201, {}), reply(403, { message: 'This workflow run cannot be retried' })]);
+    expect(await adapter.rerunJob('trusted', 'private', 2001)).toBe('accepted');
+    expect(calls[0]).toEqual(expect.arrayContaining(['POST', '/repos/trusted/private/actions/jobs/2001/rerun']));
+    await expect(adapter.rerunJob('trusted', 'private', 2001)).rejects.toThrow(/HTTP 403 re-running job 2001: This workflow run cannot be retried/u);
+  });
+
   it('refuses a variable name that is not a repository variable identifier before dispatch', async () => {
     const { adapter, calls } = fixture([]);
     await expect(adapter.getVariable('trusted', 'private', '../secrets')).rejects.toThrow(/variable name/u);

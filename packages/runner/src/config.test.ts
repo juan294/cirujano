@@ -87,6 +87,8 @@ describe('routing switch (runner routing switch phase 3)', () => {
     const { runnerConfigHash } = await import('./config.js');
     const without = parseRunnerConfig(validConfig);
     expect(Object.hasOwn(without, 'routingSwitch')).toBe(false);
+    // Computed with the config parser of commit 9e9261a, before the switch existed.
+    expect(runnerConfigHash(without)).toBe('b42f6fb8fcba3aec47f888101085d07fb1b57c9648a5f49c2857cc815d254512');
     const withSwitch = parseRunnerConfig({ ...validConfig, routingSwitch: { variable: 'CIRUJANO_RUNNER_P3' } });
     expect(withSwitch.routingSwitch).toEqual({ variable: 'CIRUJANO_RUNNER_P3' });
     expect(runnerConfigHash(withSwitch)).not.toBe(runnerConfigHash(without));

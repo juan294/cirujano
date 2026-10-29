@@ -34,6 +34,66 @@ export interface RoutingGitHub {
   forceCancelRun(owner: string, repository: string, runId: number): Promise<'accepted' | 'completed'>;
   listActiveRuns(owner: string, repository: string): Promise<Collection<WorkflowRun>>;
   listJobs(owner: string, repository: string, runId: number, runAttempt: number): Promise<Collection<WorkflowJob>>;
+  rerunJob(owner: string, repository: string, jobId: number): Promise<'accepted'>;
+}
+
+export interface CancelOutcome {
+  cancelled: number[];
+  rerun: number[];
+  stillActive: number[] | 'unknown';
+  failedCancels: Array<{ runId: number; error: string }>;
+  failedReruns: Array<{ jobId: number; error: string }>;
+}
+
+/**
+ * Force-cancels each run and, once GitHub reports it finished, re-runs its stranded jobs. Call only
+ * after the switch is confirmed off: the 2026-10-29 probe measured that a re-run reads the current
+ * variables, so the jobs then run on ubuntu-latest. Force-cancel is asynchronous; runs still active
+ * after the bounded wait are reported, not re-run. Every failure is recorded per run or job.
+ */
+export async function cancelAndRerun(
+  github: RoutingGitHub, owner: string, name: string,
+  stranded: { cancellable: readonly number[]; strandedJobsByRun: Readonly<Record<number, readonly number[]>> },
+  wait: { attempts: number; sleep: (ms: number) => Promise<void>; intervalMs: number } = { attempts: 10, sleep: (ms) => new Promise((done) => setTimeout(done, ms)), intervalMs: 3_000 },
+): Promise<CancelOutcome> {
+  const outcome: CancelOutcome = { cancelled: [], rerun: [], stillActive: [], failedCancels: [], failedReruns: [] };
+  for (const runId of stranded.cancellable) {
+    try {
+      await github.forceCancelRun(owner, name, runId);
+      outcome.cancelled.push(runId);
+    } catch (error) {
+      outcome.failedCancels.push({ runId, error: message(error) });
+    }
+  }
+  if (outcome.cancelled.length === 0) return outcome;
+  let active: number[] = [];
+  try {
+    for (let attempt = 0; attempt < wait.attempts; attempt += 1) {
+      const ids = new Set(complete(await github.listActiveRuns(owner, name)).map(({ id }) => id));
+      active = outcome.cancelled.filter((runId) => ids.has(runId));
+      if (active.length === 0) break;
+      if (attempt + 1 < wait.attempts) await wait.sleep(wait.intervalMs);
+    }
+  } catch {
+    outcome.stillActive = 'unknown';
+    return outcome;
+  }
+  outcome.stillActive = active;
+  for (const runId of outcome.cancelled.filter((id) => !active.includes(id))) {
+    for (const jobId of stranded.strandedJobsByRun[runId] ?? []) {
+      try {
+        await github.rerunJob(owner, name, jobId);
+        outcome.rerun.push(jobId);
+      } catch (error) {
+        outcome.failedReruns.push({ jobId, error: message(error) });
+      }
+    }
+  }
+  return outcome;
+}
+
+function message(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 type HealthStatus = 'serving' | 'expiring' | 'no-auto-release' | 'unserviceable' | 'released' | 'stranded' | 'ungated' | 'unknown';
@@ -90,15 +150,14 @@ async function healthRow(enrollment: FleetEnrollment, input: Parameters<typeof f
     return row('ungated', 'red', { recovery: `generate the selection with cirujano fleet runs-on --registry ${input.registryPath} --id ${enrollment.id}` });
   }
   const [owner, name] = splitRepository(enrollment.repository);
+  // An unreadable controller file matters only while the switch is on; read the switch either way.
   let controller: ControllerEvidence;
+  let controllerError: string | null = null;
   try {
     controller = await readController(enrollment, input.defaultTiming, input.networkEgressLimitGiB);
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    return row('unserviceable', 'red', {
-      reason: `controller-state-unreadable: ${message}`,
-      recovery: `repair or archive the controller files in ${enrollment.controller?.stateDirectory ?? 'the controller directory'}, or run ${releaseCommand}`,
-    });
+    controllerError = message(error);
+    controller = { permit: null, permitError: null, timing: input.defaultTiming, startCount: 0, cumulativeRuntimeMs: 0, cumulativeCostUsd: 0, projectedStartCostUsd: 0 };
   }
   const github = input.githubFor();
   try {
@@ -116,6 +175,12 @@ async function healthRow(enrollment: FleetEnrollment, input: Parameters<typeof f
     if (switchState !== 'on') {
       return anyStranded ? row('stranded', 'red', { ...strandedFields, recovery: cancelCommand }) : row('released', 'green', strandedFields);
     }
+    if (controllerError !== null) {
+      return row('unserviceable', 'red', {
+        ...strandedFields, reason: `controller-state-unreadable: ${controllerError}`,
+        recovery: `repair or archive the controller files in ${enrollment.controller?.stateDirectory ?? 'the controller directory'}, or run ${anyStranded ? cancelCommand : releaseCommand}`,
+      });
+    }
     if (permitError !== null || !assessment.serviceable) {
       const reason = permitError === null ? (assessment as { reason: string }).reason : `permit-invalid: ${permitError}`;
       return row('unserviceable', 'red', { ...strandedFields, reason, recovery: anyStranded ? cancelCommand : releaseCommand });
@@ -128,8 +193,7 @@ async function healthRow(enrollment: FleetEnrollment, input: Parameters<typeof f
     }
     return row('serving', 'green', fields);
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    return row('unknown', 'red', { reason: message, recovery: `retry; GitHub read incomplete: ${message}` });
+    return row('unknown', 'red', { reason: message(error), recovery: `retry; GitHub read incomplete: ${message(error)}` });
   }
 }
 
@@ -227,6 +291,7 @@ export async function fleetRelease(input: {
   cancelStranded: boolean;
   github: RoutingGitHub;
   io: CliIo;
+  wait?: Parameters<typeof cancelAndRerun>[4];
 }): Promise<0 | 1> {
   const enrollment = input.registry.enrollments.find(({ id }) => id === input.id);
   if (enrollment === undefined) throw new Error(`enrollment ${input.id} does not exist`);
@@ -254,38 +319,32 @@ export async function fleetRelease(input: {
   // The switch is off from here on; every later failure is reported with what already happened.
   const report: Record<string, unknown> = { status: 'released', id: enrollment.id, repository: enrollment.repository, switchVariable, variable, releasedAt };
   const scope = { workflowIds: [enrollment.workflowId], runnerLabel: enrollment.runnerLabel };
-  let failed = false;
+  const rerunRelease = `re-run cirujano fleet release --registry ${input.registryPath} --id ${enrollment.id} --cancel-stranded`;
+  let stranded: Awaited<ReturnType<typeof strandedRuns>>;
   try {
-    const stranded = await strandedRuns(input.github, owner, name, scope);
-    const cancelled: number[] = [];
-    const failures: Array<{ runId: number; error: string }> = [];
-    if (input.cancelStranded) {
-      for (const runId of stranded.cancellable) {
-        try {
-          await input.github.forceCancelRun(owner, name, runId);
-          cancelled.push(runId);
-        } catch (error) {
-          failures.push({ runId, error: error instanceof Error ? error.message : String(error) });
-        }
-      }
-    }
-    // Force-cancel is asynchronous on GitHub; a run still active here is reported, not retried.
-    const stillActive = cancelled.length === 0 ? [] : complete(await input.github.listActiveRuns(owner, name)).map(({ id }) => id).filter((id) => cancelled.includes(id));
-    const notCancelled = input.cancelStranded ? [] : stranded.cancellable;
-    failed = failures.length > 0;
-    Object.assign(report, { cancelled, stillActive, failedCancels: failures, waiting: stranded.waiting, notCancelled, nextStep: nextStep(cancelled, stranded.waiting, notCancelled) });
+    stranded = await strandedRuns(input.github, owner, name, scope);
   } catch (error) {
-    failed = true;
-    Object.assign(report, { strandedScan: `failed: ${error instanceof Error ? error.message : String(error)}`, nextStep: `re-run cirujano fleet release --registry ${input.registryPath} --id ${enrollment.id} --cancel-stranded` });
+    input.io.stdout(`${JSON.stringify({ ...report, strandedScan: `failed: ${message(error)}`, nextStep: rerunRelease })}\n`);
+    return 1;
   }
+  const outcome = input.cancelStranded
+    ? await cancelAndRerun(input.github, owner, name, stranded, input.wait)
+    : { cancelled: [], rerun: [], stillActive: [], failedCancels: [], failedReruns: [] } satisfies CancelOutcome;
+  const notCancelled = input.cancelStranded ? [] : stranded.cancellable;
+  const failed = outcome.failedCancels.length > 0 || outcome.failedReruns.length > 0 || outcome.stillActive === 'unknown';
+  Object.assign(report, { ...outcome, waiting: stranded.waiting, notCancelled, nextStep: nextStep(outcome, stranded.waiting, notCancelled, rerunRelease) });
   input.io.stdout(`${JSON.stringify(report)}\n`);
   return failed ? 1 : 0;
 }
 
-function nextStep(cancelled: readonly number[], waiting: readonly number[], notCancelled: readonly number[]): string {
-  const hosted = 'with the switch off it runs on ubuntu-latest';
-  if (notCancelled.length > 0) return `run cirujano fleet release with --cancel-stranded to cancel the stranded runs, then push or dispatch a new run; ${hosted}`;
-  if (cancelled.length > 0) return `push or dispatch a new run for each cancelled run; ${hosted}${waiting.length > 0 ? '. Re-run release for runs still waiting on other jobs' : ''}`;
-  if (waiting.length > 0) return 're-run release with --cancel-stranded once the runs still waiting on other jobs finish';
-  return `nothing is stranded; new runs use ubuntu-latest while the switch is off`;
+function nextStep(outcome: CancelOutcome, waiting: readonly number[], notCancelled: readonly number[], rerunRelease: string): string {
+  const waitingNote = waiting.length > 0 ? `; ${rerunRelease} once the runs still waiting on other jobs finish` : '';
+  if (notCancelled.length > 0) return `${rerunRelease} to cancel the stranded runs and re-run their jobs on ubuntu-latest`;
+  const pending = outcome.stillActive === 'unknown' ? outcome.cancelled : outcome.stillActive;
+  if (pending.length > 0 || outcome.failedReruns.length > 0 || outcome.failedCancels.length > 0) {
+    return `push or dispatch a new run for the runs whose jobs were not re-run; with the switch off it runs on ubuntu-latest${outcome.failedCancels.length > 0 ? `. ${rerunRelease} to retry the failed cancels` : ''}${waitingNote}`;
+  }
+  if (outcome.rerun.length > 0) return `the stranded jobs were re-run on ubuntu-latest${waitingNote}`;
+  if (waiting.length > 0) return `${rerunRelease} once the runs still waiting on other jobs finish`;
+  return 'nothing is stranded; new runs use ubuntu-latest while the switch is off';
 }

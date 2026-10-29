@@ -574,6 +574,14 @@ export class GitHubAdapter {
     throw httpError(response, `force-cancelling run ${runId}`);
   }
 
+  /** Measured 2026-10-29 (routing switch probe): a re-run reads the current variables, so it runs hosted once the switch is off. */
+  async rerunJob(owner: string, repository: string, jobId: number): Promise<'accepted'> {
+    integer(jobId, 'jobId');
+    const response = await this.#call('POST', `/repos/${segment(owner)}/${segment(repository)}/actions/jobs/${jobId}/rerun`, {}, true);
+    if (response.status === 201) return 'accepted';
+    throw httpError(response, `re-running job ${jobId}`);
+  }
+
   async removeOwnedRunner(owner: string, repository: string, ownership: RunnerOwnership): Promise<void> {
     if (ownership.ownership !== 'owned' || ownership.runner === null || ownership.matches.length !== 1) {
       throw new GitHubResponseError('runner removal requires one proven owned runner');
