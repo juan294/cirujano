@@ -1,0 +1,72 @@
+{
+  "schemaVersion": 1,
+  "kind": "advisory-evidence",
+  "repository": {
+    "id": 1,
+    "name": "example/project",
+    "visibility": "public"
+  },
+  "run": {
+    "id": 10,
+    "attempt": 1,
+    "headSha": "1111111111111111111111111111111111111111",
+    "event": "push"
+  },
+  "workflow": {
+    "path": ".github/workflows/ci.yml",
+    "blobSha": "cc92908930b47ea84da08a3a4c301462594c6d86"
+  },
+  "job": {
+    "id": 20,
+    "key": "check",
+    "name": "Checks",
+    "labels": [
+      "ubuntu-latest"
+    ],
+    "conclusion": "success",
+    "startedAt": "2026-10-28T10:00:00Z",
+    "completedAt": "2026-10-28T10:02:00Z"
+  },
+  "steps": [
+    {
+      "number": 2,
+      "name": "Install",
+      "startedAt": "2026-10-28T10:00:00Z",
+      "completedAt": "2026-10-28T10:01:00Z",
+      "conclusion": "success",
+      "sourceIndex": 0,
+      "command": "pnpm install --frozen-lockfile",
+      "lineStart": 1,
+      "lineEnd": 10
+    }
+  ],
+  "sources": [
+    {
+      "path": ".github/workflows/ci.yml",
+      "blobSha": "cc92908930b47ea84da08a3a4c301462594c6d86",
+      "content": "name: CI\non: push\njobs:\n  check:\n    name: Checks\n    runs-on: ubuntu-latest\n    steps:\n      - name: Install\n        run: pnpm install --frozen-lockfile\n",
+      "lineStart": 1,
+      "lineEnd": 10
+    }
+  ],
+  "mapping": "supported",
+  "reasonCodes": [],
+  "fetchedAt": "2026-10-28T11:00:00Z",
+  "toolSourceSha": "2222222222222222222222222222222222222222",
+  "apiVersion": "2022-11-28",
+  "datumStatus": {
+    "workflow.blobSha": "present",
+    "workflow.executedSource": "present",
+    "job.startedAt": "present",
+    "job.completedAt": "present",
+    "job.conclusion": "present",
+    "steps.2.startedAt": "present",
+    "steps.2.completedAt": "present",
+    "steps.2.conclusion": "present",
+    "steps.2.sourceIndex": "present",
+    "steps.2.command": "present",
+    "steps.2.lineStart": "present",
+    "steps.2.lineEnd": "present"
+  },
+  "digest": "8ccaa7ebc27d4a58f44d1977624e75c2db1e270fc0f8a79010e7b2cf1544b1e4"
+}

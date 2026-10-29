@@ -1,3 +1,4 @@
+import { createAdvisoryService, type AdvisoryService } from './advisory/service.js';
 import { readFile } from 'node:fs/promises';
 
 import { BillingInputError, parseGithubJobs, summarizeBillableMinutes } from '@cirujano/core';
@@ -38,6 +39,7 @@ export async function runCli(
   telemetryService: TelemetryCommandService = defaultTelemetryCommandService,
   fleetService: FleetCommandService = defaultFleetCommandService,
   optimizationService: OptimizationService = defaultOptimizationService,
+  advisoryService?: AdvisoryService,
 ): Promise<number> {
   let parsed;
   try {
@@ -80,6 +82,9 @@ export async function runCli(
         io.stderr(`fleet ${parsed.action} failed: ${error instanceof Error ? error.message : String(error)}\n`);
         return 1;
       }
+    case 'advisory':
+      try { return await (advisoryService ?? createAdvisoryService()).run(parsed, io); }
+      catch { io.stderr(`advisory ${parsed.action} failed: advisory-operation-failed\n`); return 1; }
     case 'optimize':
       try {
         return await optimizationService.run(parsed, io);

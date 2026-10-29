@@ -1,6 +1,6 @@
 {
   "name": "cirujano",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Verified CI cost surgery for GitHub Actions.",
   "type": "module",
   "license": "MIT",
@@ -43,7 +43,7 @@
     "lint": "eslint src scripts",
     "prepack": "pnpm run build",
     "smoke": "node dist/bin.js --help && node dist/bin.js --version",
-    "test": "vitest run",
+    "test": "vitest run --config ../../vitest.config.ts",
     "test:coverage": "vitest run --config ../../vitest.config.ts --coverage",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },

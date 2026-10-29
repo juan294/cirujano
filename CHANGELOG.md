@@ -2,6 +2,31 @@
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-29
+
+### Added
+
+- Add the `cirujano advisory` command group: `collect`, `status`, `inbox`, `ask`, `compare`, `prepare` and `enrich`. It retains immutable evidence for an exact GitHub Actions job selection, ranks code-computed observations, searches retained source with local lexical retrieval and compares compatible baseline/candidate cohorts. Local commands send no inference requests and do not change workflows, launch runners or open pull requests.
+- Add optional, bounded Jev enrichment for labels, search ranking and regression hypotheses. Only public or explicitly synthetic evidence can be projected. Each request needs a reviewed exact payload and a separate single-use owner permit; the fixed provider limits are 32 KiB per request, 256 KiB per response and a 15-second deadline, with no redirects or retries. Unknown outcomes are retained and never replayed.
+- Add a frozen advisory evaluation corpus (60 label cases, 36 search queries), the `pnpm run advisory:evaluate` local dry run with a 20-bundle benchmark and reproducible public synthetic example reports.
+- Add the advisory operations runbook (`docs/runbooks/advisory.md`) and a README section for the local advisory commands.
+
+### Changed
+
+- Run the CLI package tests through the shared serial Vitest configuration.
+- Refresh the Devpost submission text with the published release and measured evidence.
+
+### Fixed
+
+- Include child process stderr in runner controller test failures so startup failures are diagnosable.
+
+### Compatibility
+
+- Additive release; no migration from 0.1.0 is required. APIs and configuration may change before 1.0.
+- Node 22.13 or newer is required. Local development uses Node 24 and pnpm 11.
+- Native semantic usefulness, latency and cost of the Jev enrichment remain unmeasured and not qualified. Advisory output is a hypothesis, not a cause or a measured saving, and it grants no CI-routing authority; Sutura owns CI cadence and routing.
+- Enrichment requires `TYPESAFE_API_KEY` and an explicit owner permit. Paid provider operations and pull-request publication still require explicit permits. This release does not publish to npm.
+
 ## [0.1.0] - 2026-10-26
 
 ### Added
