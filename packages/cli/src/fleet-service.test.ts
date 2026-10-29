@@ -647,6 +647,36 @@ describe('fleet controller-config and permit-proposal (phase 2 U1)', () => {
       expect(await service.run({ ...proposalArguments, id: 'P4' }, p4.io)).toBe(0);
       expect(JSON.parse(p4.out.join(''))).toMatchObject({ fleetCommittedUsd: 160 });
       await expect(stat(join(stateRoot, 'P4', 'permit-proposal.json'))).resolves.toBeDefined();
+
+      // --expires sets an earlier end, as a date or a timestamp, and never one after the window.
+      const early = capture();
+      expect(await service.run({ ...proposalArguments, expires: '2026-10-15' }, early.io)).toBe(0);
+      expect(JSON.parse(await readFile(proposalPath, 'utf8'))).toMatchObject({ expiresAtMs: Date.parse('2026-10-15T23:59:59Z') });
+      expect(await service.run({ ...proposalArguments, expires: '2026-10-20T12:00:00Z' }, silent())).toBe(0);
+      expect(JSON.parse(await readFile(proposalPath, 'utf8'))).toMatchObject({ expiresAtMs: Date.parse('2026-10-20T12:00:00Z') });
+      const late = capture();
+      expect(await service.run({ ...proposalArguments, expires: '2026-10-29' }, late.io)).toBe(1);
+      expect(late.err.join('')).toContain('expiry must not follow the measurement window end 2026-10-28T23:59:59.000Z');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('refuses every proposal once the measurement window has ended and names the window', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-10-29T08:00:00Z'));
+    try {
+      const { registryPath, service, templatePath, stateRoot, directory } = await enrolledFixture();
+      const quotePath = join(directory, 'quote.json');
+      await writeFile(quotePath, JSON.stringify({
+        complete: true, currency: 'USD', quotedAt: '2026-10-28', source: 'https://docs.nebius.com/compute/resources/pricing',
+        computeUsdPerHour: 0.0992, diskUsdPerGibMonth: 0.071, publicIpUsdPerHour: 0, networkUsdPerGib: 0,
+        maxRetainedDiskHours: 1100, maxPublicIpHours: 1100, maxNetworkEgressGiB: 10, includesRetainedDiskAndIp: true,
+      }));
+      expect(await service.run({ command: 'fleet', action: 'controller-config', registryPath, id: 'P1', stateRoot, templatePath }, silent())).toBe(0);
+      const { io, err } = capture();
+      expect(await service.run({ command: 'fleet', action: 'permit-proposal', registryPath, id: 'P1', candidateDigest: 'c'.repeat(64), quotePath }, io)).toBe(1);
+      expect(err.join('')).toContain('the measurement window ended 2026-10-28; extend measurementWindow.through in the registry before proposing a permit');
     } finally {
       vi.useRealTimers();
     }

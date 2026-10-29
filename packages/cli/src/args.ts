@@ -44,7 +44,7 @@ export const USAGE = [
   '  cirujano fleet verify --registry <file>',
   '  cirujano fleet show --registry <file>',
   '  cirujano fleet controller-config --registry <file> --id <P#> --state-root <dir> --template <config.json> [--allowed-branch <branch>] (admission is same-repository; the branch matters for integration pushes)',
-  '  cirujano fleet permit-proposal --registry <file> --id <P#> --candidate-digest <sha256> --quote <quote.json>',
+  '  cirujano fleet permit-proposal --registry <file> --id <P#> --candidate-digest <sha256> --quote <quote.json> [--expires <YYYY-MM-DD|ISO>]',
   '  cirujano fleet publish --registry <file> --store <directory> --since <YYYY-MM-DD> --output <report.md>',
   '  cirujano --help',
   '  cirujano --version',
@@ -169,6 +169,8 @@ export interface FleetPermitProposalArguments {
   id: string;
   candidateDigest: string;
   quotePath: string;
+  /** Defaults to the end of the registry's measurement window, which also caps it. */
+  expires?: string;
 }
 
 export interface FleetPublishArguments {
@@ -316,7 +318,7 @@ const FLEET_OPTIONS: Record<FleetAction, readonly string[]> = {
   verify: ['--registry'],
   show: ['--registry'],
   'controller-config': ['--registry', '--id', '--state-root', '--template', '--allowed-branch'],
-  'permit-proposal': ['--registry', '--id', '--candidate-digest', '--quote'],
+  'permit-proposal': ['--registry', '--id', '--candidate-digest', '--quote', '--expires'],
   publish: ['--registry', '--store', '--since', '--output'],
 };
 
@@ -387,7 +389,12 @@ function parseFleetArguments(argv: readonly string[]): FleetArguments {
     const quotePath = values.get('--quote');
     if (candidateDigest === undefined) throw new ArgumentError('fleet permit-proposal requires --candidate-digest <sha256>.');
     if (quotePath === undefined) throw new ArgumentError('fleet permit-proposal requires --quote <quote.json>.');
-    return { command: 'fleet', action, registryPath, id, candidateDigest, quotePath };
+    const expires = values.get('--expires');
+    if (expires === undefined) return { command: 'fleet', action, registryPath, id, candidateDigest, quotePath };
+    if (!(validIsoDate(expires) || (expires.includes('T') && Number.isFinite(Date.parse(expires))))) {
+      throw new ArgumentError('fleet permit-proposal --expires must be a YYYY-MM-DD date or an ISO timestamp.');
+    }
+    return { command: 'fleet', action, registryPath, id, candidateDigest, quotePath, expires };
   }
   if (action === 'cutover') {
     const id = values.get('--id');

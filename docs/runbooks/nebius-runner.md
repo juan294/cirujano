@@ -216,8 +216,11 @@ normal scheduling priority.
 The template supplies the Nebius project, subnet, image and dated rates; the
 generator refuses anything but the pilot preset. `permit-proposal` binds the
 proposal to the installed bundle digest and the config hash, applies the D3
-bounds (expiry `2026-10-28T23:59:59Z`, 600 starts, 150 h, USD 40, fleet
-ceiling USD 440 across other enrollments' issued permits or pending proposals)
+bounds (600 starts, 150 h, USD 40, fleet ceiling USD 440 across other
+enrollments' issued permits or pending proposals). The expiry is `--expires
+<YYYY-MM-DD|ISO>`, which defaults to and may not follow the end of the
+registry's `measurementWindow.through` day (23:59:59Z); once that day has
+passed, proposals are refused until the owner extends the window in the registry
 and refuses a quote whose conservative maximum exceeds the ceiling. The owner reviews
 `permit-proposal.json`, then copies `permit.draft.json` to `permit.json` with
 mode `0600` and restarts the agent:

@@ -1,9 +1,11 @@
 import { RUNNER_SCHEMA_VERSION, type Permit, type PermitOperation } from './contracts.js';
 import { finitePositive, validRecentQuoteDate, type PilotQuote } from './pilot.js';
 
-/** Plan D3: per-enrollment operating permit bounds and the fleet ceiling across enrollments. */
+/**
+ * Plan D3: per-enrollment operating permit maximums and the fleet ceiling across enrollments. The
+ * expiry is the caller's, capped by the registry's measurement window end (windowEndMs).
+ */
 export const OPERATING_PERMIT_BOUNDS = {
-  expiresAtMs: Date.parse('2026-10-28T23:59:59Z'),
   maxStarts: 600,
   maxRuntimeMs: 540_000_000,
   maxTotalCostUsd: 40,
@@ -18,6 +20,8 @@ export interface OperatingPermitProposalInput {
   enrollmentId: string;
   nowMs: number;
   expiresAtMs: number;
+  /** The measurement window end: no operating permit may outlive it. */
+  windowEndMs: number;
   candidateDigest: string;
   configHash: string;
   repositoryId: number;
@@ -90,7 +94,8 @@ export function buildOperatingPermitProposal(input: OperatingPermitProposalInput
   const bounds = OPERATING_PERMIT_BOUNDS;
   if (!/^P[1-9]\d{0,3}$/u.test(input.enrollmentId)) reasons.push('enrollmentId must be a registry handle such as P1');
   if (!finitePositive(input.nowMs) || !finitePositive(input.expiresAtMs) || input.expiresAtMs <= input.nowMs) reasons.push('expiry must follow now');
-  if (input.expiresAtMs > bounds.expiresAtMs) reasons.push(`expiry must not follow the measurement window end ${new Date(bounds.expiresAtMs).toISOString()}`);
+  if (!finitePositive(input.windowEndMs)) reasons.push('measurement window end is required');
+  else if (input.expiresAtMs > input.windowEndMs) reasons.push(`expiry must not follow the measurement window end ${new Date(input.windowEndMs).toISOString()}`);
   if (!Number.isInteger(input.maxStarts) || input.maxStarts < 1 || input.maxStarts > bounds.maxStarts) reasons.push(`operating permits allow at most ${bounds.maxStarts} starts`);
   if (!finitePositive(input.maxRuntimeMs) || input.maxRuntimeMs > bounds.maxRuntimeMs) reasons.push(`operating runtime must not exceed ${bounds.maxRuntimeMs / 3_600_000} hours`);
   if (!finitePositive(input.maxTotalCostUsd) || input.maxTotalCostUsd > bounds.maxTotalCostUsd) reasons.push(`operating cost ceiling must not exceed USD ${bounds.maxTotalCostUsd}`);

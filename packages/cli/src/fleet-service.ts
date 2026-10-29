@@ -404,7 +404,13 @@ async function permitProposal(
   const rawQuote = JSON.parse(await readFile(absolutePath(args.quotePath, 'quote file'), 'utf8')) as Record<string, unknown>;
   const nowMs = Date.now();
   const bounds = OPERATING_PERMIT_BOUNDS;
-  const lifetimeMs = bounds.expiresAtMs - nowMs;
+  const windowEndMs = Date.parse(`${registry.measurementWindow.through}T23:59:59Z`);
+  if (nowMs >= windowEndMs) {
+    io.stderr(`the measurement window ended ${registry.measurementWindow.through}; extend measurementWindow.through in the registry before proposing a permit\n`);
+    return 1;
+  }
+  const expiresAtMs = args.expires === undefined ? windowEndMs : Date.parse(/^\d{4}-\d{2}-\d{2}$/u.test(args.expires) ? `${args.expires}T23:59:59Z` : args.expires);
+  const lifetimeMs = expiresAtMs - nowMs;
   const quote = completeQuote(rawQuote, bounds.maxRuntimeMs, lifetimeMs);
   // Every other enrollment's issued permit, or failing that its proposal, counts toward the
   // fleet ceiling: a proposal made before the others are issued must not slip past it.
@@ -417,7 +423,8 @@ async function permitProposal(
   const result = buildOperatingPermitProposal({
     enrollmentId: enrollment.id,
     nowMs,
-    expiresAtMs: bounds.expiresAtMs,
+    expiresAtMs,
+    windowEndMs,
     candidateDigest: args.candidateDigest,
     configHash: runnerConfigHash(config),
     repositoryId: config.repository.id,

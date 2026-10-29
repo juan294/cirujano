@@ -28,7 +28,7 @@ Plan: [2026-10-29-runner-routing-switch](../plans/2026-10-29-runner-routing-swit
 - The controller cancels only when no VM of its own is live or being created or started, because such a VM may still take the queued job.
 - A variable with the same name at organization or environment level would keep routing on. Enrolled repositories are user-owned private repositories, which have no organization variables.
 - A sleeping owner Mac stops the controller entirely, so it cannot release. This remains the accepted risk of the fleet plan (D1). `fleet health` and `fleet release` work from any machine with the owner's `gh` login.
-- The operating permit bounds still end on 2026-10-28 (`packages/runner/src/operating.ts`). A new enrollment needs an owner decision on new bounds.
+- Operating permits take their expiry from `fleet permit-proposal --expires`, capped by the registry's measurement window end (changed 2026-10-29; the window recorded for the study still ends 2026-10-28). A new enrollment needs the owner to extend that window first.
 
 ## Rejected options
 

@@ -101,6 +101,9 @@ describe('parseArguments', () => {
     expect(parseArguments(['fleet', 'permit-proposal', '--registry', 'r', '--id', 'P1', '--candidate-digest', 'd', '--quote', '/tmp/q.json'])).toEqual({
       command: 'fleet', action: 'permit-proposal', registryPath: 'r', id: 'P1', candidateDigest: 'd', quotePath: '/tmp/q.json',
     });
+    expect(parseArguments(['fleet', 'permit-proposal', '--registry', 'r', '--id', 'P1', '--candidate-digest', 'd', '--quote', 'q', '--expires', '2026-12-01'])).toEqual({
+      command: 'fleet', action: 'permit-proposal', registryPath: 'r', id: 'P1', candidateDigest: 'd', quotePath: 'q', expires: '2026-12-01',
+    });
     expect(parseArguments(['fleet', 'publish', '--registry', 'r', '--store', '/tmp/store', '--since', '2026-09-13', '--output', '/tmp/out.md'])).toEqual({
       command: 'fleet', action: 'publish', registryPath: 'r', storePath: '/tmp/store', since: '2026-09-13', outputPath: '/tmp/out.md',
     });
@@ -150,6 +153,7 @@ describe('parseArguments', () => {
     [['fleet', 'controller-config', '--registry', 'r', '--state-root', 's', '--template', 't'], /requires --id/],
     [['fleet', 'permit-proposal', '--registry', 'r', '--id', 'P1', '--quote', 'q'], /requires --candidate-digest/],
     [['fleet', 'permit-proposal', '--registry', 'r', '--id', 'P1', '--candidate-digest', 'd'], /requires --quote/],
+    [['fleet', 'permit-proposal', '--registry', 'r', '--id', 'P1', '--candidate-digest', 'd', '--quote', 'q', '--expires', 'soon'], /--expires must be a YYYY-MM-DD date or an ISO timestamp/],
     [['fleet', 'publish', '--registry', 'r', '--store', 's', '--since', '2026-09-13'], /requires --output/],
     [['fleet', 'publish', '--registry', 'r', '--store', 's', '--output', 'o'], /requires --since/],
     [['fleet', 'publish', '--registry', 'r', '--since', '2026-09-13', '--output', 'o'], /requires --store/],

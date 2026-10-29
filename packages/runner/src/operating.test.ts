@@ -18,6 +18,7 @@ const input: OperatingPermitProposalInput & { quote: CompleteQuote } = {
   enrollmentId: 'P1',
   nowMs: NOW,
   expiresAtMs: Date.parse('2026-10-28T23:59:59Z'),
+  windowEndMs: Date.parse('2026-10-28T23:59:59Z'),
   candidateDigest: 'candidate-sha256',
   configHash: 'config-sha256',
   repositoryId: 1001,
@@ -48,9 +49,15 @@ describe('operating permit proposal (phase 2 U1)', () => {
     const maximum = calculateOperatingQuoteMaximum(input.quote, input.maxRuntimeMs, input.expiresAtMs - input.nowMs);
     // 150 h × 0.0992 + 1020 h × 80 GiB × 0.071 / 730 + 10 GiB × 0
     expect(maximum).toBeCloseTo(14.88 + 7.936438, 5);
-    expect(OPERATING_PERMIT_BOUNDS).toEqual({
-      expiresAtMs: Date.parse('2026-10-28T23:59:59Z'), maxStarts: 600, maxRuntimeMs: 540_000_000, maxTotalCostUsd: 40, fleetCeilingUsd: 440,
-    });
+    expect(OPERATING_PERMIT_BOUNDS).toEqual({ maxStarts: 600, maxRuntimeMs: 540_000_000, maxTotalCostUsd: 40, fleetCeilingUsd: 440 });
+  });
+
+  it('takes the expiry from the caller and refuses one after the measurement window end', () => {
+    const early = Date.parse('2026-10-15T23:59:59Z');
+    const quote = { ...input.quote, estimatedMaximumUsd: calculateOperatingQuoteMaximum(input.quote, input.maxRuntimeMs, early - input.nowMs) };
+    expect(buildOperatingPermitProposal({ ...input, expiresAtMs: early, quote })).toMatchObject({ accepted: true, proposal: { expiresAtMs: early } });
+    const late = buildOperatingPermitProposal({ ...input, expiresAtMs: input.windowEndMs + 1_000 });
+    expect(late).toMatchObject({ accepted: false, reasons: expect.arrayContaining(['expiry must not follow the measurement window end 2026-10-28T23:59:59.000Z']) });
   });
 
   it('creates an unapproved operating proposal whose rendered permit parses', () => {
