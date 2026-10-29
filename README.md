@@ -169,7 +169,7 @@ and savings table, including active repositories with zero jobs. See
 
 ## Local advisory evidence
 
-For workflow declarations that cannot be bound to executed steps, use `advisory collect-source` and `advisory ask-source`. This separate local path searches verified source at the run head, with pinned line references and no execution or timing attribution. The same whole-file credential/environment guard applies. See the [source-navigation instructions](docs/runbooks/advisory.md#browse-workflow-declarations).
+For workflow declarations that cannot be bound to executed steps, use `advisory collect-source` and `advisory ask-source`. This separate local path searches verified source at the run head, with pinned line references and no execution or timing attribution. Versioned source admission permits a small set of benign environment declarations; source search filters operational matches and abstains on unavailable runtime evidence. See the [source-navigation instructions](docs/runbooks/advisory.md#browse-workflow-declarations).
 
 The advisory CLI retains an exact GitHub Actions job selection, ranks code-computed
 observations, searches retained source and compares compatible baseline/candidate

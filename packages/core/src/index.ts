@@ -104,7 +104,8 @@ export { classifierJob, createSkipValidatedPushPatch, extractClassifierScript, i
 export type { SkipValidatedPushPatch } from './optimization/push-patch.js';
 export { inspectPushWorkflow } from './optimization/push-workflow.js';
 export type { PushWorkflowEligibility, PushWorkflowEvidence } from './optimization/push-workflow.js';
-export { inspectWorkflow, parseWorkflowSource, protectedWorkflowDigest } from './optimization/workflow.js';
+export { inspectWorkflow, parseWorkflowSource, protectedWorkflowDigest, sourceEnvironmentMappings, inspectSourceEnvironments } from './optimization/workflow.js';
+export type {SourceEnvironmentMapping,SourceEnvironmentInspection} from './optimization/workflow.js';
 export type { WorkflowEligibility, WorkflowEvidence } from './optimization/workflow.js';
 export { createPnpmCachePatch, validateCacheOnlyChange } from './optimization/patch.js';
 export type { PnpmCachePatch, WorkflowInspectionOptions } from './optimization/patch.js';

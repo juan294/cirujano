@@ -16,7 +16,7 @@ import type { CliIo } from '../cli.js';
 import type { GitHubPageRunner } from '../github-api.js';
 import type { AdvisoryArguments } from './arguments.js';
 import { collectSelectedJob,collectSourceDeclaration } from './collect.js';
-import {decodeSourceDeclaration,type SourceDeclarationV1} from './source-evidence.js';
+import {decodeSourceDeclaration,type SourceDeclaration} from './source-evidence.js';
 import {searchSourceDeclarations,sourceReport} from './source-search.js';
 import type { EvidenceBundleV1 } from './contracts.js';
 import { readEvidenceInputs, freshOperation } from './storage.js';
@@ -51,12 +51,12 @@ export function createAdvisoryService(options:AdvisoryServiceOptions={}):Advisor
           const value=await collectSourceDeclaration({repository:args.flags.repository!,run:Number(args.flags.run),attempt:Number(args.flags.attempt),workflow:args.flags.workflow!},{...options,toolSourceSha:await sourceSha(options)});
           await store.writeText('source-evidence.json',canonicalJson(value));return value;
         });
-        const value=sourceReport('complete',{scope:source.scope,digest:source.digest,headSha:source.run.headSha,operation:args.flags.output});
+        const value=sourceReport('complete',{scope:source.scope,admissionPolicy:source.admissionPolicy,digest:source.digest,headSha:source.run.headSha,operation:args.flags.output});
         value.nextActions=[`cirujano advisory ask-source --input ${shellQuote(args.flags.output!)} --question 'Where is dependency installation?'`];emitReport(args,io,value);return 0;
       }
       if(args.action==='ask-source'){
         validateSearchQuery(args.flags.question!);safeQuestion=args.flags.question!;
-        const sources:SourceDeclarationV1[]=[];for(const input of args.inputs){affectedInput=input;sources.push(decodeSourceDeclaration(await readPrivateJson(join(input,'source-evidence.json'),2*1024*1024)));}
+        const sources:SourceDeclaration[]=[];for(const input of args.inputs){affectedInput=input;sources.push(decodeSourceDeclaration(await readPrivateJson(join(input,'source-evidence.json'),2*1024*1024)));}
         emitReport(args,io,searchSourceDeclarations(sources,safeQuestion));return 0;
       }
       if(args.action==='collect'){

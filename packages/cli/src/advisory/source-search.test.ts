@@ -28,13 +28,13 @@ it.each(['headSha','event'])('refuses contradictory %s snapshots of the same rep
 it('bounds source inventories and aggregate bytes without silently truncating input evidence',async()=>{
  const source=await collectSourceDeclaration(selection,options(api().pageRunner));
  expect(()=>searchSourceDeclarations(Array.from({length:21},()=>source),'install')).toThrow('advisory-input-limit');
- const content='#'+'a'.repeat(256*1024-1),large=sealSourceDeclaration({...source,source:{...source.source,content,blobSha:gitBlobSha(content),lineEnd:1}});
+ const content='name: '+'a'.repeat(256*1024-6),large=sealSourceDeclaration({...source,source:{...source.source,content,blobSha:gitBlobSha(content),lineEnd:1}});
  expect(()=>searchSourceDeclarations(Array.from({length:9},()=>large),'install')).toThrow('advisory-source-size-limit');
 });
 it('finds private declarations locally and limits deterministic non-overlapping hits to three',async()=>{
- const content=Array.from({length:10},(_,i)=>`# install group ${i}\n# filler\n# filler\n# filler\n# filler\n# filler`).join('\n'),source=await collectSourceDeclaration(selection,options(api(content).pageRunner));
+ const content='name: CI\njobs:\n  check:\n    steps:\n'+Array.from({length:10},(_,i)=>`      - run: python3 -m pip install package-${i}\n        # filler\n        # filler\n        # filler\n        # filler\n        # filler`).join('\n'),source=await collectSourceDeclaration(selection,options(api(content).pageRunner));
  const privateSource=sealSourceDeclaration({...source,repository:{...source.repository,visibility:'private'}});
  const result=searchSourceDeclarations([privateSource],'install');expect(result.payload.hits).toHaveLength(3);expect(result.payload.candidateCount).toBe(10);
- expect(result.payload.hits.map(h=>h.lineStart)).toEqual([1,5,11]);
+ expect(result.payload.hits.map(h=>h.lineStart)).toEqual([3,9,15]);
  expect(result.payload.hits.every(hit=>hit.repository.visibility==='private')).toBe(true);
 });

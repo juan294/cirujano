@@ -2,7 +2,8 @@ import { createHash } from 'node:crypto';
 import { gitBlobSha, safeRelativePath } from '@cirujano/core';
 import { githubGet, githubPaged, type GitHubReadOptions } from '../optimization/github-read.js';
 import { evidenceFail, sealEvidence, mapWorkflowSteps, assertSafeEvidenceSource, type EvidenceBundleV1, type EvidenceSource, type EvidenceStep } from './contracts.js';
-import {sealSourceDeclaration,type SourceDeclarationV1} from './source-evidence.js';
+import {sealSourceDeclaration,type SourceDeclarationV2} from './source-evidence.js';
+import {assertSafeDeclaredSource,SOURCE_ADMISSION_POLICY} from './source-admission.js';
 
 export interface SourceCollectionRequest {repository:string;run:number;attempt:number;workflow:string}
 export interface CollectionRequest extends SourceCollectionRequest { jobKey: string; jobId: number; sourceFiles: string[] }
@@ -31,7 +32,7 @@ function validateTree(response: ObjectValue, expectedSha: string): ObjectValue[]
   if (createHash('sha1').update(`tree ${bytes.length}\0`).update(bytes).digest('hex')!==expectedSha) evidenceFail('github-tree-hash');
   return entries;
 }
-async function selectedSources(repository: string, head: string, paths: string[], options: CollectionOptions): Promise<EvidenceSource[]> {
+async function selectedSources(repository: string, head: string, paths: string[], options: CollectionOptions,validateSource=assertSafeEvidenceSource): Promise<EvidenceSource[]> {
   const commit=await githubGet(`repos/${repository}/git/commits/${head}`,options); if (commit.sha!==head) evidenceFail('github-source-sha');
   const root=sha(object(commit.tree).sha),cache=new Map<string,ObjectValue[]>(); const sources: EvidenceSource[]=[]; let total=0;
   for (const path of paths) {
@@ -48,7 +49,7 @@ async function selectedSources(repository: string, head: string, paths: string[]
     const encoded=blob.content.replace(/\n/g,''); if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(encoded)) evidenceFail('github-blob-encoding');
     const bytes=Buffer.from(encoded,'base64'); if (bytes.length!==size || bytes.toString('base64')!==encoded || gitBlobSha(bytes)!==expectedSha) evidenceFail('github-blob-hash');
     let content:string; try { content=new TextDecoder('utf8',{fatal:true}).decode(bytes); } catch { return evidenceFail('github-source-encoding'); }
-    assertSafeEvidenceSource(content,path);
+    validateSource(content,path);
     sources.push({path,blobSha:expectedSha,content,lineStart:1,lineEnd:content.split('\n').length});
   }
   return sources;
@@ -67,10 +68,10 @@ async function selectedRun(request:SourceCollectionRequest,options:CollectionOpt
   return {repo,run,repositoryId,head,event};
 }
 /** Verified declarations for local browsing, independently of source-to-execution mapping. */
-export async function collectSourceDeclaration(request:SourceCollectionRequest,options:CollectionOptions):Promise<SourceDeclarationV1> {
+export async function collectSourceDeclaration(request:SourceCollectionRequest,options:CollectionOptions):Promise<SourceDeclarationV2> {
   validateSelection(request,options);const {repo,repositoryId,head,event}=await selectedRun(request,options);
-  const sources=await readStage('source',()=>selectedSources(request.repository,head,[request.workflow],options));
-  return sealSourceDeclaration({schemaVersion:1,kind:'advisory-declared-source',scope:'repository-at-run-head',repository:{id:repositoryId,name:request.repository,visibility:repo.private?'private':'public'},run:{id:request.run,attempt:request.attempt,headSha:head,event},source:sources[0]!,fetchedAt:(options.now?.()??new Date()).toISOString(),toolSourceSha:options.toolSourceSha,apiVersion:'2022-11-28'});
+  const sources=await readStage('source',()=>selectedSources(request.repository,head,[request.workflow],options,assertSafeDeclaredSource));
+  return sealSourceDeclaration({schemaVersion:2,kind:'advisory-declared-source',scope:'repository-at-run-head',admissionPolicy:SOURCE_ADMISSION_POLICY,repository:{id:repositoryId,name:request.repository,visibility:repo.private?'private':'public'},run:{id:request.run,attempt:request.attempt,headSha:head,event},source:sources[0]!,fetchedAt:(options.now?.()??new Date()).toISOString(),toolSourceSha:options.toolSourceSha,apiVersion:'2022-11-28'});
 }
 /** Bounded metadata and selected immutable blobs only: no logs, checkout, execution or inference. */
 export async function collectSelectedJob(request: CollectionRequest, options: CollectionOptions): Promise<EvidenceBundleV1> {

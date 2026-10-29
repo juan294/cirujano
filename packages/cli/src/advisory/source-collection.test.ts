@@ -17,7 +17,7 @@ describe('immutable declaration collection without execution attribution',()=>{
   const source=await collectSourceDeclaration(selection,options(api(content).pageRunner));expect(source.source.content).toBe(content);
   expect((await collectSelectedJob(request,options(api(content).pageRunner))).mapping).toBe('unsupported-mapping');
  });
- it.each(['env:\n  NODE_ENV: production\n','env:\n  API_KEY: canary\n','# apiToken: canary\n'])('keeps whole-file refusal even when a safe command is present',async prefix=>{
+ it.each(['env:\n  NODE_ENV: unknown-value\n','env:\n  API_KEY: canary\n','# apiToken: canary\n'])('keeps whole-file refusal even when a safe command is present',async prefix=>{
   await expect(collectSourceDeclaration(selection,options(api(prefix+workflow).pageRunner))).rejects.toThrow('unsafe-source-credential-or-environment');
  });
  it.each(['attempt','head','path','repository','head-repository','blob','tree','mode','encoding'])('rejects altered %s identity or immutable bytes',async kind=>{
