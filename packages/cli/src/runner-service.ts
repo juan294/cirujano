@@ -29,7 +29,10 @@ import {
   redactCredentialShapes,
   parseRunnerReportInput,
   parseRunnerConfig,
+  projectedStartCostUsd,
   readJournal,
+  releaseCheckDue,
+  assessService,
   runnerConfigHash,
   renderCloudInit,
   renderCreateRequest,
@@ -40,6 +43,7 @@ import {
   tickController,
   validateCleanupPermit,
   validatePermit,
+  validateReleasePermit,
   verifySshPublicKeyFingerprint,
   writeJournalAtomic,
   type CapacityRefusal,
@@ -62,6 +66,7 @@ import {
 } from '@cirujano/runner';
 
 import type { CliIo, RunnerCommandService } from './cli.js';
+import { strandedRuns } from './fleet-health.js';
 
 const DEFAULT_GH_PATH = '/opt/homebrew/bin/gh';
 const DEFAULT_POLL_LIMIT = 10_000;
@@ -249,6 +254,7 @@ async function watch(context: RuntimeContext, dryRun: boolean, io: CliIo): Promi
   let interrupted = false;
   let wake: (() => void) | null = null;
   const onInterrupt = () => { interrupted = true; wake?.(); };
+  const routingCheck: { last: { atMs: number; reason: string } | null } = { last: null };
   process.once('SIGINT', onInterrupt);
   try {
     for (let count = 0; count < DEFAULT_POLL_LIMIT; count += 1) {
@@ -259,6 +265,7 @@ async function watch(context: RuntimeContext, dryRun: boolean, io: CliIo): Promi
         reconcileEffect: (effect) => reconcileEffect(context, effect),
       });
       io.stdout(`${JSON.stringify({ schemaVersion: 1, type: 'tick', status: result.status, decision: result.decision, queue: input.queue, githubReadHold: context.github.readHold() })}\n`);
+      await releaseRouting(context, input, dryRun, routingCheck);
       if (interrupted) {
         const recovery = await interruptRecovery(context);
         io.stdout(`${JSON.stringify({ schemaVersion: 1, type: 'interrupt-recovery', ...recovery })}\n`);
@@ -275,6 +282,77 @@ async function watch(context: RuntimeContext, dryRun: boolean, io: CliIo): Promi
   } finally {
     process.off('SIGINT', onInterrupt);
     await lock.release();
+  }
+}
+
+/**
+ * Routing release (runner routing switch plan, phase 3): once this controller can no longer start a
+ * runner, turn the repository's routing switch off so new jobs run hosted, then force-cancel runs whose
+ * only unfinished jobs are stranded on the label. Idempotent and checked by readback; it never creates
+ * a lifecycle effect (plan D6). Runs at most every 10 minutes, and at once when the reason changes.
+ */
+async function releaseRouting(context: RuntimeContext, input: LifecycleInput, dryRun: boolean, check: { last: { atMs: number; reason: string } | null }): Promise<void> {
+  const variable = context.config.routingSwitch?.variable;
+  if (variable === undefined) return;
+  const event = (fields: Record<string, unknown>) => appendRedactedEvent(context.eventPath, { schemaVersion: 1, ...fields }, { secrets: [] });
+  const service = {
+    permit: context.permit, nowMs: input.nowMs, timing: context.config.timing, identity: context.identity,
+    startCount: input.journal.startCount, cumulativeRuntimeMs: input.journal.cumulativeRuntimeMs,
+    cumulativeCostUsd: input.journal.cumulativeCostUsd, projectedStartCostUsd: input.projectedStartCostUsd,
+  };
+  let assessment = assessService({ ...service, repositoryPrivate: true });
+  // A complete queue observation already proved the repository private; only an incomplete one needs a look.
+  if (assessment.serviceable && !input.queue.complete) {
+    const repositoryPrivate = await repositoryPrivacy(context);
+    if (repositoryPrivate === null) return;
+    assessment = assessService({ ...service, repositoryPrivate });
+  }
+  if (assessment.serviceable) {
+    check.last = null;
+    return;
+  }
+  const { reason } = assessment;
+  if (!releaseCheckDue(check.last, reason, input.nowMs)) return;
+  check.last = { atMs: input.nowMs, reason };
+  const recovery = `run cirujano fleet release --registry ~/.local/share/cirujano/telemetry/fleet-registry.json --id ${variable.replace('CIRUJANO_RUNNER_', '')}, `
+    + `or gh variable delete ${variable} --repo ${context.owner}/${context.repository}`;
+  const authority = validateReleasePermit(context.permit, context.identity, input.nowMs);
+  if (!authority.valid) {
+    await event({ type: 'routing-release-unauthorized', variable, reason, authority: authority.reason, recovery });
+    return;
+  }
+  if (dryRun) {
+    await event({ type: 'routing-release-dry-run', variable, reason });
+    return;
+  }
+  try {
+    if (await context.github.getVariable(context.owner, context.repository, variable) === 'on') {
+      const result = await context.github.deleteVariable(context.owner, context.repository, variable);
+      if (await context.github.getVariable(context.owner, context.repository, variable) === 'on') {
+        await event({ type: 'routing-release-failed', variable, reason, error: 'the switch is still on after the delete', recovery });
+        return;
+      }
+      await event({ type: 'routing-release', variable, reason, result });
+    }
+    const stranded = await strandedRuns(context.github, context.owner, context.repository, context.config);
+    for (const runId of stranded.cancellable) await context.github.forceCancelRun(context.owner, context.repository, runId);
+    if (stranded.cancellable.length > 0) {
+      await event({ type: 'routing-stranded-cancelled', variable, runIds: stranded.cancellable, nextStep: 'push or dispatch a new run; with the switch off it runs on ubuntu-latest' });
+    }
+    if (stranded.waiting.length > 0) await event({ type: 'routing-stranded-waiting', variable, runIds: stranded.waiting });
+  } catch (error) {
+    await event({ type: 'routing-release-failed', variable, reason, error: error instanceof Error ? error.message : String(error), recovery });
+  }
+}
+
+/** true or false once GitHub has answered; null when it could not be read this time. */
+async function repositoryPrivacy(context: RuntimeContext): Promise<boolean | null> {
+  try {
+    await readRepository(context);
+    return true;
+  } catch (error) {
+    if (error instanceof GitHubResponseError && /must be private/u.test(error.message)) return false;
+    return null;
   }
 }
 
@@ -1116,13 +1194,7 @@ function expectedRunnerName(context: RuntimeContext, state: ControllerState | nu
 
 function projectedStartCost(context: RuntimeContext): number {
   const rawNetworkLimit = context.environment['CIRUJANO_NETWORK_EGRESS_LIMIT_GIB'];
-  if (rawNetworkLimit === undefined) return Number.POSITIVE_INFINITY;
-  const networkLimitGiB = Number(rawNetworkLimit);
-  if (!Number.isFinite(networkLimitGiB) || networkLimitGiB < 0) return Number.POSITIVE_INFINITY;
-  const config = context.config;
-  const compute = (config.timing.lifetimeMs / 3_600_000) * config.rates.computeUsdPerHour;
-  const disk = (config.timing.lifetimeMs / THIRTY_DAY_MONTH_MS) * config.nebius.diskSizeGiB * config.rates.diskUsdPerGibMonth;
-  return compute + disk + networkLimitGiB * config.rates.networkEgressUsdPerGib;
+  return projectedStartCostUsd(context.config, rawNetworkLimit === undefined ? undefined : Number(rawNetworkLimit));
 }
 
 function roundMoney(value: number): number {

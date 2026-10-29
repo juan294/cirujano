@@ -40,6 +40,39 @@ cleanup() {
 }
 trap cleanup EXIT
 
+CLI_PATH="${CIRUJANO_CLI_PATH:-}"
+if [ -z "$CLI_PATH" ]; then
+  cd "$REPO_ROOT"
+  pnpm --dir packages/cli build
+  CLI_PATH="$REPO_ROOT/packages/cli/dist/bin.js"
+fi
+if [ ! -r "$CLI_PATH" ]; then
+  echo "telemetry: CLI bundle is not readable at $CLI_PATH" >&2
+  exit 1
+fi
+
+# Routing-switch health runs first, so a GitHub outage that fails collection cannot hide it. Exit 1
+# with a real report means a red row; anything else is a failed check that keeps the previous
+# report. Neither fails collection, and both notify the owner.
+if [ -n "${CIRUJANO_FLEET_REGISTRY:-}" ] || [ -e "$REGISTRY_PATH" ]; then
+  HEALTH_STATUS=0
+  node "$CLI_PATH" fleet health --registry "$REGISTRY_PATH" --format markdown > "$FLEET_HEALTH_TEMP" || HEALTH_STATUS=$?
+  if [ "$HEALTH_STATUS" -le 1 ] && [ "$(head -n 1 "$FLEET_HEALTH_TEMP")" = "# Cirujano fleet health" ]; then
+    mv "$FLEET_HEALTH_TEMP" "$FLEET_HEALTH_PATH"
+    echo "telemetry: fleet health updated at $FLEET_HEALTH_PATH (exit $HEALTH_STATUS)"
+    NOTIFY_MESSAGE="Cirujano fleet health is red; see fleet-health.md"
+  else
+    rm -f "$FLEET_HEALTH_TEMP"
+    echo "telemetry: fleet health check failed with exit $HEALTH_STATUS" >&2
+    HEALTH_STATUS=2
+    NOTIFY_MESSAGE="Cirujano fleet health check failed; see the telemetry log"
+  fi
+  if [ "$HEALTH_STATUS" -ne 0 ]; then
+    "$NOTIFY_COMMAND" -e "display notification \"$NOTIFY_MESSAGE\" with title \"Cirujano\"" ||
+      echo "telemetry: fleet health notification failed" >&2
+  fi
+fi
+
 # The owner lookup is the first GitHub read; retry it like the collector's own reads.
 if [ -z "$OWNER" ]; then
   for DELAY in 2 8 -; do
@@ -52,17 +85,6 @@ if [ -z "$OWNER" ]; then
     fi
     sleep "$DELAY"
   done
-fi
-
-CLI_PATH="${CIRUJANO_CLI_PATH:-}"
-if [ -z "$CLI_PATH" ]; then
-  cd "$REPO_ROOT"
-  pnpm --dir packages/cli build
-  CLI_PATH="$REPO_ROOT/packages/cli/dist/bin.js"
-fi
-if [ ! -r "$CLI_PATH" ]; then
-  echo "telemetry: CLI bundle is not readable at $CLI_PATH" >&2
-  exit 1
 fi
 
 node "$CLI_PATH" telemetry collect \
@@ -85,21 +107,4 @@ if [ -n "${CIRUJANO_FLEET_REGISTRY:-}" ] || [ -e "$REGISTRY_PATH" ]; then
     --registry "$REGISTRY_PATH" > "$FLEET_REPORT_TEMP"
   mv "$FLEET_REPORT_TEMP" "$FLEET_REPORT_PATH"
   echo "telemetry: fleet report updated at $FLEET_REPORT_PATH"
-
-  # Routing-switch health: exit 1 means a red row (the report is still valid); any other
-  # failure keeps the previous report. Neither fails collection, and both notify the owner.
-  HEALTH_STATUS=0
-  node "$CLI_PATH" fleet health --registry "$REGISTRY_PATH" --format markdown > "$FLEET_HEALTH_TEMP" || HEALTH_STATUS=$?
-  if [ "$HEALTH_STATUS" -le 1 ]; then
-    mv "$FLEET_HEALTH_TEMP" "$FLEET_HEALTH_PATH"
-    echo "telemetry: fleet health updated at $FLEET_HEALTH_PATH (exit $HEALTH_STATUS)"
-    NOTIFY_MESSAGE="Cirujano fleet health is red; see fleet-health.md"
-  else
-    echo "telemetry: fleet health check failed with exit $HEALTH_STATUS" >&2
-    NOTIFY_MESSAGE="Cirujano fleet health check failed; see the telemetry log"
-  fi
-  if [ "$HEALTH_STATUS" -ne 0 ]; then
-    "$NOTIFY_COMMAND" -e "display notification \"$NOTIFY_MESSAGE\" with title \"Cirujano\"" ||
-      echo "telemetry: fleet health notification failed" >&2
-  fi
 fi

@@ -14,7 +14,7 @@ const DRAIN_FALLBACK_MS = 600_000;
 // Journal states in which the controller believes its guest is up; a provider `stopped`
 // while in one of them means the guest powered itself off.
 export const GUEST_UP_STATES: readonly LifecycleState[] = ['starting', 'ready', 'busy', 'draining'];
-const PERMIT_OPERATIONS: readonly PermitOperation[] = ['create', 'start', 'register', 'stop', 'delete'];
+const PERMIT_OPERATIONS: readonly PermitOperation[] = ['create', 'start', 'register', 'stop', 'delete', 'release-routing'];
 const PERMIT_KEYS = [
   'schemaVersion', 'permitId', 'configHash', 'candidateDigest', 'repositoryId',
   'projectId', 'controllerId', 'resourcePrefix', 'operations', 'issuedAtMs',
@@ -361,6 +361,18 @@ export function validateCleanupPermit(permit: Permit | null, identity: PermitIde
   const authority = current.valid ? current : validateRecoveryPermit(permit, identity, nowMs);
   if (!authority.valid) return authority;
   if (!permits(permit, 'delete')) return invalid('permit does not authorize delete');
+  return { valid: true };
+}
+
+/**
+ * Authority to turn the routing switch off. Like cleanup, it survives permit expiry when the permit
+ * allows recovery, because a runner that can no longer serve must still be able to stop attracting jobs.
+ */
+export function validateReleasePermit(permit: Permit | null, identity: PermitIdentity, nowMs: number): PermitValidation {
+  const current = validatePermit(permit, identity, nowMs);
+  const authority = current.valid ? current : validateRecoveryPermit(permit, identity, nowMs);
+  if (!authority.valid) return authority;
+  if (!permits(permit, 'release-routing')) return invalid('permit does not authorize release-routing');
   return { valid: true };
 }
 

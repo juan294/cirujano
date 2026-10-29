@@ -122,6 +122,24 @@ readiness is absent after ten minutes. Record all provider state and cleanup
 readbacks under `.cirujano/runner/`; sanitize only the final report intended for
 the repository.
 
+## Routing switch for enrolled jobs
+
+Decision: [ADR 0002](../decisions/0002-runner-routing-switch.md). An enrolled job reaches a Cirujano runner only while the repository variable `CIRUJANO_RUNNER_<P#>` equals `on`. Otherwise it runs on `ubuntu-latest`.
+
+1. `cirujano fleet runs-on --registry "$REGISTRY" --id P#` prints the exact `runs-on:` line for the job. Replace the job's line with it and merge. Then record the cutover with `cirujano fleet cutover`, which refuses any other shape.
+2. `cirujano fleet controller-config` copies the switch into the controller's `config.json`. Propose the permit with `cirujano fleet permit-proposal`; operating proposals include `release-routing`.
+3. Turn routing on only when the controller runs with that permit: `gh variable set CIRUJANO_RUNNER_P# --body on --repo <owner/repo>`.
+
+Turning routing off:
+
+- **Automatically.** Once the controller can no longer start a runner (permit expired or past its start cutoff, starts, runtime or cost exhausted, permit mismatched, repository not private), it deletes the variable and confirms by readback. Then it force-cancels runs whose only unfinished jobs are queued on its label. Events: `routing-release`, `routing-release-failed`, `routing-release-unauthorized`, `routing-release-dry-run`, `routing-stranded-cancelled`, `routing-stranded-waiting`. The check runs at most every 10 minutes, and at once when the reason changes.
+- **By the owner.** `cirujano fleet release --registry "$REGISTRY" --id P# [--cancel-stranded]` deletes the variable, confirms it, notes the release in the registry and reports cancelled, still-active, failed and waiting runs. Use it when the controller has no permit, runs in dry-run, is stopped, or lacks `release-routing`.
+- **Last resort.** `gh variable delete CIRUJANO_RUNNER_P# --repo <owner/repo>`.
+
+After a cancel, push or dispatch a new run. With the switch off it runs on `ubuntu-latest`.
+
+`cirujano fleet health --registry "$REGISTRY" [--format markdown] [--now <ISO>]` is read-only. It exits 1 when a row is red and prints each row's recovery command. A sleeping or stopped controller host cannot release anything, so jobs wait until GitHub's 24-hour queue limit. Run `fleet health` or `fleet release` from any machine with the owner's `gh` login.
+
 ## Operating controllers for enrolled repositories
 
 The pilot ran attended in the foreground. Enrolled repositories (fleet

@@ -98,7 +98,8 @@ export function createFleetCommandService(
       if (args.action === 'runs-on') return runsOn(args, registry, source, io);
       if (args.action === 'health') {
         const report = await fleetHealth({
-          registry, registryPath, source, github: routingGitHub(), defaultTiming: OPERATING_TIMING,
+          registry, registryPath, source, githubFor: routingGitHub, defaultTiming: OPERATING_TIMING,
+          networkEgressLimitGiB: Number(environment['CIRUJANO_NETWORK_EGRESS_LIMIT_GIB'] ?? '10'),
           nowMs: args.now === undefined ? Date.now() : Date.parse(args.now), nowOverridden: args.now !== undefined,
         });
         io.stdout(args.format === 'markdown' ? renderHealthMarkdown(report) : `${JSON.stringify(report)}\n`);
@@ -362,6 +363,7 @@ async function controllerConfig(
     ownership: { controllerId, resourcePrefix },
     timing: OPERATING_TIMING,
     rates: { ...template.rates, hostedUsdPerMinute: TELEMETRY_RATES.skus[enrollment.sku] },
+    ...(enrollment.routingSwitch === undefined ? {} : { routingSwitch: { variable: enrollment.routingSwitch } }),
   });
   const configPath = join(stateDirectory, 'config.json');
   const boundState = await readOptionalJson(join(stateDirectory, 'controller-state.json'));

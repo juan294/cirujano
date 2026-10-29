@@ -1,5 +1,5 @@
 import type { WorkflowJob, WorkflowRun } from './adapters/github.js';
-import type { Permit, TimingConfig } from './contracts.js';
+import type { Permit, PermitIdentity, PermitOperation, RunnerConfig, TimingConfig } from './contracts.js';
 
 /**
  * Routing-switch decisions shared by the fleet commands and the controller
@@ -7,8 +7,22 @@ import type { Permit, TimingConfig } from './contracts.js';
  */
 
 export type ServiceRefusal =
-  | 'repository-not-private' | 'permit-absent' | 'permit-not-active' | 'permit-expired'
-  | 'past-service-end' | 'runtime-exhausted' | 'cost-exhausted';
+  | 'repository-not-private' | 'permit-absent' | 'permit-identity-mismatch' | 'permit-operations-missing'
+  | 'permit-not-active' | 'permit-expired' | 'starts-exhausted' | 'past-service-end' | 'runtime-exhausted' | 'cost-exhausted';
+
+const SERVING_OPERATIONS: readonly PermitOperation[] = ['create', 'start', 'register'];
+const THIRTY_DAY_MONTH_MS = 30 * 24 * 60 * 60 * 1000;
+
+/**
+ * The cost one start may add: a full lifetime of compute and disk plus the egress limit. Without an
+ * egress limit the cost is unbounded, so no start fits (the lifecycle refuses the same way).
+ */
+export function projectedStartCostUsd(config: Pick<RunnerConfig, 'timing' | 'rates' | 'nebius'>, networkEgressLimitGiB: number | undefined): number {
+  if (networkEgressLimitGiB === undefined || !Number.isFinite(networkEgressLimitGiB) || networkEgressLimitGiB < 0) return Number.POSITIVE_INFINITY;
+  const compute = (config.timing.lifetimeMs / 3_600_000) * config.rates.computeUsdPerHour;
+  const disk = (config.timing.lifetimeMs / THIRTY_DAY_MONTH_MS) * config.nebius.diskSizeGiB * config.rates.diskUsdPerGibMonth;
+  return compute + disk + networkEgressLimitGiB * config.rates.networkEgressUsdPerGib;
+}
 
 export type ServiceAssessment =
   | { serviceable: true; serviceEndMs: number }
@@ -21,14 +35,19 @@ export function serviceEnd(permit: Pick<Permit, 'expiresAtMs'>, timing: Pick<Tim
 
 /**
  * Whether the controller could still start a runner for a queued job, independent of demand. Uses the
- * same limits as the lifecycle start budget, so routing is released no later than starts stop.
+ * same limits as the lifecycle start budget (identity, operations, starts, runtime, projected cost and
+ * the start cutoff), so routing is released no later than starts stop. `identity` holds the fields the
+ * caller can know; the fleet cannot know the installed bundle digest, the controller can.
  */
 export function assessService(input: {
   permit: Permit | null;
   nowMs: number;
   timing: Pick<TimingConfig, 'maxJobMs' | 'shutdownMarginMs'>;
+  identity?: Partial<PermitIdentity>;
+  startCount: number;
   cumulativeRuntimeMs: number;
   cumulativeCostUsd: number;
+  projectedStartCostUsd: number;
   repositoryPrivate: boolean;
 }): ServiceAssessment {
   const { permit } = input;
@@ -36,11 +55,15 @@ export function assessService(input: {
   const refuse = (reason: ServiceRefusal): ServiceAssessment => ({ serviceable: false, reason, serviceEndMs: end });
   if (!input.repositoryPrivate) return refuse('repository-not-private');
   if (permit === null || end === null) return refuse('permit-absent');
+  const identity = Object.entries(input.identity ?? {}) as Array<[keyof PermitIdentity, unknown]>;
+  if (identity.some(([key, value]) => permit[key] !== value)) return refuse('permit-identity-mismatch');
+  if (SERVING_OPERATIONS.some((operation) => !permit.operations.includes(operation))) return refuse('permit-operations-missing');
   if (permit.issuedAtMs > input.nowMs) return refuse('permit-not-active');
   if (permit.expiresAtMs <= input.nowMs) return refuse('permit-expired');
+  if (input.startCount >= permit.maxStarts) return refuse('starts-exhausted');
   const oneJobMs = input.timing.maxJobMs + input.timing.shutdownMarginMs;
   if (permit.maxRuntimeMs - input.cumulativeRuntimeMs < oneJobMs) return refuse('runtime-exhausted');
-  if (input.cumulativeCostUsd >= permit.maxTotalCostUsd) return refuse('cost-exhausted');
+  if (input.cumulativeCostUsd + input.projectedStartCostUsd > permit.maxTotalCostUsd) return refuse('cost-exhausted');
   if (input.nowMs > end) return refuse('past-service-end');
   return { serviceable: true, serviceEndMs: end };
 }
@@ -66,4 +89,11 @@ export function selectStrandedRuns(runs: readonly WorkflowRun[], jobs: readonly 
     (stranded.length === current.length ? cancellable : waiting).push(run.id);
   }
   return { cancellable, waiting, strandedJobs };
+}
+
+const RELEASE_CHECK_INTERVAL_MS = 10 * 60 * 1000;
+
+/** Release checks run at once, then at most every 10 minutes, and at once when the refusal reason changes. */
+export function releaseCheckDue(last: { atMs: number; reason: string } | null, reason: string, nowMs: number): boolean {
+  return last === null || last.reason !== reason || nowMs - last.atMs >= RELEASE_CHECK_INTERVAL_MS;
 }

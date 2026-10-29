@@ -49,6 +49,9 @@ class FakeRouting implements RoutingGitHub {
   runs: WorkflowRun[] = [];
   jobs: WorkflowJob[] = [];
   incomplete: string | null = null;
+  runsIncomplete: string | null = null;
+  cancelFails = new Set<number>();
+  cancelLags = false;
   readonly writes: string[] = [];
 
   async getVariable(_owner: string, _repository: string, name: string) {
@@ -64,10 +67,13 @@ class FakeRouting implements RoutingGitHub {
   }
   async forceCancelRun(_owner: string, _repository: string, runId: number) {
     this.writes.push(`force-cancel ${runId}`);
+    if (this.cancelFails.has(runId)) throw new Error(`GitHub returned HTTP 500 force-cancelling run ${runId}: boom`);
+    if (!this.cancelLags) this.runs = this.runs.filter(({ id }) => id !== runId);
     return 'accepted' as const;
   }
   async listActiveRuns(): Promise<Collection<WorkflowRun>> {
-    return this.incomplete === null ? { complete: true, items: this.runs } : { complete: false, items: [], reason: this.incomplete };
+    const reason = this.incomplete ?? this.runsIncomplete;
+    return reason === null ? { complete: true, items: this.runs } : { complete: false, items: [], reason };
   }
   async listJobs(_owner: string, _repository: string, runId: number, runAttempt: number): Promise<Collection<WorkflowJob>> {
     return { complete: true, items: this.jobs.filter((job) => job.runId === runId && job.runAttempt === runAttempt) };
@@ -100,6 +106,32 @@ async function fixture(options: { permit?: Record<string, unknown> | 'absent' | 
   const registryPath = join(directory, 'fleet-registry.json');
   await writeFleetRegistry(registryPath, registry);
   return { registryPath, stateDirectory, github: new FakeRouting(), visibility: options.visibility ?? 'private' };
+}
+
+const CONFIG = {
+  schemaVersion: 1,
+  repository: { id: 777, nameWithOwner: 'juan294/app', visibility: 'private' },
+  workflowIds: [41], allowedBranch: 'develop', eligibleJobNames: ['Check'], runnerLabel: LABEL, slots: 1, admission: 'same-repository',
+  nebius: { profile: 'TCT', projectId: 'project', subnetId: 'subnet-1', imageId: 'image-1', platform: 'cpu-d3', preset: '4vcpu-16gb', diskType: 'network-ssd', diskSizeGiB: 80 },
+  ssh: { publicKey: 'ssh-ed25519 AAAA fixture', fingerprint: 'SHA256:fixture' },
+  ownership: { controllerId: 'cirujano-p1', resourcePrefix: 'cirujano-p1' },
+  timing: { pollIntervalMs: 30_000, idleGraceMs: 300_000, bootTimeoutMs: 600_000, maxJobMs: 3_600_000, lifetimeMs: 14_400_000, shutdownMarginMs: 300_000 },
+  rates: { currency: 'USD', quotedAt: '2026-09-15', source: 'fixture', computeUsdPerHour: 0.1, diskUsdPerGibMonth: 0.071, networkEgressUsdPerGib: 0, hostedUsdPerMinute: 0.008 },
+  routingSwitch: { variable: 'CIRUJANO_RUNNER_P1' },
+};
+
+/** Writes config.json, a matching permit and controller-state.json with the given lifetime totals. */
+async function withController(fx: Fixture, lifecycle: { startCount?: number; cumulativeRuntimeMs?: number; cumulativeCostUsd?: number } = {}, permitChanges: Record<string, unknown> = {}) {
+  const { parseRunnerConfig, runnerConfigHash } = await import('@cirujano/runner');
+  const configHash = runnerConfigHash(parseRunnerConfig(CONFIG));
+  await writeFile(join(fx.stateDirectory, 'config.json'), JSON.stringify(CONFIG));
+  await writeFile(join(fx.stateDirectory, 'permit.json'), JSON.stringify(permit({ configHash, operations: ['create', 'start', 'register', 'stop', 'delete', 'release-routing'], ...permitChanges })));
+  await writeFile(join(fx.stateDirectory, 'controller-state.json'), JSON.stringify({
+    schemaVersion: 1,
+    identity: { configHash, candidateDigest: 'd', repositoryId: 777, projectId: 'project', controllerId: 'cirujano-p1', resourcePrefix: 'cirujano-p1' },
+    lifecycle: { state: 'absent', startCount: 0, cumulativeRuntimeMs: 0, cumulativeCostUsd: 0, outstandingIntent: null, idleObservations: [], ...lifecycle },
+    pendingEffect: null, readbacks: [],
+  }));
 }
 
 function serviceFor(fx: Fixture) {
@@ -182,7 +214,7 @@ describe('fleet health', () => {
     });
   });
 
-  it('reads the switch value case-insensitively through the adapter result', async () => {
+  it('treats a switch value other than on as released', async () => {
     const fx = await fixture();
     fx.github.variable = 'other';
     expect((await health(fx, FAR)).report!.rows[0]).toMatchObject({ status: 'released', switch: 'other' });
@@ -202,6 +234,44 @@ describe('fleet health', () => {
     const result = await health(unknown, FAR);
     expect(result.exitCode).toBe(1);
     expect(result.report!.rows[0]).toMatchObject({ status: 'unknown', colour: 'red', recovery: 'retry; GitHub read incomplete: GitHub HTTP 502' });
+  });
+
+  it('reports serving with a permit that can release routing and a matching controller identity', async () => {
+    const fx = await fixture();
+    await withController(fx);
+    const { exitCode, report } = await health(fx, FAR);
+    expect(exitCode).toBe(0);
+    expect(report).toMatchObject({ status: 'green', rows: [{ status: 'serving', colour: 'green', switch: 'on', recovery: null, serviceEnd: '2026-10-28T22:54:59.000Z' }] });
+  });
+
+  it.each([
+    ['starts-exhausted', { startCount: 600 }, {}],
+    ['runtime-exhausted', { cumulativeRuntimeMs: 540_000_000 - 3_899_999 }, {}],
+    ['cost-exhausted', { cumulativeCostUsd: 39.9 }, {}],
+    ['permit-identity-mismatch', {}, { configHash: 'stale' }],
+  ])('reads controller files for unserviceable reason %s', async (reason, lifecycle, permitChanges) => {
+    const fx = await fixture();
+    await withController(fx, lifecycle, permitChanges);
+    expect((await health(fx, FAR)).report!.rows[0]).toMatchObject({ status: 'unserviceable', reason });
+  });
+
+  it('reports local controller files that cannot be read as such, not as a GitHub failure', async () => {
+    const truncated = await fixture();
+    await writeFile(join(truncated.stateDirectory, 'permit.json'), '{"schemaVersion":');
+    expect((await health(truncated, FAR)).report!.rows[0]).toMatchObject({ status: 'unserviceable', reason: expect.stringMatching(/^permit-invalid: /u) });
+
+    const broken = await fixture();
+    await writeFile(join(broken.stateDirectory, 'config.json'), '{"schemaVersion":1}');
+    const row = (await health(broken, FAR)).report!.rows[0]!;
+    expect(row).toMatchObject({ status: 'unserviceable', reason: expect.stringMatching(/^controller-state-unreadable: /u) });
+    expect(String(row['recovery'])).toContain(`repair or archive the controller files in ${broken.stateDirectory}`);
+  });
+
+  it('reports an incomplete run listing as unknown', async () => {
+    const fx = await fixture();
+    fx.github.variable = 'absent';
+    fx.github.runsIncomplete = 'GitHub HTTP 502 read backoff';
+    expect((await health(fx, FAR)).report!.rows[0]).toMatchObject({ status: 'unknown', recovery: 'retry; GitHub read incomplete: GitHub HTTP 502 read backoff' });
   });
 
   it('never writes to GitHub or the registry and skips enrollments that are not cut over', async () => {
@@ -270,6 +340,29 @@ describe('fleet release', () => {
     expect(report).toMatchObject({
       cancelled: [10], waiting: [11], notCancelled: [],
       nextStep: 'push or dispatch a new run for each cancelled run; with the switch off it runs on ubuntu-latest. Re-run release for runs still waiting on other jobs',
+    });
+  });
+
+  it('always prints the report: a failed cancel, a run still active, and a failed stranded scan', async () => {
+    const fx = await fixture();
+    fx.github.runs = [run(10), run(11)];
+    fx.github.jobs = [job(1, 10, 'queued'), job(2, 11, 'queued')];
+    fx.github.cancelFails.add(11);
+    fx.github.cancelLags = true;
+    const partial = await release(fx, true);
+    expect(partial.exitCode).toBe(1);
+    expect(partial.report).toMatchObject({
+      status: 'released', cancelled: [10], stillActive: [10],
+      failedCancels: [{ runId: 11, error: 'GitHub returned HTTP 500 force-cancelling run 11: boom' }],
+    });
+
+    const scan = await fixture();
+    scan.github.runsIncomplete = 'GitHub HTTP 502';
+    const failed = await release(scan, true);
+    expect(failed.exitCode).toBe(1);
+    expect(failed.report).toMatchObject({
+      status: 'released', variable: 'deleted', strandedScan: 'failed: GitHub HTTP 502',
+      nextStep: `re-run cirujano fleet release --registry ${scan.registryPath} --id P1 --cancel-stranded`,
     });
   });
 

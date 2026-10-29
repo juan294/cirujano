@@ -5,7 +5,11 @@ import {
   parseControllerState,
   parsePermit,
   parseRunnerConfig,
+  projectedStartCostUsd,
+  runnerConfigHash,
   selectStrandedRuns,
+  type PermitIdentity,
+  type RunnerConfig,
   type Collection,
   type Permit,
   type TimingConfig,
@@ -61,10 +65,13 @@ export async function fleetHealth(input: {
   registry: FleetRegistry;
   registryPath: string;
   source: GitHubFleetSource;
-  github: RoutingGitHub;
+  /** A fresh client per enrollment, so one repository's 403 backoff never turns the next row unknown. */
+  githubFor: () => RoutingGitHub;
   nowMs: number;
   nowOverridden: boolean;
   defaultTiming: Pick<TimingConfig, 'maxJobMs' | 'shutdownMarginMs'>;
+  /** The controller wrapper's egress limit (run-cirujano-controller.sh defaults it to 10 GiB). */
+  networkEgressLimitGiB: number;
 }): Promise<HealthReport> {
   const rows: HealthRow[] = [];
   for (const enrollment of input.registry.enrollments.filter(({ status }) => status === 'cut-over')) {
@@ -83,23 +90,34 @@ async function healthRow(enrollment: FleetEnrollment, input: Parameters<typeof f
     return row('ungated', 'red', { recovery: `generate the selection with cirujano fleet runs-on --registry ${input.registryPath} --id ${enrollment.id}` });
   }
   const [owner, name] = splitRepository(enrollment.repository);
+  let controller: ControllerEvidence;
+  try {
+    controller = await readController(enrollment, input.defaultTiming, input.networkEgressLimitGiB);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return row('unserviceable', 'red', {
+      reason: `controller-state-unreadable: ${message}`,
+      recovery: `repair or archive the controller files in ${enrollment.controller?.stateDirectory ?? 'the controller directory'}, or run ${releaseCommand}`,
+    });
+  }
+  const github = input.githubFor();
   try {
     const repositoryPrivate = (await input.source.repository(enrollment.repository)).visibility === 'private';
-    const switchState = await input.github.getVariable(owner, name, enrollment.routingSwitch);
-    const controller = await readController(enrollment, input.defaultTiming);
-    const assessment = assessService({ ...controller, nowMs: input.nowMs, repositoryPrivate });
+    const switchState = await github.getVariable(owner, name, enrollment.routingSwitch);
+    const { permitError, ...evidence } = controller;
+    const assessment = assessService({ ...evidence, nowMs: input.nowMs, repositoryPrivate });
     const serviceEnd = assessment.serviceEndMs === null ? null : new Date(assessment.serviceEndMs).toISOString();
     const fields = { switch: switchState, serviceEnd };
-    const routedHere = switchState === 'on' && assessment.serviceable && controller.permitError === null;
-    const stranded = routedHere ? null : await strandedRuns(input.github, owner, name, enrollment);
+    const routedHere = switchState === 'on' && assessment.serviceable && permitError === null;
+    const stranded = routedHere ? null : await strandedRuns(github, owner, name, { workflowIds: [enrollment.workflowId], runnerLabel: enrollment.runnerLabel });
     const strandedFields = { ...fields, strandedRuns: stranded === null ? null : { cancellable: stranded.cancellable, waiting: stranded.waiting } };
     const anyStranded = stranded !== null && stranded.strandedJobs.length > 0;
     const cancelCommand = `${releaseCommand} --cancel-stranded`;
     if (switchState !== 'on') {
       return anyStranded ? row('stranded', 'red', { ...strandedFields, recovery: cancelCommand }) : row('released', 'green', strandedFields);
     }
-    if (controller.permitError !== null || !assessment.serviceable) {
-      const reason = controller.permitError === null ? (assessment as { reason: string }).reason : `permit-invalid: ${controller.permitError}`;
+    if (permitError !== null || !assessment.serviceable) {
+      const reason = permitError === null ? (assessment as { reason: string }).reason : `permit-invalid: ${permitError}`;
       return row('unserviceable', 'red', { ...strandedFields, reason, recovery: anyStranded ? cancelCommand : releaseCommand });
     }
     if (assessment.serviceEndMs - input.nowMs <= WARNING_MS) {
@@ -115,39 +133,61 @@ async function healthRow(enrollment: FleetEnrollment, input: Parameters<typeof f
   }
 }
 
-/** Local controller evidence: permit, timing and lifetime totals. A missing file means none yet. */
-async function readController(enrollment: FleetEnrollment, defaultTiming: Pick<TimingConfig, 'maxJobMs' | 'shutdownMarginMs'>): Promise<{
-  permit: Permit | null; permitError: string | null; timing: Pick<TimingConfig, 'maxJobMs' | 'shutdownMarginMs'>; cumulativeRuntimeMs: number; cumulativeCostUsd: number;
-}> {
+interface ControllerEvidence {
+  permit: Permit | null;
+  permitError: string | null;
+  timing: Pick<TimingConfig, 'maxJobMs' | 'shutdownMarginMs'>;
+  identity?: Partial<PermitIdentity>;
+  startCount: number;
+  cumulativeRuntimeMs: number;
+  cumulativeCostUsd: number;
+  projectedStartCostUsd: number;
+}
+
+/**
+ * Local controller evidence: permit, config identity and timing, lifetime totals. A missing file means
+ * none yet. An unreadable permit is reported as invalid; any other unreadable file throws, because
+ * retrying GitHub cannot fix it.
+ */
+async function readController(
+  enrollment: FleetEnrollment, defaultTiming: Pick<TimingConfig, 'maxJobMs' | 'shutdownMarginMs'>, networkEgressLimitGiB: number,
+): Promise<ControllerEvidence> {
   const stateDirectory = enrollment.controller?.stateDirectory;
-  if (stateDirectory === undefined) return { permit: null, permitError: null, timing: defaultTiming, cumulativeRuntimeMs: 0, cumulativeCostUsd: 0 };
+  const none = { permit: null, permitError: null, timing: defaultTiming, startCount: 0, cumulativeRuntimeMs: 0, cumulativeCostUsd: 0, projectedStartCostUsd: 0 };
+  if (stateDirectory === undefined) return none;
   let permit: Permit | null = null;
   let permitError: string | null = null;
-  const rawPermit = await readOptionalJson(join(stateDirectory, 'permit.json'));
-  if (rawPermit !== null) {
-    try {
-      permit = parsePermit(rawPermit);
-    } catch (error) {
-      permitError = error instanceof Error ? error.message : String(error);
-    }
+  try {
+    const rawPermit = await readOptionalJson(join(stateDirectory, 'permit.json'));
+    permit = rawPermit === null ? null : parsePermit(rawPermit);
+  } catch (error) {
+    permitError = error instanceof Error ? error.message : String(error);
   }
   const rawConfig = await readOptionalJson(join(stateDirectory, 'config.json'));
+  const config: RunnerConfig | null = rawConfig === null ? null : parseRunnerConfig(rawConfig);
   const rawState = await readOptionalJson(join(stateDirectory, 'controller-state.json'));
   const lifecycle = rawState === null ? null : parseControllerState(rawState).lifecycle;
   return {
     permit, permitError,
-    timing: rawConfig === null ? defaultTiming : parseRunnerConfig(rawConfig).timing,
+    timing: config?.timing ?? defaultTiming,
+    // The installed bundle digest is the controller's to check; the fleet checks everything else.
+    ...(config === null ? {} : { identity: {
+      configHash: runnerConfigHash(config), repositoryId: config.repository.id, projectId: config.nebius.projectId,
+      controllerId: config.ownership.controllerId, resourcePrefix: config.ownership.resourcePrefix,
+    } }),
+    startCount: lifecycle?.startCount ?? 0,
     cumulativeRuntimeMs: lifecycle?.cumulativeRuntimeMs ?? 0,
     cumulativeCostUsd: lifecycle?.cumulativeCostUsd ?? 0,
+    projectedStartCostUsd: config === null ? 0 : projectedStartCostUsd(config, networkEgressLimitGiB),
   };
 }
 
-/** Runs of the enrolled workflow with jobs queued on its label, read from GitHub's active runs. */
-export async function strandedRuns(github: RoutingGitHub, owner: string, name: string, enrollment: FleetEnrollment) {
-  const runs = complete(await github.listActiveRuns(owner, name)).filter(({ workflowId }) => workflowId === enrollment.workflowId);
+/** Runs of the enrolled workflows with jobs queued on the runner label, read from GitHub's active runs. */
+export async function strandedRuns(github: RoutingGitHub, owner: string, name: string, scope: { workflowIds: readonly number[]; runnerLabel: string }) {
+  const runs = complete(await github.listActiveRuns(owner, name)).filter(({ workflowId }) => scope.workflowIds.includes(workflowId));
   const jobs: WorkflowJob[] = [];
   for (const run of runs) jobs.push(...complete(await github.listJobs(owner, name, run.id, run.runAttempt)));
-  return selectStrandedRuns(runs, jobs, enrollment.runnerLabel);
+  return selectStrandedRuns(runs, jobs, scope.runnerLabel);
 }
 
 function complete<T>(collection: Collection<T>): readonly T[] {
@@ -211,20 +251,35 @@ export async function fleetRelease(input: {
       : entry),
   });
 
-  const stranded = await strandedRuns(input.github, owner, name, enrollment);
-  const cancelled: number[] = [];
-  if (input.cancelStranded) {
-    for (const runId of stranded.cancellable) {
-      await input.github.forceCancelRun(owner, name, runId);
-      cancelled.push(runId);
+  // The switch is off from here on; every later failure is reported with what already happened.
+  const report: Record<string, unknown> = { status: 'released', id: enrollment.id, repository: enrollment.repository, switchVariable, variable, releasedAt };
+  const scope = { workflowIds: [enrollment.workflowId], runnerLabel: enrollment.runnerLabel };
+  let failed = false;
+  try {
+    const stranded = await strandedRuns(input.github, owner, name, scope);
+    const cancelled: number[] = [];
+    const failures: Array<{ runId: number; error: string }> = [];
+    if (input.cancelStranded) {
+      for (const runId of stranded.cancellable) {
+        try {
+          await input.github.forceCancelRun(owner, name, runId);
+          cancelled.push(runId);
+        } catch (error) {
+          failures.push({ runId, error: error instanceof Error ? error.message : String(error) });
+        }
+      }
     }
+    // Force-cancel is asynchronous on GitHub; a run still active here is reported, not retried.
+    const stillActive = cancelled.length === 0 ? [] : complete(await input.github.listActiveRuns(owner, name)).map(({ id }) => id).filter((id) => cancelled.includes(id));
+    const notCancelled = input.cancelStranded ? [] : stranded.cancellable;
+    failed = failures.length > 0;
+    Object.assign(report, { cancelled, stillActive, failedCancels: failures, waiting: stranded.waiting, notCancelled, nextStep: nextStep(cancelled, stranded.waiting, notCancelled) });
+  } catch (error) {
+    failed = true;
+    Object.assign(report, { strandedScan: `failed: ${error instanceof Error ? error.message : String(error)}`, nextStep: `re-run cirujano fleet release --registry ${input.registryPath} --id ${enrollment.id} --cancel-stranded` });
   }
-  const notCancelled = input.cancelStranded ? [] : stranded.cancellable;
-  input.io.stdout(`${JSON.stringify({
-    status: 'released', id: enrollment.id, repository: enrollment.repository, switchVariable, variable, releasedAt,
-    cancelled, waiting: stranded.waiting, notCancelled, nextStep: nextStep(cancelled, stranded.waiting, notCancelled),
-  })}\n`);
-  return 0;
+  input.io.stdout(`${JSON.stringify(report)}\n`);
+  return failed ? 1 : 0;
 }
 
 function nextStep(cancelled: readonly number[], waiting: readonly number[], notCancelled: readonly number[]): string {

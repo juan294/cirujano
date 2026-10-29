@@ -58,7 +58,7 @@ describe('operating permit proposal (phase 2 U1)', () => {
     const result = buildOperatingPermitProposal({ ...input, quote });
     expect(result).toMatchObject({ accepted: true, proposal: {
       kind: 'operating', enrollmentId: 'P1', approved: false, maxStarts: 600, maxRuntimeMs: 540_000_000, maxTotalCostUsd: 40,
-      fleetCeilingUsd: 440, fleetCommittedUsd: 120, operations: ['create', 'start', 'register', 'stop', 'delete'], recoveryAllowed: true,
+      fleetCeilingUsd: 440, fleetCommittedUsd: 120, operations: ['create', 'start', 'register', 'stop', 'delete', 'release-routing'], recoveryAllowed: true,
       resources: { platform: 'cpu-d3', preset: '4vcpu-16gb', vmCount: 1, diskCount: 1, diskType: 'network_ssd', diskSizeGiB: 80 },
     } });
     if (!result.accepted) throw new Error('unreachable');

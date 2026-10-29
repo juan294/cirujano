@@ -81,3 +81,24 @@ describe('parseRunnerConfig (R01)', () => {
 });
 
 export { validConfig };
+
+describe('routing switch (runner routing switch phase 3)', () => {
+  it('records the switch variable when present and adds nothing when absent, so existing config hashes stay valid', async () => {
+    const { runnerConfigHash } = await import('./config.js');
+    const without = parseRunnerConfig(validConfig);
+    expect(Object.hasOwn(without, 'routingSwitch')).toBe(false);
+    const withSwitch = parseRunnerConfig({ ...validConfig, routingSwitch: { variable: 'CIRUJANO_RUNNER_P3' } });
+    expect(withSwitch.routingSwitch).toEqual({ variable: 'CIRUJANO_RUNNER_P3' });
+    expect(runnerConfigHash(withSwitch)).not.toBe(runnerConfigHash(without));
+    expect(Object.keys(withSwitch).at(-1)).toBe('routingSwitch');
+  });
+
+  it.each([
+    [{ variable: 'cirujano_runner_p3' }, /routingSwitch.variable must look like CIRUJANO_RUNNER_P1/u],
+    [{ variable: 'CIRUJANO_RUNNER_P0' }, /routingSwitch.variable must look like CIRUJANO_RUNNER_P1/u],
+    [{ variable: 'CIRUJANO_RUNNER_P3', extra: true }, /routingSwitch contains unknown key extra/u],
+    ['CIRUJANO_RUNNER_P3', /routingSwitch must be an object/u],
+  ])('refuses routing switch %j', (routingSwitch, message) => {
+    expect(() => parseRunnerConfig({ ...validConfig, routingSwitch })).toThrow(message);
+  });
+});

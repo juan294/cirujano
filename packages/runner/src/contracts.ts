@@ -10,7 +10,8 @@ export type LifecycleState =
   | 'stopping'
   | 'blocked';
 
-export type PermitOperation = 'create' | 'start' | 'register' | 'stop' | 'delete';
+/** `release-routing` lets the controller turn its repository routing switch off (runner routing switch plan, D1). */
+export type PermitOperation = 'create' | 'start' | 'register' | 'stop' | 'delete' | 'release-routing';
 
 export interface RepositoryConfig {
   id: number;
@@ -73,6 +74,8 @@ export interface RunnerConfig {
   ownership: OwnershipConfig;
   timing: TimingConfig;
   rates: CostRates;
+  /** The repository variable that routes enrolled jobs here while it equals `on`; absent before the switch existed. */
+  routingSwitch?: { variable: string };
 }
 
 /** Values discovered from provider reads, deliberately absent from RunnerConfig. */

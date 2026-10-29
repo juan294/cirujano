@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { WorkflowJob, WorkflowRun } from './adapters/github.js';
 import type { Permit } from './contracts.js';
-import { assessService, selectStrandedRuns, serviceEnd } from './routing.js';
+import { assessService, releaseCheckDue, selectStrandedRuns, serviceEnd } from './routing.js';
 
 const LABEL = 'cirujano-baseline-actions_linux';
 const LABELS = ['self-hosted', 'linux', 'x64', LABEL];
@@ -59,7 +59,7 @@ describe('serviceEnd and assessService', () => {
     expect(new Date(serviceEnd(permit(), TIMING)).toISOString()).toBe('2026-10-28T22:54:59.000Z');
   });
 
-  const base = { permit: permit(), timing: TIMING, cumulativeRuntimeMs: 0, cumulativeCostUsd: 0, repositoryPrivate: true };
+  const base = { permit: permit(), timing: TIMING, startCount: 0, cumulativeRuntimeMs: 0, cumulativeCostUsd: 0, projectedStartCostUsd: 0.5, repositoryPrivate: true };
 
   it('serves up to and including the service end, matching the strict start-budget comparison', () => {
     expect(assessService({ ...base, nowMs: Date.parse('2026-10-28T22:54:59.000Z') })).toEqual({ serviceable: true, serviceEndMs: Date.parse('2026-10-28T22:54:59.000Z') });
@@ -73,12 +73,34 @@ describe('serviceEnd and assessService', () => {
     ['runtime-exhausted', { cumulativeRuntimeMs: 540_000_000 }],
     ['runtime-exhausted', { cumulativeRuntimeMs: 540_000_000 - 3_899_999 }],
     ['cost-exhausted', { cumulativeCostUsd: 40 }],
+    ['cost-exhausted', { cumulativeCostUsd: 39.5, projectedStartCostUsd: 0.51 }],
+    ['starts-exhausted', { startCount: 600 }],
     ['repository-not-private', { repositoryPrivate: false }],
+    ['permit-identity-mismatch', { identity: { configHash: 'other' } }],
+    ['permit-identity-mismatch', { identity: { controllerId: 'other' } }],
+    ['permit-operations-missing', { permit: permit({ operations: ['stop', 'delete', 'release-routing'] }) }],
   ])('reports %s', (reason, overrides) => {
     expect(assessService({ ...base, nowMs: Date.parse('2026-10-10T00:00:00Z'), ...overrides })).toMatchObject({ serviceable: false, reason });
   });
 
+  it('serves with a matching identity, the last start and the exact remaining cost', () => {
+    const identity = { configHash: 'c', candidateDigest: 'd', repositoryId: 1, projectId: 'project', controllerId: 'controller', resourcePrefix: 'prefix' };
+    expect(assessService({ ...base, nowMs: Date.parse('2026-10-10T00:00:00Z'), identity, startCount: 599, cumulativeCostUsd: 39.5, projectedStartCostUsd: 0.5 }).serviceable).toBe(true);
+    expect(assessService({ ...base, nowMs: Date.parse('2026-10-10T00:00:00Z'), identity: { configHash: 'c' } }).serviceable).toBe(true);
+  });
+
   it('serves when exactly one job and margin of runtime remain', () => {
     expect(assessService({ ...base, nowMs: Date.parse('2026-10-10T00:00:00Z'), cumulativeRuntimeMs: 540_000_000 - 3_900_000 }).serviceable).toBe(true);
+  });
+});
+
+describe('releaseCheckDue', () => {
+  const start = Date.parse('2026-10-28T22:55:00Z');
+  it('checks at once, then at most every 10 minutes, and at once again when the reason changes', () => {
+    expect(releaseCheckDue(null, 'past-service-end', start)).toBe(true);
+    const last = { atMs: start, reason: 'past-service-end' };
+    expect(releaseCheckDue(last, 'past-service-end', start + 599_999)).toBe(false);
+    expect(releaseCheckDue(last, 'past-service-end', start + 600_000)).toBe(true);
+    expect(releaseCheckDue(last, 'permit-expired', start + 1)).toBe(true);
   });
 });

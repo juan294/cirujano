@@ -884,6 +884,100 @@ describe('production runner command composition (R11/R12)', () => {
   }, 30_000);
 });
 
+describe('routing release step (runner routing switch phase 3)', () => {
+  const VARIABLE = 'CIRUJANO_RUNNER_P1';
+
+  /** A lifecycle fixture whose config carries the switch and whose permit grants release-routing. */
+  async function routingFixture(permitChanges: Record<string, unknown> = {}, scenario: Partial<LifecycleScenario> = {}) {
+    const fixture = await createLifecycleFixture('delete-after-stop');
+    const config = JSON.parse(await readFile(fixture.configPath, 'utf8')) as Record<string, unknown>;
+    config.routingSwitch = { variable: VARIABLE };
+    await writeFile(fixture.configPath, JSON.stringify(config));
+    const configHash = runnerConfigHash(parseRunnerConfig(config));
+    const permit = JSON.parse(await readFile(fixture.permitPath, 'utf8')) as Record<string, unknown>;
+    await writeFile(fixture.permitPath, JSON.stringify({ ...permit, configHash, operations: ['create', 'start', 'register', 'stop', 'delete', 'release-routing'], ...permitChanges }));
+    await updateScenario(fixture, (state) => Object.assign(state, { variable: 'on' }, scenario));
+    return { ...fixture, env: { ...fixture.env, CIRUJANO_CONFIG_HASH: configHash, CIRUJANO_RUNNER_ONCE: '1' } };
+  }
+
+  async function tick(fixture: Awaited<ReturnType<typeof routingFixture>>, dryRun = false) {
+    const args = ['runner', 'watch', '--config', fixture.configPath, '--permit', fixture.permitPath, ...(dryRun ? ['--dry-run'] : [])];
+    await runCli(args, captureIo(), createRunnerCommandService(fixture.env));
+    const events = (await readFile(join(fixture.directory, 'events.jsonl'), 'utf8')).trim().split('\n').map((line) => JSON.parse(line) as Record<string, unknown>);
+    const log = await readFile(fixture.logPath, 'utf8');
+    const scenario = JSON.parse(await readFile(fixture.scenarioPath, 'utf8')) as LifecycleScenario;
+    return { routing: events.filter(({ type }) => String(type).startsWith('routing-')), log, scenario };
+  }
+
+  const pastServiceEnd = () => ({ issuedAtMs: Date.now() - 60_000, expiresAtMs: Date.now() + 30 * 60_000 });
+  const expired = () => ({ issuedAtMs: Date.now() - 60_000, expiresAtMs: Date.now() - 1_000 });
+  const deletes = (log: string) => log.split('\n').filter((line) => line.includes('--method DELETE') && line.includes(`/actions/variables/${VARIABLE}`)).length;
+
+  it('deletes the switch and confirms by readback once the permit cannot fit one more job', async () => {
+    const { routing, log, scenario } = await tick(await routingFixture(pastServiceEnd()));
+    expect(deletes(log)).toBe(1);
+    expect(log.split('\n').filter((line) => line.includes('--method GET') && line.includes(`/actions/variables/${VARIABLE}`))).toHaveLength(2);
+    expect(scenario.variable).toBeUndefined();
+    expect(routing).toEqual([expect.objectContaining({ type: 'routing-release', variable: VARIABLE, reason: 'past-service-end', result: 'deleted' })]);
+  });
+
+  it('releases after permit expiry under recovery authority, and only with it', async () => {
+    const released = await tick(await routingFixture(expired()));
+    expect(released.routing).toEqual([expect.objectContaining({ type: 'routing-release', reason: 'permit-expired' })]);
+
+    const refused = await tick(await routingFixture({ ...expired(), recoveryAllowed: false }));
+    expect(deletes(refused.log)).toBe(0);
+    expect(refused.routing).toEqual([expect.objectContaining({
+      type: 'routing-release-unauthorized', variable: VARIABLE, reason: 'permit-expired', authority: 'permit does not authorize recovery',
+      recovery: expect.stringContaining('cirujano fleet release --registry ~/.local/share/cirujano/telemetry/fleet-registry.json --id P1'),
+    })]);
+  });
+
+  it('does nothing while the runner can still serve', async () => {
+    const { routing, log } = await tick(await routingFixture());
+    expect(log).not.toContain('/actions/variables/');
+    expect(routing).toEqual([]);
+  });
+
+  it('records the would-be release in dry-run and writes nothing', async () => {
+    const { routing, log } = await tick(await routingFixture(expired()), true);
+    expect(log).not.toContain('/actions/variables/');
+    expect(routing).toEqual([expect.objectContaining({ type: 'routing-release-dry-run', variable: VARIABLE, reason: 'permit-expired' })]);
+  });
+
+  it('cancels a stranded run only after its other jobs finish', async () => {
+    const { routing, scenario } = await tick(await routingFixture(expired(), {
+      variable: undefined as unknown as string,
+      jobs: [
+        { runId: 1001, jobId: 2001, status: 'queued', conclusion: null, runnerId: null, runnerName: null },
+        { runId: 1002, jobId: 2002, status: 'queued', conclusion: null, runnerId: null, runnerName: null },
+        { runId: 1002, jobId: 2003, status: 'in_progress', conclusion: null, runnerId: 999, runnerName: 'elsewhere' },
+      ],
+    }));
+    expect(scenario.forceCancelled).toEqual([1001]);
+    expect(routing).toEqual([
+      expect.objectContaining({ type: 'routing-stranded-cancelled', runIds: [1001], nextStep: 'push or dispatch a new run; with the switch off it runs on ubuntu-latest' }),
+      expect.objectContaining({ type: 'routing-stranded-waiting', runIds: [1002] }),
+    ]);
+  });
+
+  it('retries a failed delete on the next check and reports a 403 with the owner command', async () => {
+    const fixture = await routingFixture(expired(), { variableDeleteStatus: 403 });
+    const first = await tick(fixture);
+    expect(first.routing).toEqual([expect.objectContaining({
+      type: 'routing-release-failed', variable: VARIABLE, error: expect.stringContaining('HTTP 403 deleting variable CIRUJANO_RUNNER_P1: Resource not accessible by integration'),
+      recovery: expect.stringContaining('cirujano fleet release'),
+    })]);
+    const second = await tick(fixture);
+    expect(deletes(second.log)).toBe(2);
+  });
+
+  it('releases when the repository is no longer private', async () => {
+    const { routing } = await tick(await routingFixture({}, { repositoryPublic: true }));
+    expect(routing).toEqual([expect.objectContaining({ type: 'routing-release', reason: 'repository-not-private' })]);
+  });
+});
+
 function captureIo(): CliIo & { out: string[]; err: string[] } {
   const out: string[] = [];
   const err: string[] = [];
@@ -922,6 +1016,12 @@ interface LifecycleScenario {
    * grant+1 with confirmed stop == grant is accepted (otherwise exit 3); a created VM has no grant.
    */
   strictGrant?: boolean;
+  /** The routing switch value; absent means the variable does not exist (404). */
+  variable?: string;
+  /** HTTP status the variable DELETE returns instead of 204. */
+  variableDeleteStatus?: number;
+  repositoryPublic?: boolean;
+  forceCancelled?: number[];
   jobs: Array<{ runId: number; jobId: number; status: 'none' | 'queued' | 'in_progress' | 'completed'; conclusion: string | null; runnerId: number | null; runnerName: string | null }>;
 }
 
@@ -973,8 +1073,10 @@ async function createLifecycleFixture(idleResourcePolicy?: 'delete-after-stop'):
   await writeFile(ghPath, `#!/usr/bin/env node
 ${sharedPrelude}
 const a=process.argv.slice(2);const endpoint=a.find(v=>v.startsWith('/repos/'))||'';const method=a[a.indexOf('--method')+1];let status=200;let body={};
-if(/^\\/repos\\/trusted\\/private$/.test(endpoint)){if(s.repositoryUnavailable)status=403;else body={id:123,full_name:'trusted/private',private:true,visibility:'private',fork:false};}
-else if(endpoint.endsWith('/actions/runs')){const active=s.jobs.filter(j=>j.status==='queued'||j.status==='in_progress');body={total_count:active.length,workflow_runs:active.map(j=>({id:j.runId,workflow_id:41,run_attempt:1,status:j.status==='queued'?'queued':'in_progress',conclusion:null,event:'push',head_branch:'develop',head_sha:'sha-'+j.runId,repository:{id:123},head_repository:{id:123},pull_requests:[]}))};}
+if(/^\\/repos\\/trusted\\/private$/.test(endpoint)){if(s.repositoryUnavailable)status=403;else if(s.repositoryPublic)body={id:123,full_name:'trusted/private',private:false,visibility:'public',fork:false};else body={id:123,full_name:'trusted/private',private:true,visibility:'private',fork:false};}
+else if(endpoint.includes('/actions/variables/')){if(method==='DELETE'){if(s.variableDeleteStatus){status=s.variableDeleteStatus;body={message:'Resource not accessible by integration'};}else if(s.variable===undefined){status=404;body={message:'Not Found'};}else{delete s.variable;save();status=204;body=null;}}else if(s.variable===undefined){status=404;body={message:'Not Found'};}else body={name:endpoint.split('/').pop(),value:s.variable};}
+else if(endpoint.endsWith('/force-cancel')){const runId=Number(endpoint.match(/runs\\/(\\d+)/)[1]);s.forceCancelled=[...(s.forceCancelled||[]),runId];for(const j of s.jobs)if(j.runId===runId&&j.status!=='completed'&&j.status!=='none'){j.status='completed';j.conclusion='cancelled';}save();status=202;}
+else if(endpoint.endsWith('/actions/runs')){const all=s.jobs.filter(j=>j.status==='queued'||j.status==='in_progress');const active=[...new Map(all.map(j=>[j.runId,all.some(k=>k.runId===j.runId&&k.status==='in_progress')?{...j,status:'in_progress'}:j])).values()];body={total_count:active.length,workflow_runs:active.map(j=>({id:j.runId,workflow_id:41,run_attempt:1,status:j.status==='queued'?'queued':'in_progress',conclusion:null,event:'push',head_branch:'develop',head_sha:'sha-'+j.runId,repository:{id:123},head_repository:{id:123},pull_requests:[]}))};}
 else if(endpoint.includes('/attempts/1/jobs')){const runId=Number(endpoint.match(/runs\\/(\\d+)/)[1]);const jobs=s.jobs.filter(j=>j.runId===runId&&j.status!=='none');body={total_count:jobs.length,jobs:jobs.map(j=>({id:j.jobId,run_id:j.runId,head_sha:'sha-'+j.runId,status:j.status,conclusion:j.conclusion,name:'e2e',labels:['self-hosted','cirujano-pilot-a'],runner_id:j.runnerId,runner_name:j.runnerName,runner_group_id:null,runner_group_name:null,started_at:j.status==='queued'?null:'2026-09-13T10:00:00Z',completed_at:j.status==='completed'?'2026-09-13T10:01:00Z':null}))};}
 else if(endpoint.endsWith('/actions/runners'))body={total_count:s.runnerName===null?0:1,runners:s.runnerName===null?[]:[{id:s.runnerId,name:s.runnerName,os:'linux',status:'online',busy:s.runnerBusy,labels:[{name:'self-hosted'},{name:'cirujano-pilot-a'}]}]};
 else if(endpoint.endsWith('/registration-token')){status=201;body={token:'fixture-registration-token',expires_at:'2099-01-01T00:00:00Z'};}

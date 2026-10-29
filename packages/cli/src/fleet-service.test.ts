@@ -551,6 +551,20 @@ describe('fleet controller-config and permit-proposal (phase 2 U1)', () => {
     }
   });
 
+  it('copies the routing switch of a gated cut-over enrollment into the controller config, and nothing for a proposed one', async () => {
+    const { registryPath, service, templatePath, stateRoot } = await enrolledFixture();
+    expect(await service.run({ command: 'fleet', action: 'controller-config', registryPath, id: 'P1', stateRoot, templatePath }, silent())).toBe(0);
+    expect(Object.hasOwn(parseRunnerConfig(JSON.parse(await readFile(join(stateRoot, 'P1', 'config.json'), 'utf8'))), 'routingSwitch')).toBe(false);
+
+    const registry = await readRegistry(registryPath);
+    const gated = { ...registry.enrollments[0]!, status: 'cut-over' as const, routingSwitch: 'CIRUJANO_RUNNER_P1', controller: null,
+      after: { ...registry.enrollments[0]!.before, runsOn: ['self-hosted', 'linux', 'x64', LABEL] } };
+    await writeFleetRegistry(registryPath, { ...registry, enrollments: [gated] });
+    const fresh = join(stateRoot, 'gated');
+    expect(await service.run({ command: 'fleet', action: 'controller-config', registryPath, id: 'P1', stateRoot: fresh, templatePath }, silent())).toBe(0);
+    expect(parseRunnerConfig(JSON.parse(await readFile(join(fresh, 'P1', 'config.json'), 'utf8'))).routingSwitch).toEqual({ variable: 'CIRUJANO_RUNNER_P1' });
+  });
+
   it('uses the enrollment branch for controller admission and refuses a conflicting override', async () => {
     const { registryPath, service, templatePath, stateRoot } = await enrolledFixture();
     const registry = await readRegistry(registryPath);
